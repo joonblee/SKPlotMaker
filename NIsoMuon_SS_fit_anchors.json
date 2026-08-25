@@ -1,0 +1,438 @@
+{
+  "anchors": {
+    "2022": {
+      "exp_erf": {
+        "accepted": true,
+        "amplitude": 1001.8764905317229,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          0.30108168733057133,
+          9.244212987433631,
+          6.99865444120971
+        ],
+        "status": 1
+      },
+      "exp_logistic": {
+        "accepted": true,
+        "amplitude": 1674.8445420858352,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          0.324886292003497,
+          11.54254941356032,
+          4.410142749195553
+        ],
+        "status": 1
+      },
+      "power_erf": {
+        "accepted": true,
+        "amplitude": 33379518.215184286,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          5.541457015242146,
+          11.751029641096295,
+          3.1075004610320027
+        ],
+        "status": 1
+      },
+      "power_exp_erf": {
+        "accepted": true,
+        "amplitude": 32928584.43155364,
+        "covariance_status": 3,
+        "objective": "chi2",
+        "shape": [
+          5.536729540477446,
+          1.2939657253129531e-10,
+          11.744238748924976,
+          3.1076227111865395
+        ],
+        "status": 0
+      },
+      "power_exp_logistic": {
+        "accepted": true,
+        "amplitude": 3732531.1889317706,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          4.683031584735451,
+          0.018140360697393006,
+          10.422446129967687,
+          1.690130588172116
+        ],
+        "status": 1
+      },
+      "power_logistic": {
+        "accepted": true,
+        "amplitude": 5967695.152264102,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          4.962050182119241,
+          10.419786673112757,
+          1.6356071224008994
+        ],
+        "status": 1
+      }
+    },
+    "2022EE": {
+      "exp_erf": {
+        "accepted": true,
+        "amplitude": 167760743.84687445,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          0.8231411367146878,
+          24.453690012043495,
+          5.238288679687348
+        ],
+        "status": 1
+      },
+      "exp_logistic": {
+        "accepted": true,
+        "amplitude": 28942.97468443427,
+        "covariance_status": 3,
+        "objective": "chi2",
+        "shape": [
+          0.4601472672415865,
+          10.501463767902681,
+          2.4764952032389247
+        ],
+        "status": 0
+      },
+      "power_erf": {
+        "accepted": true,
+        "amplitude": 8472669829.772675,
+        "covariance_status": 3,
+        "objective": "chi2",
+        "shape": [
+          7.258416295263879,
+          11.356535332110502,
+          2.4122159071220732
+        ],
+        "status": 0
+      },
+      "power_exp_erf": {
+        "accepted": true,
+        "amplitude": 255187451.253256,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          0.15002110311730174,
+          0.8245166508880089,
+          24.216707566896226,
+          5.1163926642165745
+        ],
+        "status": 1
+      },
+      "power_exp_logistic": {
+        "accepted": true,
+        "amplitude": 34152.93116708587,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          0.15000305735851513,
+          0.4453812780592305,
+          10.339151688684728,
+          2.40862750655065
+        ],
+        "status": 1
+      },
+      "power_logistic": {
+        "accepted": true,
+        "amplitude": 96627161.95458142,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          5.654455238026755,
+          9.2841104557135,
+          1.2246191702883027
+        ],
+        "status": 1
+      }
+    },
+    "2023": {
+      "exp_erf": {
+        "accepted": true,
+        "amplitude": 16902165601.163635,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          0.9349863081294251,
+          32.603340430509355,
+          5.8703996249647314
+        ],
+        "status": 1
+      },
+      "exp_logistic": {
+        "accepted": true,
+        "amplitude": 715715.8761346972,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          0.6669144019545467,
+          14.424932892672931,
+          1.9747615598986492
+        ],
+        "status": 1
+      },
+      "power_erf": {
+        "accepted": true,
+        "amplitude": 122743866256.35674,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          8.306289044917092,
+          12.605395630555334,
+          2.50526473129932
+        ],
+        "status": 1
+      },
+      "power_exp_erf": {
+        "accepted": true,
+        "amplitude": 41657793659.026764,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          4.466099703028029,
+          0.529431946558781,
+          17.603971752292043,
+          3.3882109270734326
+        ],
+        "status": 1
+      },
+      "power_exp_logistic": {
+        "accepted": true,
+        "amplitude": 634651.3519887753,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          0.846040959471884,
+          0.5241352421833968,
+          12.99180648611139,
+          2.012308402621417
+        ],
+        "status": 1
+      },
+      "power_logistic": {
+        "accepted": true,
+        "amplitude": 171113940.8754139,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          5.971015307189661,
+          9.921743006432829,
+          1.283407603310371
+        ],
+        "status": 1
+      }
+    },
+    "2023BPix": {
+      "exp_erf": {
+        "accepted": true,
+        "amplitude": 16583069136.100029,
+        "covariance_status": 3,
+        "objective": "chi2",
+        "shape": [
+          1.0529187143293988,
+          28.08441557049119,
+          4.889303952490213
+        ],
+        "status": 0
+      },
+      "exp_logistic": {
+        "accepted": true,
+        "amplitude": 203479.23225660928,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          0.6629899571179704,
+          12.715080519794185,
+          1.8246036661526992
+        ],
+        "status": 1
+      },
+      "power_erf": {
+        "accepted": true,
+        "amplitude": 171839163952480.0,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          11.269141118149836,
+          13.50074268950943,
+          2.193641220988946
+        ],
+        "status": 1
+      },
+      "power_exp_erf": {
+        "accepted": true,
+        "amplitude": 157999096572617.2,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          11.238332863041768,
+          1.5291954406617065e-06,
+          13.48985641305581,
+          2.195521597862033
+        ],
+        "status": 1
+      },
+      "power_exp_logistic": {
+        "accepted": true,
+        "amplitude": 51771585.14419652,
+        "covariance_status": 3,
+        "objective": "chi2",
+        "shape": [
+          4.569044217814566,
+          0.22813795773803522,
+          10.673766730246244,
+          1.2761394177029253
+        ],
+        "status": 0
+      },
+      "power_logistic": {
+        "accepted": true,
+        "amplitude": 1688495214.3160565,
+        "covariance_status": 3,
+        "objective": "chi2",
+        "shape": [
+          7.134221907584667,
+          10.251915161572182,
+          1.0780892575848693
+        ],
+        "status": 0
+      }
+    },
+    "Run3": {
+      "exp_erf": {
+        "accepted": true,
+        "amplitude": 58452516142.93036,
+        "covariance_status": 3,
+        "objective": "chi2",
+        "shape": [
+          0.9352450694563159,
+          32.45222932142793,
+          5.831544970625761
+        ],
+        "status": 0
+      },
+      "exp_logistic": {
+        "accepted": true,
+        "amplitude": 174597.23501798348,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          0.5059520804667157,
+          12.514385103654929,
+          2.561418190518521
+        ],
+        "status": 1
+      },
+      "power_erf": {
+        "accepted": true,
+        "amplitude": 46826796743.188324,
+        "covariance_status": 3,
+        "objective": "chi2",
+        "shape": [
+          7.519688694416154,
+          11.943603265283972,
+          2.5163192727936936
+        ],
+        "status": 0
+      },
+      "power_exp_erf": {
+        "accepted": true,
+        "amplitude": 64888553.0533855,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          2.297624052713628,
+          0.4565317470868193,
+          15.275895509257534,
+          3.915239572904135
+        ],
+        "status": 1
+      },
+      "power_exp_logistic": {
+        "accepted": true,
+        "amplitude": 230265.46175071382,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          0.34725796693822913,
+          0.46701897795663044,
+          11.925256130904039,
+          2.4444687462900423
+        ],
+        "status": 1
+      },
+      "power_logistic": {
+        "accepted": true,
+        "amplitude": 375667253.59496814,
+        "covariance_status": 3,
+        "objective": "chi2",
+        "shape": [
+          5.806165800255343,
+          9.733495736463226,
+          1.2822064123222343
+        ],
+        "status": 0
+      }
+    }
+  },
+  "period_eras": {
+    "2016": [
+      "2016preVFP",
+      "2016postVFP"
+    ],
+    "2016postVFP": [
+      "2016postVFP"
+    ],
+    "2016preVFP": [
+      "2016preVFP"
+    ],
+    "2017": [
+      "2017"
+    ],
+    "2018": [
+      "2018"
+    ],
+    "2022": [
+      "2022"
+    ],
+    "2022EE": [
+      "2022EE"
+    ],
+    "2023": [
+      "2023"
+    ],
+    "2023BPix": [
+      "2023BPix"
+    ],
+    "Run2": [
+      "2016preVFP",
+      "2016postVFP",
+      "2017",
+      "2018"
+    ],
+    "Run2+3": [
+      "2016preVFP",
+      "2016postVFP",
+      "2017",
+      "2018",
+      "2022",
+      "2022EE",
+      "2023",
+      "2023BPix"
+    ],
+    "Run3": [
+      "2022",
+      "2022EE",
+      "2023",
+      "2023BPix"
+    ]
+  },
+  "updated_utc": "2026-08-19T01:57:43.268101+00:00",
+  "version": 1
+}
