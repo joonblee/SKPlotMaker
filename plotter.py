@@ -20,16 +20,25 @@ Revision 2 updates:
 
 Run with no arguments to print the detailed instructions:
 
-    python3 NIsoMuon_validation_plotter.py
+    python3 plotter.py
 
 Typical examples:
 
-    python3 NIsoMuon_validation_plotter.py --era Run2
-    python3 NIsoMuon_validation_plotter.py --era Run3 --variable all
-    python3 NIsoMuon_validation_plotter.py --era Run2 --blind
-    python3 NIsoMuon_validation_plotter.py --era 2018 --qcd-method mc --no-qcd-normalise
-    python3 NIsoMuon_validation_plotter.py --era 2018 --uncertainty syst+stat --strict
-    python3 NIsoMuon_validation_plotter.py --era Run2 --signal-scale 1000
+    python3 plotter.py --era Run2
+    python3 plotter.py --era Run3 --variable all
+    python3 plotter.py --era Run2 --blind
+    python3 plotter.py --era 2018 --qcd-method mc --no-qcd-normalise
+    python3 plotter.py --era 2018 --uncertainty syst+stat --strict
+    python3 plotter.py --era Run2 --signal-scale 1000
+
+Dimuon Mass
+
+    for era in 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix Run2 Run3 Run2+3; do python3 plotter.py --era ${era} --blind --variable dimuon_mass --uncertainty syst+stat --draw-signal --xmax 80 --signal-scale 0.01 --ymin 0.01; done
+
+Validation plots
+    for era in 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix Run2 Run3 Run2+3; do python3 plotter.py --qcd-method mc --dy-method mc --era ${era} --blind --variable all --ymin 0.5; done
+    for era in 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix Run2 Run3 Run2+3; do python3 plotter.py --qcd-method mc --dy-method mc --era ${era} --unblind --variable all --ymin 0.5 --dimuon-sign ss; done
+    for era in 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix Run2 Run3 Run2+3; do python3 plotter.py --qcd-method mc --dy-method mc --era ${era} --unblind --variable all --ymin 0.5 --jet-flavour light-jet; done
 """
 
 from __future__ import annotations
@@ -1361,7 +1370,7 @@ def bkg_syst_uncertainty(
     # L1 ECAL prefiring exists only in 2016pre/postVFP and 2017 and is treated
     # as an era-specific source.
     for year in years:
-        if year not in {"2016preVFP", "2016postVFP", "2017"}:
+        if year not in {"2016preVFP", "2016postVFP", "2017", "2018"}:
             continue
         down_suffix, up_suffix = L1_PREFIRE_SYST
         missing_by_proc: Dict[str, Dict[str, List[str]]] = {proc: {} for proc in exp_processes}
@@ -2476,24 +2485,24 @@ def make_parser() -> argparse.ArgumentParser:
 Examples:
   # Default: unblinded, stat-only. Object-validation variables use QCD MC
   # with one (Data - non-QCD MC)/QCD MC normalisation factor.
-  python3 NIsoMuon_validation_plotter.py --era Run2
+  python3 plotter.py --era Run2
 
   # All Run-3 object-validation plots
-  python3 NIsoMuon_validation_plotter.py --era Run3 --variable all
+  python3 plotter.py --era Run3 --variable all
 
-  # With --blind, dimuon mass uses mass-window blinding and all other\n  # validation variables automatically use background-only Asimov points.\n  python3 NIsoMuon_validation_plotter.py --era Run2 --variable all --blind
+  # With --blind, dimuon mass uses mass-window blinding and all other\n  # validation variables automatically use background-only Asimov points.\n  python3 plotter.py --era Run2 --variable all --blind
 
   # Draw stat+syst and require every applicable systematic template
-  python3 NIsoMuon_validation_plotter.py --era Run2 --uncertainty syst+stat --strict
+  python3 plotter.py --era Run2 --uncertainty syst+stat --strict
 
   # Disable the default QCD MC normalisation
-  python3 NIsoMuon_validation_plotter.py --era Run3 --variable all --no-qcd-normalise
+  python3 plotter.py --era Run3 --variable all --no-qcd-normalise
 
   # Explicitly draw signal.  Without --signal-scale or --draw-signal, no signal is drawn.
-  python3 NIsoMuon_validation_plotter.py --era Run2 --signal-scale 1000
+  python3 plotter.py --era Run2 --signal-scale 1000
 
   # Same-sign light-jet region using the new aliases
-  python3 NIsoMuon_validation_plotter.py --era 2018 --dimuon-sign SS --jet-flavour light-jet
+  python3 plotter.py --era 2018 --dimuon-sign SS --jet-flavour light-jet
 
 Systematic treatment:
   * --uncertainty stat-only (default) never opens RunSyst/ or RunXSecSyst/
@@ -2507,10 +2516,10 @@ Systematic treatment:
   * signal is drawn nominal-only; signal RunXSecSyst is not produced
 
 No-argument behaviour:
-  Running `python3 NIsoMuon_validation_plotter.py` prints this instruction and exits.
+  Running `python3 plotter.py` prints this instruction and exits.
 """
     parser = argparse.ArgumentParser(
-        prog="NIsoMuon_validation_plotter.py",
+        prog="plotter.py",
         description=(
             "Draw NIsoMuon mass and object-validation distributions using PyROOT, with explicit "
             "per-process systematic checks and Run-2/Run-3 correlation propagation."
