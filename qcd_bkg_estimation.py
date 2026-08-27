@@ -336,7 +336,7 @@ SS_MODE = ModeConfig(
     plot_tag="SS",
     legend_label="Data - MC^{Top, DY, Others}",
     components=(
-        ("DATA/data", +1.0),
+        ("data", +1.0),
         ("NIsoMuon_Top", -1.0),
         ("NIsoMuon_DYJets_Inclusive", -1.0),
         ("NIsoMuon_Others", -1.0),
@@ -2457,7 +2457,7 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
 
     ss_path = hist_path(SS_REGION)
     os_path = hist_path(OS_REGION)
-    f_data = files["DATA/data"]
+    f_data = files["data"]
     f_top = files["NIsoMuon_Top"]
     f_dy = files["NIsoMuon_DYJets_Inclusive"]
     f_others = files["NIsoMuon_Others"]

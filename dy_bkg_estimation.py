@@ -37,7 +37,7 @@ The Dilepton_Mass_<parameter> two-dimensional histogram is used only when
 --method tf is explicitly requested.
 
 The fixed NF windows are 5 < m < 9 GeV for background-subtracted data and
-10.4 < m < 70 GeV for the DY-MC closure test.  The script writes the central
+10.4 < m < 80 GeV for the DY-MC closure test.  The script writes the central
 NIsoMuon_DYJets_est.root and TF/LightJetStat templates under RunSyst/.
 
 Required option
@@ -52,7 +52,7 @@ Main optional controls
   --no-variable-binning
   --ratio-min/--ratio-max
   --logx, --linear-y
-  --blind                     blind B-jet data for 9 < m < 70 GeV
+  --blind                     blind B-jet data for 9 < m < 80 GeV
   --inject-signal
   --signal-mass MASS
   --signal-scale FACTOR
@@ -102,7 +102,7 @@ PLOT_DIR = "/data6/Users/joonblee/PlotMaker/plots"
 # Edit these values directly if either constant-NF normalisation window is changed.
 # No command-line option is intentionally provided for these windows.
 NF_MASS_WINDOW = (5.0, 9.0)          # Data - background MC
-DY_MC_NF_MASS_WINDOW = (10.4, 70.0)  # DY MC and DY + Z' MC closure tests
+DY_MC_NF_MASS_WINDOW = (10.4, 80.0)  # DY MC and DY + Z' MC closure tests
 
 # CMS-style nuisance labels used in the output ROOT directory names.
 TF_SYST_NAME = "TF"
@@ -289,7 +289,7 @@ def visible_max(hist, x_min: float, x_max: float) -> float:
         max_y = max(max_y, float(hist.GetBinContent(ibin) + hist.GetBinError(ibin)))
     return max_y
 
-def apply_blinding(hist, x_min=9.0, x_max=70.0):
+def apply_blinding(hist, x_min=9.0, x_max=80.0):
     if not hist: return
     for ibin in range(1, hist.GetNbinsX() + 1):
         center = hist.GetXaxis().GetBinCenter(ibin)
@@ -506,7 +506,7 @@ def load_subtracted_histogram(ROOT, args, folder: str, hist_name: str) -> Any:
     h_sub = load_histogram_across_eras(
         ROOT,
         args,
-        os.path.join("DATA", "data.root"),
+        os.path.join(".", "data.root"),
         folder,
         hist_name,
         f"sub_{folder}_{hist_name}",
@@ -1083,6 +1083,7 @@ def write_data_driven_root_outputs(
     def make_output(source, directory_name: str, clear_errors: bool = True):
         hist_name = f"Dilepton_Mass___{directory_name}"
         out = copy_to_full_mass_axis(ROOT, source, hist_name, "central")
+        zero_hist_range(out, 9.0, 10.4)
         if clear_errors:
             _clear_hist_errors(out)
         return out
@@ -1328,7 +1329,7 @@ def draw_validation_plot(ROOT, args, folder, var_name, tf_bins, out_name, title_
     if use_1d_mass:
         mass_hist_name = f"Dilepton_Mass___{folder}"
         h_data_raw = load_histogram_across_eras(
-            ROOT, args, os.path.join("DATA", "data.root"),
+            ROOT, args, os.path.join(".", "data.root"),
             folder, mass_hist_name, f"validation_data_{folder}_{out_name}",
             required=True,
         )
@@ -1342,7 +1343,7 @@ def draw_validation_plot(ROOT, args, folder, var_name, tf_bins, out_name, title_
         xmin, xmax = args.xmin, args.xmax
     else:
         h_data_2d = load_histogram_across_eras(
-            ROOT, args, os.path.join("DATA", "data.root"),
+            ROOT, args, os.path.join(".", "data.root"),
             folder, var_name, f"validation_data_{folder}_{out_name}",
             required=True,
         )
@@ -1367,7 +1368,7 @@ def draw_validation_plot(ROOT, args, folder, var_name, tf_bins, out_name, title_
     scale_to_yield_per_gev(h_data)
 
     if args.blind and is_mass and "BJet" in folder:
-        apply_blinding(h_data, 9.0, 70.0)
+        apply_blinding(h_data, 9.0, 80.0)
 
     color_DY = ROOT.TColor.GetColor("#FFCC66")   
     color_Top = ROOT.TColor.GetColor("#669966")  
@@ -1477,7 +1478,7 @@ def draw_validation_plot(ROOT, args, folder, var_name, tf_bins, out_name, title_
     
     extra_val_info = []
     if args.blind and is_mass and "BJet" in folder:
-        extra_val_info.append("9 < m(#mu#mu) < 70 GeV Blinded")
+        extra_val_info.append("9 < m(#mu#mu) < 80 GeV Blinded")
         
     draw_cms_text(ROOT, era=args.era, text_right=val_title, extra_lines=[f"Region: {region_name}"] + extra_val_info)
     upper.SetTickx(); upper.SetTicky(); upper.RedrawAxis()
@@ -1487,7 +1488,7 @@ def draw_validation_plot(ROOT, args, folder, var_name, tf_bins, out_name, title_
     h_ratio.Divide(h_total_mc)
     
     if args.blind and is_mass and "BJet" in folder:
-        apply_blinding(h_ratio, 9.0, 70.0)
+        apply_blinding(h_ratio, 9.0, 80.0)
         
     h_ratio.GetXaxis().SetRangeUser(xmin, xmax)
     apply_style(h_ratio, is_ratio=True)
@@ -1545,7 +1546,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--logx", action="store_true", help="Use log x axis for Mass plot")
     parser.add_argument("--linear-y", dest="logy", action="store_false", help="Use linear y axis")
     parser.set_defaults(logy=True)
-    parser.add_argument("--blind", action="store_true", help="Blind Data in B-Jet dimuon mass region (9 < mass < 70)")
+    parser.add_argument("--blind", action="store_true", help="Blind Data in B-Jet dimuon mass region (9 < mass < 80)")
     parser.add_argument(
         "--inject-signal",
         action="store_true",
@@ -1624,7 +1625,7 @@ def main(argv=None):
             f"{LIGHTJET_STAT_SYST_NAME} = light-jet bin statistics plus the correlated NF denominator effect"
         )
     if args.blind:
-        print("[INFO] B-jet Signal Region Blinding is ENABLED (9 < m(mumu) < 70 GeV)")
+        print("[INFO] B-jet Signal Region Blinding is ENABLED (9 < m(mumu) < 80 GeV)")
     if args.inject_signal:
         print(
             "[INFO] Signal injection is ENABLED: "
@@ -2015,7 +2016,7 @@ def main(argv=None):
         scale_to_yield_per_gev(hist)
 
     if args.blind:
-        apply_blinding(h1_mass_actual_data, 9.0, 70.0)
+        apply_blinding(h1_mass_actual_data, 9.0, 80.0)
 
     h_closure_ratio_dy = clone_hist(ROOT, h1_mass_actual_dy, "closure_ratio_dy")
     h_closure_ratio_dy.Divide(h1_mass_pred_dy)
@@ -2096,13 +2097,13 @@ def main(argv=None):
         )
         h_closure_ratio_data.Divide(h1_mass_pred_data)
         if args.blind:
-            apply_blinding(h_closure_ratio_data, 9.0, 70.0)
+            apply_blinding(h_closure_ratio_data, 9.0, 80.0)
         closure_ratios = [
             (h_closure_ratio_dy, ROOT.kBlack, 24, "Ratio (DY MC)"),
             (h_closure_ratio_data, ROOT.kRed + 1, 20, "Ratio (Data - Bkg MC)"),
         ]
         if args.blind:
-            extra_info_closure.append("9 < m(#mu#mu) < 70 GeV blinded")
+            extra_info_closure.append("9 < m(#mu#mu) < 80 GeV blinded")
 
     if args.method == "tf":
         closure_out_name = (

@@ -12,9 +12,8 @@ Revision 2 updates:
     template sources are independent between eras, affected processes within one
     era move coherently, top cross-section sources are correlated across eras,
     and the 2016 luminosity source is shared by pre-VFP and post-VFP
-  - reads signal PDF-replica, scale, and alphaS variations from RunXSecSyst;
-    the same generator-weight variation is summed across eras before evaluating
-    the uncertainty, and the resulting signal uncertainty band is drawn
+  - reads background PDF-replica, scale, and alphaS variations for tt/ST/Others
+    from RunXSecSyst; signal RunXSecSyst is not part of the current production
   - keeps event-yield and differential-cross-section normalisations only
   - retains the manual cumulative-TH1 stack used to avoid ROOT THStack painting
     crashes in some CMSSW/PyROOT releases
@@ -48,6 +47,8 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 RUN2_ERAS: Tuple[str, ...] = ("2016preVFP", "2016postVFP", "2017", "2018")
 RUN3_ERAS: Tuple[str, ...] = ("2022", "2022EE", "2023", "2023BPix")
+RUN2_LUMI_LABEL_FB = 138
+RUN3_LUMI_LABEL_FB = 62
 YEARS: Tuple[str, ...] = RUN2_ERAS + RUN3_ERAS
 ERA_GROUPS: Dict[str, Tuple[str, ...]] = {
     **{era: (era,) for era in YEARS},
@@ -93,21 +94,32 @@ VARIABLE_ALIASES: Dict[str, str] = {
 }
 
 # Stack draw order is bottom -> top in the manual stack.
-B_TAG_STACK_DRAW_ORDER: Tuple[str, ...] = ("Others", "DY", "ST", "tt", "QCD")
+B_TAG_STACK_DRAW_ORDER: Tuple[str, ...] = ("Others", "ST", "tt", "QCD", "DY")
 LIGHT_JET_STACK_DRAW_ORDER: Tuple[str, ...] = ("Others", "ST", "tt", "QCD", "DY")
 
-B_TAG_LEGEND_BKG_ORDER: Tuple[str, ...] = ("QCD", "tt", "ST", "DY", "Others")
+B_TAG_LEGEND_BKG_ORDER: Tuple[str, ...] = ("DY", "QCD", "tt", "ST", "Others")
 LIGHT_JET_LEGEND_BKG_ORDER: Tuple[str, ...] = ("DY", "QCD", "tt", "ST", "Others")
 
 EXP_SYST: Dict[str, Tuple[str, str]] = {
     "jer": ("JetResDown", "JetResUp"),
     "jes": ("JetEnDown", "JetEnUp"),
     "pu": ("PUDown", "PUUp"),
-    "btag_sf": ("BTagDown", "BTagUp"),
     "mu_trig_sf": ("MuonTriggerSFDown", "MuonTriggerSFUp"),
     "mu_id_sf": ("MuonIDSFDown", "MuonIDSFUp"),
     "mu_scale": ("MuonEnDown", "MuonEnUp"),
 }
+
+BTAG_CORR_SYST: Dict[str, Tuple[str, str]] = {
+    "btag_hf_corr": ("BTagHFCorrDown", "BTagHFCorrUp"),
+    "btag_lf_corr": ("BTagLFCorrDown", "BTagLFCorrUp"),
+}
+
+BTAG_UNCORR_SYST: Dict[str, Tuple[str, str]] = {
+    "btag_hf_uncorr": ("BTagHFUncorrDown", "BTagHFUncorrUp"),
+    "btag_lf_uncorr": ("BTagLFUncorrDown", "BTagLFUncorrUp"),
+}
+
+L1_PREFIRE_SYST: Tuple[str, str] = ("L1PrefireDown", "L1PrefireUp")
 
 QCD_SYST: Dict[str, Tuple[str, str]] = {
     "QCD_norm": ("NormDown", "NormUp"),
@@ -119,19 +131,23 @@ QCD_SYST: Dict[str, Tuple[str, str]] = {
 #   OS_<...>_Syst_TFUp_NIsoDimuon
 DY_SYST: Dict[str, Tuple[str, str]] = {
     "DY_TF": ("TFDown", "TFUp"),
+    "DY_LightJetStat": ("LightJetStatDown", "LightJetStatUp"),
 }
 
-# Generator-weight variations stored in RunXSecSyst for every signal mass.
-# PDF replicas use an RMS by default; scale and alphaS use envelopes.
-SIGNAL_THEORY_SOURCES: Dict[str, Tuple[str, int, str]] = {
+# RunXSecSyst is produced for tt, ST and Others only.  The same indexed
+# generator-weight variation is summed across selected eras before the source
+# uncertainty is evaluated.
+BACKGROUND_THEORY_SOURCES: Dict[str, Tuple[str, int, str]] = {
     "PDF_error": ("PDFError", 100, "rms"),
     "PDF_scale": ("PDFScale", 9, "envelope"),
     "PDF_alphas": ("PDFAlphaS", 2, "envelope"),
 }
 
-TOP_XSEC_REL_SYST: Dict[str, float] = {
-    "tt": 0.055,
-    "ST": 0.054,
+TT_XSEC_REL = 0.055
+TW_XSEC_REL = 0.054
+TT_MASS_FACTORS: Dict[str, Tuple[float, float]] = {
+    "Run2": (0.973018, 1.027821),
+    "Run3": (0.973365, 1.027501),
 }
 
 
@@ -162,7 +178,6 @@ class Config:
     signal_scale: float = 1.0
     signal_reference_xsec_pb: float = 1.0
     signal_xsec_pb: float = -1.0
-    signal_pdf_error_method: str = "rms"  # rms or envelope
 
     normalisations: List[str] = field(default_factory=lambda: ["events"])
 
@@ -184,6 +199,7 @@ class Config:
     dy_mc_file: str = "NIsoMuon_DYJets_Inclusive.root"
     tt_file: str = "NIsoMuon_tt.root"
     st_file: str = "NIsoMuon_ST.root"
+    tw_file: str = "NIsoMuon_tW.root"
     others_file: str = "NIsoMuon_Others.root"
 
     divide_by_bin_width: bool = True
@@ -232,7 +248,6 @@ class PlotInputs:
     data: Optional[object] = None
     qcd_normalisation_factor: float = 1.0
     signals: List[Tuple[float, object]] = field(default_factory=list)
-    signal_theory: Dict[float, Uncertainty] = field(default_factory=dict)
     stat: Uncertainty = field(default_factory=Uncertainty)
     syst: Uncertainty = field(default_factory=Uncertainty)
     total: Uncertainty = field(default_factory=Uncertainty)
@@ -289,17 +304,6 @@ def canonical_uncertainty(value: str) -> Tuple[str, bool]:
     if key in {"syststat", "statandsyst", "systandstat", "full", "syst", "systematic", "systematics"}:
         return "syst+stat", True
     raise ValueError(f"Unknown uncertainty mode: {value}. Use 'stat-only' or 'syst+stat'.")
-
-
-def canonical_signal_pdf_error_method(value: str) -> str:
-    key = normalise_key(value)
-    if key in {"rms", "replica", "replicarms", "std", "standarddeviation"}:
-        return "rms"
-    if key in {"envelope", "env", "maxmin"}:
-        return "envelope"
-    raise ValueError(
-        f"Unknown signal PDF-error method: {value}. Use 'rms' or 'envelope'."
-    )
 
 
 def canonical_jet_mode(value: str) -> str:
@@ -430,6 +434,7 @@ def root_file_by_process(cfg: Config) -> Dict[str, str]:
         "QCD": cfg.qcd_mc_file if use_qcd_mc(cfg) else cfg.qcd_data_driven_file,
         "tt": cfg.tt_file,
         "ST": cfg.st_file,
+        "tW": cfg.tw_file,
         "DY": cfg.dy_mc_file if use_dy_mc(cfg) else cfg.dy_data_driven_file,
         "Others": cfg.others_file,
     }
@@ -485,14 +490,14 @@ def lumi_group(year: str) -> str:
 
 def lumi_fb(year: str) -> float:
     values = {
-        "2016preVFP": 19.5,
-        "2016postVFP": 16.8,
-        "2017": 41.5,
-        "2018": 59.8,
-        "2022": 7.98,
-        "2022EE": 26.67,
-        "2023": 17.7,
-        "2023BPix": 9.5,
+        "2016preVFP": 19.52,
+        "2016postVFP": 16.81,
+        "2017": 41.48,
+        "2018": 59.83,
+        "2022": 7.9804,
+        "2022EE": 26.6717,
+        "2023": 18.064,
+        "2023BPix": 9.693,
     }
     return values.get(year, 0.0)
 
@@ -525,12 +530,16 @@ def lumi_pb_for_years(years: Sequence[str]) -> float:
 def lumi_label(era: str, lumi_pb: float) -> str:
     canonical = canonical_era(era)
     if canonical in {"full", "Run2+3"}:
-        run2 = sum(lumi_fb(y) for y in RUN2_ERAS)
-        run3 = sum(lumi_fb(y) for y in RUN3_ERAS)
-        return f"{run2:.1f} fb^{{-1}} (13 TeV) + {run3:.2f} fb^{{-1}} (13.6 TeV)"
-    energy = "13.6 TeV" if canonical == "Run3" or canonical in RUN3_ERAS else "13 TeV"
-    ndigit = 2 if canonical == "Run3" else 1
-    return f"{lumi_pb / 1000.0:.{ndigit}f} fb^{{-1}} ({energy})"
+        return (
+            f"{RUN2_LUMI_LABEL_FB} fb^{{-1}} (13 TeV) + "
+            f"{RUN3_LUMI_LABEL_FB} fb^{{-1}} (13.6 TeV)"
+        )
+    if canonical == "Run2":
+        return f"{RUN2_LUMI_LABEL_FB} fb^{{-1}} (13 TeV)"
+    if canonical == "Run3":
+        return f"{RUN3_LUMI_LABEL_FB} fb^{{-1}} (13.6 TeV)"
+    energy = "13.6 TeV" if canonical in RUN3_ERAS else "13 TeV"
+    return f"{lumi_pb / 1000.0:.1f} fb^{{-1}} ({energy})"
 
 
 def root_dir_for_year(cfg: Config, year: str, collection: str = "") -> str:
@@ -849,7 +858,7 @@ def signal_scale_label(cfg: Config) -> str:
     if cfg.signal_xsec_pb >= 0.0:
         return f"#sigma={cfg.signal_xsec_pb:g} pb, #times {cfg.signal_scale:g}"
     if abs(cfg.signal_scale - 1.0) > 1.0e-12:
-        return f"#times {cfg.signal_scale:g}"
+        return f"#alpha_{{qZ'}} = {cfg.signal_scale:g}"
     return ""
 
 
@@ -1190,13 +1199,98 @@ def _finish_syst_audit(
         )
 
 
-def background_exp_processes(cfg: Config) -> List[str]:
+def background_detector_processes(cfg: Config) -> List[str]:
+    return ["tt", "ST", "Others"]
+
+
+def background_lumi_processes(cfg: Config) -> List[str]:
     processes = ["tt", "ST", "Others"]
     if use_dy_mc(cfg):
         processes.append("DY")
     if use_qcd_mc(cfg):
         processes.append("QCD")
     return processes
+
+
+def run_group(year: str) -> str:
+    return "Run2" if year in RUN2_ERAS else "Run3"
+
+
+
+def _scaled_delta(nominal, factor: float, name_prefix: str):
+    if not nominal:
+        return None
+    out = nominal.Clone(_NAMES.unique(name_prefix))
+    out.SetDirectory(0)
+    out.Scale(float(factor) - 1.0)
+    return out
+
+
+def _background_theory_uncertainty(
+    ROOT,
+    cfg: Config,
+    years: Sequence[str],
+    proc: str,
+    nominal_by_year: Dict[str, Dict[str, object]],
+    nominal_total,
+    edges: Sequence[float],
+    scale: float,
+    down2: List[float],
+    up2: List[float],
+    summary: List[str],
+    errors: List[str],
+) -> None:
+    for source, (prefix, count, method) in BACKGROUND_THEORY_SOURCES.items():
+        variations: List[object] = []
+        found = 0
+        missing: List[str] = []
+
+        for idx in range(count):
+            parts: List[object] = []
+            for year in years:
+                nominal = nominal_by_year.get(year, {}).get(proc)
+                h_var = prepare_year_hist(
+                    ROOT,
+                    cfg,
+                    year,
+                    proc,
+                    -1.0,
+                    edges,
+                    scale,
+                    [],
+                    syst_suffix=f"{prefix}{idx}",
+                    syst_subdir="RunXSecSyst",
+                    report_missing=False,
+                )
+                if h_var:
+                    parts.append(h_var)
+                    found += 1
+                else:
+                    missing.append(f"{year}/{prefix}{idx}")
+                    if nominal:
+                        fallback = nominal.Clone(
+                            _NAMES.unique(f"{source}_{proc}_{year}_{idx}_nominal")
+                        )
+                        fallback.SetDirectory(0)
+                        parts.append(fallback)
+            combined = sum_hists(parts, f"{source}_{proc}_{idx}_combined")
+            if combined:
+                variations.append(combined)
+
+        _record_indexed_status(
+            summary,
+            errors,
+            source,
+            proc,
+            found,
+            len(years) * count,
+            missing,
+        )
+
+        if method == "rms":
+            add_replica_rms_shift(variations, down2, up2)
+        else:
+            add_variation_envelope_shift(nominal_total, variations, down2, up2)
 
 
 def bkg_syst_uncertainty(
@@ -1220,11 +1314,10 @@ def bkg_syst_uncertainty(
 
     summary: List[str] = []
     errors: List[str] = []
+    exp_processes = background_detector_processes(cfg)
 
-    # Detector sources are correlated across affected processes within one era,
-    # but each era is an independent nuisance.  Process shifts are therefore
-    # summed before the per-era envelope is added in quadrature.
-    exp_processes = background_exp_processes(cfg)
+    # JER/JES/PU/muon sources: coherent across affected processes inside one
+    # era, independent between eras.
     for syst_name, (down_suffix, up_suffix) in EXP_SYST.items():
         missing_by_proc: Dict[str, Dict[str, List[str]]] = {proc: {} for proc in exp_processes}
         for year in years:
@@ -1240,24 +1333,14 @@ def bkg_syst_uncertainty(
                     ROOT, cfg, year, proc, -1.0, edges, scale, warnings,
                     syst_suffix=up_suffix, report_missing=False,
                 )
-                if proc == "QCD" and use_qcd_mc(cfg):
-                    if h_down:
-                        h_down.Scale(qcd_norm_factor)
-                    if h_up:
-                        h_up.Scale(qcd_norm_factor)
                 missing = _missing_pair_sides(h_down, h_up)
                 if not nominal:
                     missing_by_proc[proc][year] = ["Nominal"]
                     continue
                 if missing:
                     missing_by_proc[proc][year] = missing
-                # In non-strict mode, retain every available side and use the
-                # nominal template only for the side that is missing.  Strict
-                # mode still aborts after the complete audit is printed.
-                if not h_down:
-                    h_down = nominal
-                if not h_up:
-                    h_up = nominal
+                h_down = h_down or nominal
+                h_up = h_up or nominal
                 delta_down_parts.append(
                     make_delta_hist(h_down, nominal, f"{syst_name}_{proc}_{year}_down_delta")
                 )
@@ -1275,7 +1358,121 @@ def bkg_syst_uncertainty(
         for proc in exp_processes:
             _record_pair_status(summary, errors, syst_name, proc, missing_by_proc[proc])
 
-    # Data-driven QCD sources are independent between eras.
+    # L1 ECAL prefiring exists only in 2016pre/postVFP and 2017 and is treated
+    # as an era-specific source.
+    for year in years:
+        if year not in {"2016preVFP", "2016postVFP", "2017"}:
+            continue
+        down_suffix, up_suffix = L1_PREFIRE_SYST
+        missing_by_proc: Dict[str, Dict[str, List[str]]] = {proc: {} for proc in exp_processes}
+        delta_down_parts: List[object] = []
+        delta_up_parts: List[object] = []
+        for proc in exp_processes:
+            nominal = bkg_nom_by_year.get(year, {}).get(proc)
+            h_down = prepare_year_hist(
+                ROOT, cfg, year, proc, -1.0, edges, scale, warnings,
+                syst_suffix=down_suffix, report_missing=False,
+            )
+            h_up = prepare_year_hist(
+                ROOT, cfg, year, proc, -1.0, edges, scale, warnings,
+                syst_suffix=up_suffix, report_missing=False,
+            )
+            missing = _missing_pair_sides(h_down, h_up)
+            if not nominal:
+                missing_by_proc[proc][year] = ["Nominal"]
+                continue
+            if missing:
+                missing_by_proc[proc][year] = missing
+            h_down = h_down or nominal
+            h_up = h_up or nominal
+            delta_down_parts.append(make_delta_hist(h_down, nominal, f"prefire_{proc}_{year}_down"))
+            delta_up_parts.append(make_delta_hist(h_up, nominal, f"prefire_{proc}_{year}_up"))
+
+        add_delta_pair_shift(
+            sum_hists(delta_down_parts, f"prefire_{year}_down"),
+            sum_hists(delta_up_parts, f"prefire_{year}_up"),
+            down2,
+            up2,
+        )
+        for proc in exp_processes:
+            _record_pair_status(summary, errors, f"l1prefire_{year}", proc, missing_by_proc[proc])
+
+    # BTV uncorrelated components are independent for every era.
+    for syst_name, (down_suffix, up_suffix) in BTAG_UNCORR_SYST.items():
+        missing_by_proc: Dict[str, Dict[str, List[str]]] = {proc: {} for proc in exp_processes}
+        for year in years:
+            delta_down_parts: List[object] = []
+            delta_up_parts: List[object] = []
+            for proc in exp_processes:
+                nominal = bkg_nom_by_year.get(year, {}).get(proc)
+                h_down = prepare_year_hist(
+                    ROOT, cfg, year, proc, -1.0, edges, scale, warnings,
+                    syst_suffix=down_suffix, report_missing=False,
+                )
+                h_up = prepare_year_hist(
+                    ROOT, cfg, year, proc, -1.0, edges, scale, warnings,
+                    syst_suffix=up_suffix, report_missing=False,
+                )
+                missing = _missing_pair_sides(h_down, h_up)
+                if not nominal:
+                    missing_by_proc[proc][year] = ["Nominal"]
+                    continue
+                if missing:
+                    missing_by_proc[proc][year] = missing
+                h_down = h_down or nominal
+                h_up = h_up or nominal
+                delta_down_parts.append(make_delta_hist(h_down, nominal, f"{syst_name}_{proc}_{year}_down"))
+                delta_up_parts.append(make_delta_hist(h_up, nominal, f"{syst_name}_{proc}_{year}_up"))
+            add_delta_pair_shift(
+                sum_hists(delta_down_parts, f"{syst_name}_{year}_down"),
+                sum_hists(delta_up_parts, f"{syst_name}_{year}_up"),
+                down2,
+                up2,
+            )
+        for proc in exp_processes:
+            _record_pair_status(summary, errors, syst_name, proc, missing_by_proc[proc])
+
+    # BTV correlated components are shared within Run 2 and within Run 3, while
+    # Run-2 and Run-3 components remain independent from each other.
+    for syst_name, (down_suffix, up_suffix) in BTAG_CORR_SYST.items():
+        missing_by_proc: Dict[str, Dict[str, List[str]]] = {proc: {} for proc in exp_processes}
+        for group in ("Run2", "Run3"):
+            group_years = [year for year in years if run_group(year) == group]
+            if not group_years:
+                continue
+            delta_down_parts: List[object] = []
+            delta_up_parts: List[object] = []
+            for year in group_years:
+                for proc in exp_processes:
+                    nominal = bkg_nom_by_year.get(year, {}).get(proc)
+                    h_down = prepare_year_hist(
+                        ROOT, cfg, year, proc, -1.0, edges, scale, warnings,
+                        syst_suffix=down_suffix, report_missing=False,
+                    )
+                    h_up = prepare_year_hist(
+                        ROOT, cfg, year, proc, -1.0, edges, scale, warnings,
+                        syst_suffix=up_suffix, report_missing=False,
+                    )
+                    missing = _missing_pair_sides(h_down, h_up)
+                    if not nominal:
+                        missing_by_proc[proc][year] = ["Nominal"]
+                        continue
+                    if missing:
+                        missing_by_proc[proc][year] = missing
+                    h_down = h_down or nominal
+                    h_up = h_up or nominal
+                    delta_down_parts.append(make_delta_hist(h_down, nominal, f"{syst_name}_{proc}_{year}_down"))
+                    delta_up_parts.append(make_delta_hist(h_up, nominal, f"{syst_name}_{proc}_{year}_up"))
+            add_delta_pair_shift(
+                sum_hists(delta_down_parts, f"{syst_name}_{group}_down"),
+                sum_hists(delta_up_parts, f"{syst_name}_{group}_up"),
+                down2,
+                up2,
+            )
+        for proc in exp_processes:
+            _record_pair_status(summary, errors, syst_name, proc, missing_by_proc[proc])
+
+    # Data-driven QCD fit normalisation/shape nuisances are independent by era.
     if not use_qcd_mc(cfg):
         for syst_name, (down_suffix, up_suffix) in QCD_SYST.items():
             missing_by_year: Dict[str, List[str]] = {}
@@ -1295,10 +1492,8 @@ def bkg_syst_uncertainty(
                     continue
                 if missing:
                     missing_by_year[year] = missing
-                if not h_down:
-                    h_down = nominal
-                if not h_up:
-                    h_up = nominal
+                h_down = h_down or nominal
+                h_up = h_up or nominal
                 add_delta_pair_shift(
                     make_delta_hist(h_down, nominal, f"{syst_name}_{year}_down_delta"),
                     make_delta_hist(h_up, nominal, f"{syst_name}_{year}_up_delta"),
@@ -1307,7 +1502,7 @@ def bkg_syst_uncertainty(
                 )
             _record_pair_status(summary, errors, syst_name, "QCD", missing_by_year)
 
-    # The data-driven DY source is the TFDown/TFUp pair and is independent by era.
+    # Data-driven DY has both TF and light-jet-statistical template pairs.
     if not use_dy_mc(cfg):
         for syst_name, (down_suffix, up_suffix) in DY_SYST.items():
             missing_by_year: Dict[str, List[str]] = {}
@@ -1327,10 +1522,8 @@ def bkg_syst_uncertainty(
                     continue
                 if missing:
                     missing_by_year[year] = missing
-                if not h_down:
-                    h_down = nominal
-                if not h_up:
-                    h_up = nominal
+                h_down = h_down or nominal
+                h_up = h_up or nominal
                 add_delta_pair_shift(
                     make_delta_hist(h_down, nominal, f"{syst_name}_{year}_down_delta"),
                     make_delta_hist(h_up, nominal, f"{syst_name}_{year}_up_delta"),
@@ -1339,13 +1532,70 @@ def bkg_syst_uncertainty(
                 )
             _record_pair_status(summary, errors, syst_name, "DY", missing_by_year)
 
-    # Each top cross-section source is correlated across all selected eras.
-    for proc, rel in TOP_XSEC_REL_SYST.items():
-        if proc in bkg_nom:
-            add_symmetric_hist_shift(bkg_nom[proc], rel, down2, up2)
-            summary.append(f"{proc}_xsec/{proc}: OK (correlated across eras)")
+    # Generator PDF/scale/alphaS sources are produced only for tt/ST/Others.
+    for proc in exp_processes:
+        nominal_total = bkg_nom.get(proc)
+        if nominal_total:
+            _background_theory_uncertainty(
+                ROOT,
+                cfg,
+                years,
+                proc,
+                bkg_nom_by_year,
+                nominal_total,
+                edges,
+                scale,
+                down2,
+                up2,
+                summary,
+                errors,
+            )
 
-    # The two 2016 eras share one luminosity source; 2017 and 2018 are separate.
+    # tt inclusive cross-section normalisation, common across all eras.
+    if bkg_nom.get("tt"):
+        add_symmetric_hist_shift(bkg_nom["tt"], TT_XSEC_REL, down2, up2)
+        summary.append("tt_xsec/tt: OK (correlated across eras)")
+
+    # tW cross-section uncertainty applies only to the tW subset of ST.
+    tw_parts: List[object] = []
+    missing_tw: List[str] = []
+    for year in years:
+        h_tw = prepare_year_hist(ROOT, cfg, year, "tW", -1.0, edges, scale, warnings, report_missing=False)
+        if h_tw:
+            tw_parts.append(h_tw)
+        else:
+            missing_tw.append(year)
+    h_tw_total = sum_hists(tw_parts, "tW_nominal_combined")
+    if h_tw_total:
+        add_symmetric_hist_shift(h_tw_total, TW_XSEC_REL, down2, up2)
+    if missing_tw:
+        detail = ", ".join(missing_tw)
+        summary.append(f"tW_xsec/tW: MISSING ({detail})")
+        errors.append(f"Missing nominal NIsoMuon_tW.root for era(s): {detail}")
+    else:
+        summary.append("tW_xsec/tW: OK (correlated across eras)")
+
+    # One common tt-mass nuisance; 13 and 13.6 TeV use their corresponding
+    # Top++ response factors, but the nuisance direction is shared.
+    tt_mass_down_parts: List[object] = []
+    tt_mass_up_parts: List[object] = []
+    for year in years:
+        nominal = bkg_nom_by_year.get(year, {}).get("tt")
+        if not nominal:
+            continue
+        down_factor, up_factor = TT_MASS_FACTORS[run_group(year)]
+        tt_mass_down_parts.append(_scaled_delta(nominal, down_factor, f"tt_mass_{year}_down"))
+        tt_mass_up_parts.append(_scaled_delta(nominal, up_factor, f"tt_mass_{year}_up"))
+    add_delta_pair_shift(
+        sum_hists(tt_mass_down_parts, "tt_mass_down_combined"),
+        sum_hists(tt_mass_up_parts, "tt_mass_up_combined"),
+        down2,
+        up2,
+    )
+    summary.append("tt_mass/tt: OK (common nuisance, energy-dependent response)")
+
+    # Luminosity: 2016pre/post share one source; 2017 and 2018 are separate;
+    # 2022/2022EE share one source and 2023/2023BPix share one source.
     for group in sorted({lumi_group(year) for year in years}):
         parts: List[object] = []
         rel = 0.0
@@ -1353,7 +1603,7 @@ def bkg_syst_uncertainty(
             if lumi_group(year) != group:
                 continue
             rel = max(rel, lumi_rel_syst(year))
-            for proc in background_exp_processes(cfg):
+            for proc in background_lumi_processes(cfg):
                 h = bkg_nom_by_year.get(year, {}).get(proc)
                 if h:
                     parts.append(h)
@@ -1371,139 +1621,6 @@ def bkg_syst_uncertainty(
     )
     return Uncertainty(low=[math.sqrt(x) for x in down2], high=[math.sqrt(x) for x in up2])
 
-
-def _load_signal_theory_by_year(
-    ROOT,
-    cfg: Config,
-    year: str,
-    mass: float,
-    edges: Sequence[float],
-    scale: float,
-) -> Tuple[Dict[str, Dict[int, object]], Dict[str, List[str]]]:
-    """Open one RunXSecSyst file once and load all expected signal variations."""
-    out: Dict[str, Dict[int, object]] = {name: {} for name in SIGNAL_THEORY_SOURCES}
-    missing: Dict[str, List[str]] = {name: [] for name in SIGNAL_THEORY_SOURCES}
-
-    root_dir = root_dir_for_year(cfg, year)
-    nominal_file = locate_signal_file(root_dir, mass)
-    if not nominal_file:
-        for source, (prefix, count, _) in SIGNAL_THEORY_SOURCES.items():
-            missing[source].extend(f"{year}/{prefix}{idx}" for idx in range(count))
-        return out, missing
-
-    filename = os.path.join(root_dir_for_year(cfg, year, "RunXSecSyst"), os.path.basename(nominal_file))
-    if not exists(filename):
-        for source, (prefix, count, _) in SIGNAL_THEORY_SOURCES.items():
-            missing[source].extend(f"{year}/{prefix}{idx}" for idx in range(count))
-        return out, missing
-
-    f = ROOT.TFile.Open(filename, "READ")
-    if not f or f.IsZombie():
-        if f:
-            f.Close()
-        for source, (prefix, count, _) in SIGNAL_THEORY_SOURCES.items():
-            missing[source].extend(f"{year}/{prefix}{idx}" for idx in range(count))
-        return out, missing
-
-    for source, (prefix, count, _) in SIGNAL_THEORY_SOURCES.items():
-        for idx in range(count):
-            suffix = f"{prefix}{idx}"
-            region = syst_region(cfg, suffix)
-            h = f.Get(hist_path(cfg, region))
-            if not h:
-                missing[source].append(f"{year}/{suffix}")
-                continue
-            clone = h.Clone(_NAMES.unique(h.GetName()))
-            clone.SetDirectory(0)
-            clone = rebin_hist(clone, edges)
-            apply_scale(clone, scale)
-            apply_bin_width_normalization(cfg, clone)
-            out[source][idx] = clone
-    f.Close()
-    return out, missing
-
-
-def signal_theory_uncertainty(
-    ROOT,
-    cfg: Config,
-    years: Sequence[str],
-    mass: float,
-    nominal_by_year: Dict[str, object],
-    nominal_total,
-    edges: Sequence[float],
-    scale: float,
-    warnings: List[str],
-) -> Uncertainty:
-    n = nominal_total.GetNbinsX()
-    if not cfg.draw_systematics:
-        return zero_uncertainty(n)
-
-    down2 = [0.0] * n
-    up2 = [0.0] * n
-    summary: List[str] = []
-    errors: List[str] = []
-    by_year: Dict[str, Dict[str, Dict[int, object]]] = {}
-    missing_by_year: Dict[str, Dict[str, List[str]]] = {}
-
-    for year in years:
-        loaded, missing = _load_signal_theory_by_year(
-            ROOT, cfg, year, mass, edges, scale
-        )
-        by_year[year] = loaded
-        missing_by_year[year] = missing
-
-    signal_label = f"sig_M{mass_label(mass)}"
-    for source, (_, count, default_method) in SIGNAL_THEORY_SOURCES.items():
-        variations: List[object] = []
-        found = 0
-        missing_labels: List[str] = []
-
-        for idx in range(count):
-            parts: List[object] = []
-            has_actual_variation = False
-            for year in years:
-                h_var = by_year.get(year, {}).get(source, {}).get(idx)
-                if h_var:
-                    parts.append(h_var)
-                    found += 1
-                    has_actual_variation = True
-                else:
-                    prefix = SIGNAL_THEORY_SOURCES[source][0]
-                    label = f"{year}/{prefix}{idx}"
-                    missing_labels.append(label)
-                    nominal = nominal_by_year.get(year)
-                    if nominal:
-                        fallback = nominal.Clone(
-                            _NAMES.unique(f"{signal_label}_{year}_{prefix}{idx}_nominal")
-                        )
-                        fallback.SetDirectory(0)
-                        parts.append(fallback)
-            if has_actual_variation:
-                combined = sum_hists(parts, f"{signal_label}_{source}_{idx}_combined")
-                if combined:
-                    variations.append(combined)
-
-        expected = len(years) * count
-        _record_indexed_status(
-            summary, errors, source, signal_label, found, expected, missing_labels
-        )
-
-        method = default_method
-        if source == "PDF_error":
-            method = cfg.signal_pdf_error_method
-        if method == "rms":
-            add_replica_rms_shift(variations, down2, up2)
-        else:
-            add_variation_envelope_shift(nominal_total, variations, down2, up2)
-
-    _finish_syst_audit(
-        cfg,
-        warnings,
-        f"[syst-check] signal generator uncertainty sources for M={mass_label(mass)} GeV",
-        summary,
-        errors,
-    )
-    return Uncertainty(low=[math.sqrt(x) for x in down2], high=[math.sqrt(x) for x in up2])
 
 def total_uncertainty(stat: Uncertainty, syst: Uncertainty) -> Uncertainty:
     n = len(stat.low)
@@ -1580,18 +1697,6 @@ def build_plot_inputs(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> P
         if not h_total:
             continue
         out.signals.append((mass, h_total))
-        if cfg.draw_systematics:
-            out.signal_theory[mass] = signal_theory_uncertainty(
-                ROOT,
-                cfg,
-                years,
-                mass,
-                nominal_by_year,
-                h_total,
-                edges,
-                signal_draw_scale,
-                out.warnings,
-            )
     out.signals.sort(key=lambda x: x[0])
 
     out.stat = bkg_stat_uncertainty(cfg, out.bkg)
@@ -1832,15 +1937,6 @@ def style_signal_hist(h, color: int, idx: int) -> None:
     h.SetLineStyle(1)
 
 
-def style_signal_unc_graph(g, color: int) -> None:
-    if not g:
-        return
-    g.SetFillColorAlpha(color, 0.20)
-    g.SetFillStyle(1001)
-    g.SetLineColor(color)
-    g.SetLineWidth(1)
-
-
 def style_data_graph(ROOT, g, cfg: Config) -> None:
     if not g:
         return
@@ -2028,19 +2124,9 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> str:
     style_data_graph(ROOT, data_graph, cfg)
 
     colors = signal_colors(ROOT)
-    signal_unc_graphs: Dict[float, object] = {}
     for idx, (mass, h) in enumerate(inputs.signals):
         color = colors[idx % len(colors)]
         style_signal_hist(h, color, idx)
-        if cfg.draw_systematics and mass in inputs.signal_theory:
-            g_sig = make_unc_graph(
-                ROOT,
-                h,
-                inputs.signal_theory[mass],
-                f"sig_M{mass_label(mass)}_theory_unc",
-            )
-            style_signal_unc_graph(g_sig, color)
-            signal_unc_graphs[mass] = g_sig
 
     use_ratio = cfg.draw_ratio and data_graph is not None
     canvas = ROOT.TCanvas(_NAMES.unique("c"), "", 900, 850 if use_ratio else 760)
@@ -2077,8 +2163,8 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> str:
     # of ROOT histogram autoscaling.
     ymax = hist_max_with_error(inputs.bkg_total, inputs.total if cfg.draw_systematics else inputs.stat)
     ymax = max(ymax, graph_max_y(data_graph))
-    for mass, sig in inputs.signals:
-        ymax = max(ymax, hist_max_with_error(sig, inputs.signal_theory.get(mass)))
+    for _, sig in inputs.signals:
+        ymax = max(ymax, hist_max_with_error(sig))
     if ymax <= 0.0:
         ymax = 1.0
 
@@ -2150,10 +2236,6 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> str:
     if g_stat_outline:
         g_stat_outline.Draw("L same")
 
-    for mass, _ in inputs.signals:
-        g_sig = signal_unc_graphs.get(mass)
-        if g_sig:
-            g_sig.Draw("E2 same")
     for _, sig in inputs.signals:
         sig.Draw("hist same")
     if data_graph:
@@ -2296,9 +2378,6 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> str:
             inputs.data.Write("data")
         for mass, sig in inputs.signals:
             sig.Write(f"sig_M{mass_label(mass)}")
-            g_sig = signal_unc_graphs.get(mass)
-            if g_sig:
-                g_sig.Write(f"sig_M{mass_label(mass)}_pdf_scale_alphas_unc")
         g_stat.Write("bkg_stat_unc")
         if g_total:
             g_total.Write("bkg_stat_plus_syst_unc")
@@ -2355,8 +2434,13 @@ def run(cfg: Config) -> List[str]:
     cfg.qcd_method = canonical_background_method(cfg.qcd_method, option_name="qcd-method")
     cfg.dy_method = canonical_background_method(cfg.dy_method, option_name="dy-method")
     cfg.uncertainty, cfg.draw_systematics = canonical_uncertainty(cfg.uncertainty)
-    cfg.signal_pdf_error_method = canonical_signal_pdf_error_method(cfg.signal_pdf_error_method)
     years_for_era(cfg.era)
+
+    if cfg.draw_systematics and (cfg.jet_mode != "bjet" or cfg.dilepton_sign != "OS"):
+        raise ValueError(
+            "The current RunSyst/RunXSecSyst production contains only OS BJet histograms. "
+            "Use --uncertainty stat-only for BJet-SS or LightJet control-region plots."
+        )
 
     outputs: List[str] = []
     requested_variables = variables_for_request(cfg)
@@ -2414,13 +2498,13 @@ Examples:
 Systematic treatment:
   * --uncertainty stat-only (default) never opens RunSyst/ or RunXSecSyst/
   * --uncertainty syst+stat enables the full systematic machinery
-  * data-driven DY uses TFDown/TFUp from RunSyst/NIsoMuon_DYJets_est.root
-  * experimental and data-driven template sources are independent between eras
-  * affected MC processes within one era move coherently
-  * tt and single-top cross-section sources are correlated across eras
+  * data-driven DY uses TFDown/TFUp and LightJetStatDown/Up templates
+  * JER/JES/PU/muon and BTV-uncorrelated sources are independent between eras
+  * BTV correlated sources are shared within Run2 and within Run3
+  * RunXSecSyst PDF/scale/alphaS is evaluated for tt/ST/Others only
+  * tt_xsec, tW_xsec and tt_mass are propagated as normalisation nuisances
   * 2016preVFP and 2016postVFP share the 2016 luminosity source
-  * signal PDFError0..99, PDFScale0..8, and PDFAlphaS0..1 are read from
-    RunXSecSyst only when signal is explicitly drawn and syst+stat is requested
+  * signal is drawn nominal-only; signal RunXSecSyst is not produced
 
 No-argument behaviour:
   Running `python3 NIsoMuon_validation_plotter.py` prints this instruction and exits.
@@ -2479,11 +2563,6 @@ No-argument behaviour:
     parser.add_argument("--signal-masses", type=parse_float_list, default=parse_float_list("20,50"), help="comma/space separated mass list; default: 20,50")
     parser.add_argument("--signal-reference-xsec-pb", type=float, default=1.0)
     parser.add_argument("--signal-xsec-pb", type=float, default=-1.0)
-    parser.add_argument(
-        "--signal-pdf-error-method",
-        default="rms",
-        help="PDFError replica treatment: rms or envelope; default: rms",
-    )
 
     parser.add_argument("--normalisations", type=parse_str_list, default=parse_str_list("events"), help="comma/space separated list among events,xsec; default: events")
 
@@ -2498,6 +2577,7 @@ No-argument behaviour:
     parser.add_argument("--dy-mc-file", default="NIsoMuon_DYJets_Inclusive.root")
     parser.add_argument("--tt-file", default="NIsoMuon_tt.root")
     parser.add_argument("--st-file", default="NIsoMuon_ST.root")
+    parser.add_argument("--tw-file", default="NIsoMuon_tW.root")
     parser.add_argument("--others-file", default="NIsoMuon_Others.root")
 
     parser.add_argument("--blind-low", type=float, default=10.4, help="lower edge of dimuon-mass blind interval; default: 10.4 GeV")
@@ -2523,7 +2603,7 @@ No-argument behaviour:
         action="store_true",
         help=(
             "abort if any nominal input or any required systematic variation is "
-            "missing for an applicable process, era, or signal mass"
+            "missing for an applicable process or era"
         ),
     )
     parser.add_argument("--quiet-warnings", dest="verbose_warnings", action="store_false")
@@ -2562,7 +2642,6 @@ def config_from_args(args: argparse.Namespace) -> Config:
         signal_scale=1.0 if args.signal_scale is None else args.signal_scale,
         signal_reference_xsec_pb=args.signal_reference_xsec_pb,
         signal_xsec_pb=args.signal_xsec_pb,
-        signal_pdf_error_method=canonical_signal_pdf_error_method(args.signal_pdf_error_method),
         normalisations=[x.lower() for x in args.normalisations],
         xmin=args.xmin,
         xmax=args.xmax,
@@ -2580,6 +2659,7 @@ def config_from_args(args: argparse.Namespace) -> Config:
         dy_mc_file=args.dy_mc_file,
         tt_file=args.tt_file,
         st_file=args.st_file,
+        tw_file=args.tw_file,
         others_file=args.others_file,
         divide_by_bin_width=args.divide_by_bin_width,
         output_dir=args.output_dir,
@@ -2637,4 +2717,3 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
