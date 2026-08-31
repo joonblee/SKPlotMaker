@@ -2505,7 +2505,7 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
             "[fit.root] Shape-envelope models = "
             + ", ".join(model_labels[key] for key in SS_SHAPE_ALTERNATIVES)
         )
-        allowed_ranges = ((5.0, 9.0), (10.4, 70.0))
+        allowed_ranges = ((5.0, 9.0), (10.4, 80.0))
 
         run_syst = era_dir(args, args.year, "RunSyst")
         run_syst.mkdir(parents=True, exist_ok=True)
@@ -2544,9 +2544,15 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
                         dev = abs(alt_ss / central_ss - 1.0)
                         max_dev = max(max_dev, dev)
                         details.append((alt_ss, dev))
-                scale = 1.0 + max_dev
-                value_up = central_os * scale
-                value_down = central_os / scale if scale else 0.0
+                ### multiplicative approach ###
+                #scale = 1.0 + max_dev
+                #value_up = central_os * scale
+                #value_down = central_os / scale if scale else 0.0
+                ### additive approach ###
+                delta = central_os * max_dev
+                value_up = central_os + delta
+                value_down = max(0.0, central_os - delta)
+                ###
                 h_up.SetBinContent(ibin, value_up)
                 h_up.SetBinError(ibin, 0.0)
                 h_down.SetBinContent(ibin, value_down)
