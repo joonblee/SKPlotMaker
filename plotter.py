@@ -10,10 +10,12 @@ Revision 2 updates:
     process and selected era; --strict aborts when any required template is missing
   - propagates Run-2 correlations explicitly: experimental and data-driven
     template sources are independent between eras, affected processes within one
-    era move coherently, top cross-section sources are correlated across eras,
-    and the 2016 luminosity source is shared by pre-VFP and post-VFP
-  - reads background PDF-replica, scale, and alphaS variations for tt/ST/Others
-    from RunXSecSyst; signal RunXSecSyst is not part of the current production
+    era move coherently, BTV correlated terms are shared within Run2/Run3,
+    and the luminosity grouping matches the final counting model
+  - follows the final counting-model theory treatment for tt/ST only:
+    symmetric-Hessian PDF, shared alphaS, and separate muF/muR nuisances
+  - treats data-driven QCD shape as a symmetric absolute-yield uncertainty
+    and data-driven DY as constant NF + NFStat + LightJetStat
   - keeps event-yield and differential-cross-section normalisations only
   - retains the manual cumulative-TH1 stack used to avoid ROOT THStack painting
     crashes in some CMSSW/PyROOT releases
@@ -135,25 +137,32 @@ QCD_SYST: Dict[str, Tuple[str, str]] = {
     "QCD_shape": ("ShapeDown", "ShapeUp"),
 }
 
-# The data-driven DY estimator stores one transfer-factor variation pair:
-#   OS_<...>_Syst_TFDown_NIsoDimuon
-#   OS_<...>_Syst_TFUp_NIsoDimuon
+# In the final constant-NF DY model the ROOT producer retains the historical
+# TFDown/TFUp directory names, but those templates represent the NF
+# numerator-statistics nuisance, not an alternative TF central model.
 DY_SYST: Dict[str, Tuple[str, str]] = {
-    "DY_TF": ("TFDown", "TFUp"),
+    "DY_NFStat": ("TFDown", "TFUp"),
     "DY_LightJetStat": ("LightJetStatDown", "LightJetStatUp"),
 }
 
-# RunXSecSyst is produced for tt, ST and Others only.  The same indexed
-# generator-weight variation is summed across selected eras before the source
-# uncertainty is evaluated.
-BACKGROUND_THEORY_SOURCES: Dict[str, Tuple[str, int, str]] = {
-    "PDF_error": ("PDFError", 100, "rms"),
-    "PDF_scale": ("PDFScale", 9, "envelope"),
-    "PDF_alphas": ("PDFAlphaS", 2, "envelope"),
+# Final generator-theory model used by limit_workflow.py.
+THEORY_PROCESSES: Tuple[str, ...] = ("tt", "ST")
+PDF_ERROR_PREFIX = "PDFError"
+PDF_ERROR_COUNT = 100
+ALPHAS_PREFIX = "PDFAlphaS"
+ALPHAS_PAIR: Tuple[int, int] = (0, 1)
+
+# SKFlat/SKNano PDFScale convention:
+#   0=(1,1), 1=(1,2), 2=(1,0.5), 3=(2,1), 4=(2,2),
+#   5=(2,0.5), 6=(0.5,1), 7=(0.5,2), 8=(0.5,0.5).
+# The final model keeps muF and muR as separate process-specific nuisances.
+SCALE_PREFIX = "PDFScale"
+SCALE_COUNT = 9
+SCALE_PAIRS: Dict[str, Tuple[int, int]] = {
+    "muF": (2, 1),
+    "muR": (6, 3),
 }
 
-TT_XSEC_REL = 0.055
-TW_XSEC_REL = 0.054
 TT_MASS_FACTORS: Dict[str, Tuple[float, float]] = {
     "Run2": (0.973018, 1.027821),
     "Run3": (0.973365, 1.027501),
@@ -208,7 +217,6 @@ class Config:
     dy_mc_file: str = "NIsoMuon_DYJets_Inclusive.root"
     tt_file: str = "NIsoMuon_tt.root"
     st_file: str = "NIsoMuon_ST.root"
-    tw_file: str = "NIsoMuon_tW.root"
     others_file: str = "NIsoMuon_Others.root"
 
     divide_by_bin_width: bool = True
@@ -443,7 +451,6 @@ def root_file_by_process(cfg: Config) -> Dict[str, str]:
         "QCD": cfg.qcd_mc_file if use_qcd_mc(cfg) else cfg.qcd_data_driven_file,
         "tt": cfg.tt_file,
         "ST": cfg.st_file,
-        "tW": cfg.tw_file,
         "DY": cfg.dy_mc_file if use_dy_mc(cfg) else cfg.dy_data_driven_file,
         "Others": cfg.others_file,
     }
@@ -1015,9 +1022,13 @@ def bkg_stat_uncertainty(cfg: Config, bkg: Dict[str, object]) -> Uncertainty:
     e2 = [0.0] * n
 
     for proc, h in bkg.items():
-        # The fitted data-driven QCD template is controlled by its dedicated
-        # QCD_norm/QCD_shape variations rather than by the stored TH1 bin error.
+        # The fitted data-driven QCD template is controlled by QCD_norm and
+        # QCD_shape, not by its stored TH1 bin errors.  Likewise, the final
+        # constant-NF DY model uses DY_NFStat and DY_LightJetStat and explicitly
+        # has no generic DY_stat term.
         if proc == "QCD" and not use_qcd_mc(cfg):
+            continue
+        if proc == "DY" and not use_dy_mc(cfg):
             continue
         for ib in range(1, n + 1):
             err = h.GetBinError(ib)
@@ -1069,21 +1080,57 @@ def add_variation_envelope_shift(
         down2[ib - 1] += down * down
 
 
-def add_replica_rms_shift(
-    replicas: Sequence[object],
+def add_symmetric_delta_pair_shift(
+    delta_down,
+    delta_up,
     down2: List[float],
     up2: List[float],
 ) -> None:
-    valid = [h for h in replicas if h]
-    if len(valid) < 2:
+    # Symmetric source using the largest absolute +/-1 sigma shift.
+    if not delta_down or not delta_up:
         return
-    for ib in range(1, valid[0].GetNbinsX() + 1):
-        values = [float(h.GetBinContent(ib)) for h in valid]
-        mean = sum(values) / float(len(values))
-        variance = sum((value - mean) ** 2 for value in values) / float(len(values) - 1)
-        sigma = math.sqrt(max(0.0, variance))
-        up2[ib - 1] += sigma * sigma
+    n = min(delta_down.GetNbinsX(), delta_up.GetNbinsX(), len(down2), len(up2))
+    for ib in range(1, n + 1):
+        sigma = max(
+            abs(float(delta_down.GetBinContent(ib))),
+            abs(float(delta_up.GetBinContent(ib))),
+        )
         down2[ib - 1] += sigma * sigma
+        up2[ib - 1] += sigma * sigma
+
+
+def hessian_sigma_hist(nominal, variations: Sequence[object], name_prefix: str):
+    # sqrt(sum_i (variation_i - nominal)^2), bin by bin.
+    if not nominal:
+        return None
+    valid = [h for h in variations if h]
+    if not valid:
+        return None
+    out = nominal.Clone(_NAMES.unique(name_prefix))
+    out.SetDirectory(0)
+    out.Reset("ICESM")
+    for ib in range(1, nominal.GetNbinsX() + 1):
+        nom = float(nominal.GetBinContent(ib))
+        sigma2 = 0.0
+        for varied in valid:
+            delta = float(varied.GetBinContent(ib)) - nom
+            sigma2 += delta * delta
+        out.SetBinContent(ib, math.sqrt(max(0.0, sigma2)))
+        out.SetBinError(ib, 0.0)
+    return out
+
+
+def add_positive_sigma_hist_shift(
+    sigma_hist,
+    down2: List[float],
+    up2: List[float],
+) -> None:
+    if not sigma_hist:
+        return
+    for ib in range(1, sigma_hist.GetNbinsX() + 1):
+        sigma = abs(float(sigma_hist.GetBinContent(ib)))
+        down2[ib - 1] += sigma * sigma
+        up2[ib - 1] += sigma * sigma
 
 
 def make_delta_hist(varied, nominal, name_prefix: str):
@@ -1235,13 +1282,75 @@ def _scaled_delta(nominal, factor: float, name_prefix: str):
     return out
 
 
-def _background_theory_uncertainty(
+def _load_indexed_theory_variations(
     ROOT,
     cfg: Config,
     years: Sequence[str],
     proc: str,
     nominal_by_year: Dict[str, Dict[str, object]],
-    nominal_total,
+    edges: Sequence[float],
+    scale: float,
+    prefix: str,
+    count: int,
+    source_label: str,
+    summary: List[str],
+    errors: List[str],
+) -> List[object]:
+    variations: List[object] = []
+    found = 0
+    missing: List[str] = []
+
+    for idx in range(count):
+        parts: List[object] = []
+        for year in years:
+            nominal = nominal_by_year.get(year, {}).get(proc)
+            h_var = prepare_year_hist(
+                ROOT,
+                cfg,
+                year,
+                proc,
+                -1.0,
+                edges,
+                scale,
+                [],
+                syst_suffix=f"{prefix}{idx}",
+                syst_subdir="RunXSecSyst",
+                report_missing=False,
+            )
+            if h_var:
+                parts.append(h_var)
+                found += 1
+            else:
+                missing.append(f"{year}/{prefix}{idx}")
+                if nominal:
+                    fallback = nominal.Clone(
+                        _NAMES.unique(f"{source_label}_{proc}_{year}_{idx}_nominal")
+                    )
+                    fallback.SetDirectory(0)
+                    parts.append(fallback)
+
+        combined = sum_hists(parts, f"{source_label}_{proc}_{idx}_combined")
+        if combined:
+            variations.append(combined)
+
+    _record_indexed_status(
+        summary,
+        errors,
+        source_label,
+        proc,
+        found,
+        len(years) * count,
+        missing,
+    )
+    return variations
+
+
+def _generator_theory_uncertainty(
+    ROOT,
+    cfg: Config,
+    years: Sequence[str],
+    bkg_nom: Dict[str, object],
+    nominal_by_year: Dict[str, Dict[str, object]],
     edges: Sequence[float],
     scale: float,
     down2: List[float],
@@ -1249,57 +1358,79 @@ def _background_theory_uncertainty(
     summary: List[str],
     errors: List[str],
 ) -> None:
-    for source, (prefix, count, method) in BACKGROUND_THEORY_SOURCES.items():
-        variations: List[object] = []
-        found = 0
-        missing: List[str] = []
+    # PDF: NNPDF31 symmetric-Hessian quadrature.  One PDF nuisance is shared
+    # by tt and ST, so their positive 1-sigma responses add linearly first.
+    pdf_sigma_parts: List[object] = []
+    for proc in THEORY_PROCESSES:
+        nominal = bkg_nom.get(proc)
+        if not nominal:
+            continue
+        variations = _load_indexed_theory_variations(
+            ROOT, cfg, years, proc, nominal_by_year, edges, scale,
+            PDF_ERROR_PREFIX, PDF_ERROR_COUNT, "PDF_error", summary, errors,
+        )
+        sigma_hist = hessian_sigma_hist(
+            nominal, variations, f"pdf_hessian_sigma_{proc}"
+        )
+        if sigma_hist:
+            pdf_sigma_parts.append(sigma_hist)
 
-        for idx in range(count):
-            parts: List[object] = []
-            for year in years:
-                nominal = nominal_by_year.get(year, {}).get(proc)
-                h_var = prepare_year_hist(
-                    ROOT,
-                    cfg,
-                    year,
-                    proc,
-                    -1.0,
-                    edges,
-                    scale,
-                    [],
-                    syst_suffix=f"{prefix}{idx}",
-                    syst_subdir="RunXSecSyst",
-                    report_missing=False,
-                )
-                if h_var:
-                    parts.append(h_var)
-                    found += 1
-                else:
-                    missing.append(f"{year}/{prefix}{idx}")
-                    if nominal:
-                        fallback = nominal.Clone(
-                            _NAMES.unique(f"{source}_{proc}_{year}_{idx}_nominal")
-                        )
-                        fallback.SetDirectory(0)
-                        parts.append(fallback)
-            combined = sum_hists(parts, f"{source}_{proc}_{idx}_combined")
-            if combined:
-                variations.append(combined)
+    add_positive_sigma_hist_shift(
+        sum_hists(pdf_sigma_parts, "pdf_hessian_shared_tt_ST"),
+        down2,
+        up2,
+    )
 
-        _record_indexed_status(
-            summary,
-            errors,
-            source,
-            proc,
-            found,
-            len(years) * count,
-            missing,
+    # alpha_s: one shared nuisance across tt and ST.
+    alphas_down_parts: List[object] = []
+    alphas_up_parts: List[object] = []
+    for proc in THEORY_PROCESSES:
+        nominal = bkg_nom.get(proc)
+        if not nominal:
+            continue
+        variations = _load_indexed_theory_variations(
+            ROOT, cfg, years, proc, nominal_by_year, edges, scale,
+            ALPHAS_PREFIX, 2, "PDF_alphas", summary, errors,
+        )
+        if len(variations) < 2:
+            continue
+        alphas_down_parts.append(
+            make_delta_hist(variations[ALPHAS_PAIR[0]], nominal, f"alphas_{proc}_down")
+        )
+        alphas_up_parts.append(
+            make_delta_hist(variations[ALPHAS_PAIR[1]], nominal, f"alphas_{proc}_up")
         )
 
-        if method == "rms":
-            add_replica_rms_shift(variations, down2, up2)
-        else:
-            add_variation_envelope_shift(nominal_total, variations, down2, up2)
+    add_delta_pair_shift(
+        sum_hists(alphas_down_parts, "alphas_shared_down"),
+        sum_hists(alphas_up_parts, "alphas_shared_up"),
+        down2,
+        up2,
+    )
+
+    # Scale: audit all nine members, use only process-specific muF/muR pairs.
+    for proc in THEORY_PROCESSES:
+        nominal = bkg_nom.get(proc)
+        if not nominal:
+            continue
+        variations = _load_indexed_theory_variations(
+            ROOT, cfg, years, proc, nominal_by_year, edges, scale,
+            SCALE_PREFIX, SCALE_COUNT, "PDF_scale", summary, errors,
+        )
+        if len(variations) < SCALE_COUNT:
+            continue
+        for direction, (down_idx, up_idx) in SCALE_PAIRS.items():
+            delta_down = make_delta_hist(
+                variations[down_idx], nominal, f"scale_{direction}_{proc}_down"
+            )
+            delta_up = make_delta_hist(
+                variations[up_idx], nominal, f"scale_{direction}_{proc}_up"
+            )
+            add_delta_pair_shift(delta_down, delta_up, down2, up2)
+            summary.append(
+                f"QCDscale_{direction}/{proc}: OK "
+                f"(PDFScale{down_idx}/PDFScale{up_idx}; correlated across eras)"
+            )
 
 
 def bkg_syst_uncertainty(
@@ -1481,7 +1612,9 @@ def bkg_syst_uncertainty(
         for proc in exp_processes:
             _record_pair_status(summary, errors, syst_name, proc, missing_by_proc[proc])
 
-    # Data-driven QCD fit normalisation/shape nuisances are independent by era.
+    # Data-driven QCD nuisances are independent by era.
+    # QCD_norm remains the ordinary pair.  QCD_shape follows the final additive
+    # absolute-yield Gaussian: sigma=max(|down-nom|, |up-nom|), symmetrically.
     if not use_qcd_mc(cfg):
         for syst_name, (down_suffix, up_suffix) in QCD_SYST.items():
             missing_by_year: Dict[str, List[str]] = {}
@@ -1503,16 +1636,20 @@ def bkg_syst_uncertainty(
                     missing_by_year[year] = missing
                 h_down = h_down or nominal
                 h_up = h_up or nominal
-                add_delta_pair_shift(
-                    make_delta_hist(h_down, nominal, f"{syst_name}_{year}_down_delta"),
-                    make_delta_hist(h_up, nominal, f"{syst_name}_{year}_up_delta"),
-                    down2,
-                    up2,
+
+                delta_down = make_delta_hist(
+                    h_down, nominal, f"{syst_name}_{year}_down_delta"
                 )
+                delta_up = make_delta_hist(
+                    h_up, nominal, f"{syst_name}_{year}_up_delta"
+                )
+                if syst_name == "QCD_shape":
+                    add_symmetric_delta_pair_shift(delta_down, delta_up, down2, up2)
+                else:
+                    add_delta_pair_shift(delta_down, delta_up, down2, up2)
             _record_pair_status(summary, errors, syst_name, "QCD", missing_by_year)
 
-    # Data-driven DY has both TF and light-jet-statistical template pairs.
-    if not use_dy_mc(cfg):
+    # Final data-driven DY uses constant NF; TFDown/TFUp are DY_NFStat,\n    # together with the independent DY_LightJetStat pair.\n    if not use_dy_mc(cfg):
         for syst_name, (down_suffix, up_suffix) in DY_SYST.items():
             missing_by_year: Dict[str, List[str]] = {}
             for year in years:
@@ -1541,48 +1678,20 @@ def bkg_syst_uncertainty(
                 )
             _record_pair_status(summary, errors, syst_name, "DY", missing_by_year)
 
-    # Generator PDF/scale/alphaS sources are produced only for tt/ST/Others.
-    for proc in exp_processes:
-        nominal_total = bkg_nom.get(proc)
-        if nominal_total:
-            _background_theory_uncertainty(
-                ROOT,
-                cfg,
-                years,
-                proc,
-                bkg_nom_by_year,
-                nominal_total,
-                edges,
-                scale,
-                down2,
-                up2,
-                summary,
-                errors,
-            )
-
-    # tt inclusive cross-section normalisation, common across all eras.
-    if bkg_nom.get("tt"):
-        add_symmetric_hist_shift(bkg_nom["tt"], TT_XSEC_REL, down2, up2)
-        summary.append("tt_xsec/tt: OK (correlated across eras)")
-
-    # tW cross-section uncertainty applies only to the tW subset of ST.
-    tw_parts: List[object] = []
-    missing_tw: List[str] = []
-    for year in years:
-        h_tw = prepare_year_hist(ROOT, cfg, year, "tW", -1.0, edges, scale, warnings, report_missing=False)
-        if h_tw:
-            tw_parts.append(h_tw)
-        else:
-            missing_tw.append(year)
-    h_tw_total = sum_hists(tw_parts, "tW_nominal_combined")
-    if h_tw_total:
-        add_symmetric_hist_shift(h_tw_total, TW_XSEC_REL, down2, up2)
-    if missing_tw:
-        detail = ", ".join(missing_tw)
-        summary.append(f"tW_xsec/tW: MISSING ({detail})")
-        errors.append(f"Missing nominal NIsoMuon_tW.root for era(s): {detail}")
-    else:
-        summary.append("tW_xsec/tW: OK (correlated across eras)")
+    # Final generator theory: tt/ST only.  No generic tt_xsec or ST_xsec.
+    _generator_theory_uncertainty(
+        ROOT,
+        cfg,
+        years,
+        bkg_nom,
+        bkg_nom_by_year,
+        edges,
+        scale,
+        down2,
+        up2,
+        summary,
+        errors,
+    )
 
     # One common tt-mass nuisance; 13 and 13.6 TeV use their corresponding
     # Top++ response factors, but the nuisance direction is shared.
@@ -2506,13 +2615,16 @@ Examples:
 
 Systematic treatment:
   * --uncertainty stat-only (default) never opens RunSyst/ or RunXSecSyst/
-  * --uncertainty syst+stat enables the full systematic machinery
-  * data-driven DY uses TFDown/TFUp and LightJetStatDown/Up templates
+  * --uncertainty syst+stat follows the final limit_workflow.py nuisance model
+  * data-driven QCD: QCD_norm + symmetric absolute QCD_shape; no QCD_stat
+  * data-driven DY: constant NF + DY_NFStat(TFDown/Up) + DY_LightJetStat; no DY_stat
   * JER/JES/PU/muon and BTV-uncorrelated sources are independent between eras
+  * L1 prefiring is era-specific for 2016pre/postVFP, 2017, and 2018
   * BTV correlated sources are shared within Run2 and within Run3
-  * RunXSecSyst PDF/scale/alphaS is evaluated for tt/ST/Others only
-  * tt_xsec, tW_xsec and tt_mass are propagated as normalisation nuisances
-  * 2016preVFP and 2016postVFP share the 2016 luminosity source
+  * generator theory is tt/ST only: symmetric-Hessian PDF, shared alphaS,
+    and separate process-specific muF/muR nuisances; no 7-point scale envelope
+  * generic tt_xsec and ST_xsec nuisances are disabled; tt_mass is retained
+  * 2016pre/post share luminosity; 2022/2022EE share; 2023/2023BPix share
   * signal is drawn nominal-only; signal RunXSecSyst is not produced
 
 No-argument behaviour:
@@ -2586,7 +2698,6 @@ No-argument behaviour:
     parser.add_argument("--dy-mc-file", default="NIsoMuon_DYJets_Inclusive.root")
     parser.add_argument("--tt-file", default="NIsoMuon_tt.root")
     parser.add_argument("--st-file", default="NIsoMuon_ST.root")
-    parser.add_argument("--tw-file", default="NIsoMuon_tW.root")
     parser.add_argument("--others-file", default="NIsoMuon_Others.root")
 
     parser.add_argument("--blind-low", type=float, default=10.4, help="lower edge of dimuon-mass blind interval; default: 10.4 GeV")
@@ -2668,7 +2779,6 @@ def config_from_args(args: argparse.Namespace) -> Config:
         dy_mc_file=args.dy_mc_file,
         tt_file=args.tt_file,
         st_file=args.st_file,
-        tw_file=args.tw_file,
         others_file=args.others_file,
         divide_by_bin_width=args.divide_by_bin_width,
         output_dir=args.output_dir,
