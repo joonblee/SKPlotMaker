@@ -4,8 +4,9 @@
 Unified PyROOT plotter for NIsoMuon dimuon-mass and object-validation distributions.
 
 Revision 2 updates:
-  - reads the data-driven DY transfer-factor uncertainty from TFDown/TFUp
-    templates in RunSyst/NIsoMuon_DYJets_est.root
+  - for the dimuon-mass data-driven DY estimate, reads LightJetStat from the
+    nominal histogram Sumw2 errors and NFStat/NFModel from DYAux metadata in
+    NIsoMuon_DYJets_est.root; no NF-mode DY RunSyst templates are required
   - checks every required systematic variation separately for each applicable
     process and selected era; --strict aborts when any required template is missing
   - propagates Run-2 correlations explicitly: experimental and data-driven
@@ -137,13 +138,12 @@ QCD_SYST: Dict[str, Tuple[str, str]] = {
     "QCD_shape": ("ShapeDown", "ShapeUp"),
 }
 
-# In the final constant-NF DY model the ROOT producer retains the historical
-# TFDown/TFUp directory names, but those templates represent the NF
-# numerator-statistics nuisance, not an alternative TF central model.
-DY_SYST: Dict[str, Tuple[str, str]] = {
-    "DY_NFStat": ("TFDown", "TFUp"),
-    "DY_LightJetStat": ("LightJetStatDown", "LightJetStatUp"),
-}
+# Primitive NF metadata written by dy_bkg_estimation.py.  In NF mode the
+# nominal DY histogram bin errors contain only LightJetStat.  NFStat and the
+# aMC@NLO-vs-MG modelling uncertainty are read from these scalar objects.
+DY_AUX_NF_AMC_PATH = "DYAux/NF_aMC"
+DY_AUX_NF_MG_PATH = "DYAux/NF_MG"
+DY_AUX_NF_MODEL_PATH = "DYAux/NFModelRel"
 
 # Final generator-theory model used by limit_workflow.py.
 THEORY_PROCESSES: Tuple[str, ...] = ("tt", "ST")
@@ -187,7 +187,7 @@ class Config:
     blind: bool = False
     blind_point_mode: str = "data"  # data, asimov, toy
     toy_seed: int = 37829
-    blind_low: float = 10.4
+    blind_low: float = 11.
     blind_high: float = 80.0
     blind_visible_data_max: float = 9.0
 
@@ -461,7 +461,7 @@ def process_label(cfg: Config) -> Dict[str, str]:
         "QCD": "QCD" if use_qcd_mc(cfg) else "QCD (SS data-driven)",
         "tt": "t#bar{t}",
         "ST": "single top",
-        "DY": "DY" if use_dy_mc(cfg) else "DY (light-jet data-driven)",
+        "DY": "DY" if use_dy_mc(cfg) else "DY (light-jet data #times aMC NF)",
         "Others": "Others",
     }
 
@@ -1023,12 +1023,11 @@ def bkg_stat_uncertainty(cfg: Config, bkg: Dict[str, object]) -> Uncertainty:
 
     for proc, h in bkg.items():
         # The fitted data-driven QCD template is controlled by QCD_norm and
-        # QCD_shape, not by its stored TH1 bin errors.  Likewise, the final
-        # constant-NF DY model uses DY_NFStat and DY_LightJetStat and explicitly
-        # has no generic DY_stat term.
+        # QCD_shape, not by its stored TH1 bin errors.  For data-driven DY, the
+        # nominal TH1 errors intentionally contain only the background-subtracted
+        # light-jet data statistical component (LightJetStat), so DY remains in
+        # this statistical band.  NFStat/NFModel are added separately below.
         if proc == "QCD" and not use_qcd_mc(cfg):
-            continue
-        if proc == "DY" and not use_dy_mc(cfg):
             continue
         for ib in range(1, n + 1):
             err = h.GetBinError(ib)
@@ -1057,6 +1056,16 @@ def add_symmetric_hist_shift(h, rel: float, down2: List[float], up2: List[float]
         return
     for ib in range(1, h.GetNbinsX() + 1):
         delta = abs(rel * h.GetBinContent(ib))
+        up2[ib - 1] += delta * delta
+        down2[ib - 1] += delta * delta
+
+
+def add_symmetric_delta_hist(h_delta, down2: List[float], up2: List[float]) -> None:
+    """Add one already-constructed symmetric absolute shift histogram."""
+    if not h_delta:
+        return
+    for ib in range(1, h_delta.GetNbinsX() + 1):
+        delta = abs(float(h_delta.GetBinContent(ib)))
         up2[ib - 1] += delta * delta
         down2[ib - 1] += delta * delta
 
@@ -1649,35 +1658,78 @@ def bkg_syst_uncertainty(
                     add_delta_pair_shift(delta_down, delta_up, down2, up2)
             _record_pair_status(summary, errors, syst_name, "QCD", missing_by_year)
 
-    # Final data-driven DY uses constant NF; TFDown/TFUp are DY_NFStat,\n    # together with the independent DY_LightJetStat pair.\n    if not use_dy_mc(cfg):
-        for syst_name, (down_suffix, up_suffix) in DY_SYST.items():
-            missing_by_year: Dict[str, List[str]] = {}
-            for year in years:
-                nominal = bkg_nom_by_year.get(year, {}).get("DY")
-                h_down = prepare_year_hist(
-                    ROOT, cfg, year, "DY", -1.0, edges, scale, warnings,
-                    syst_suffix=down_suffix, report_missing=False,
-                )
-                h_up = prepare_year_hist(
-                    ROOT, cfg, year, "DY", -1.0, edges, scale, warnings,
-                    syst_suffix=up_suffix, report_missing=False,
-                )
-                missing = _missing_pair_sides(h_down, h_up)
-                if not nominal:
-                    missing_by_year[year] = ["Nominal"]
-                    continue
-                if missing:
-                    missing_by_year[year] = missing
-                h_down = h_down or nominal
-                h_up = h_up or nominal
-                add_delta_pair_shift(
-                    make_delta_hist(h_down, nominal, f"{syst_name}_{year}_down_delta"),
-                    make_delta_hist(h_up, nominal, f"{syst_name}_{year}_up_delta"),
-                    down2,
-                    up2,
-                )
-            _record_pair_status(summary, errors, syst_name, "DY", missing_by_year)
+    # Data-driven DY NF-mode uncertainties.
+    #
+    # LightJetStat is already contained in the nominal DY histogram bin errors
+    # and therefore in bkg_stat_uncertainty().  NFStat is independent by era.
+    # NFModel is the symmetric aMC@NLO-vs-MG NF difference, treated as one
+    # coherent nuisance within Run 2 and one coherent nuisance within Run 3.
+    if not use_dy_mc(cfg):
+        model_delta_by_group: Dict[str, List[object]] = {"Run2": [], "Run3": []}
+        nf_errors: List[str] = []
 
+        for year in years:
+            nominal = bkg_nom_by_year.get(year, {}).get("DY")
+            filename = os.path.join(
+                root_dir_for_year(cfg, year), cfg.dy_data_driven_file
+            )
+            h_amc, err_amc = read_hist(ROOT, filename, DY_AUX_NF_AMC_PATH)
+            h_mg, err_mg = read_hist(ROOT, filename, DY_AUX_NF_MG_PATH)
+
+            if not nominal:
+                nf_errors.append(f"{year}: missing nominal DY")
+                continue
+            if err_amc or not h_amc:
+                nf_errors.append(f"{year}: {err_amc or 'missing NF_aMC'}")
+                continue
+            if err_mg or not h_mg:
+                nf_errors.append(f"{year}: {err_mg or 'missing NF_MG'}")
+                continue
+
+            nf_amc = float(h_amc.GetBinContent(1))
+            nf_amc_error = abs(float(h_amc.GetBinError(1)))
+            nf_mg = float(h_mg.GetBinContent(1))
+            if nf_amc <= 0.0 or not math.isfinite(nf_amc):
+                nf_errors.append(f"{year}: invalid NF_aMC={nf_amc}")
+                continue
+            if nf_mg <= 0.0 or not math.isfinite(nf_mg):
+                nf_errors.append(f"{year}: invalid NF_MG={nf_mg}")
+                continue
+
+            # aMC finite-MC statistical uncertainty: independent era by era.
+            rel_stat = nf_amc_error / nf_amc
+            add_symmetric_hist_shift(nominal, rel_stat, down2, up2)
+            summary.append(
+                f"DY_NFStat/DY/{year}: OK (rel={rel_stat:.4g})"
+            )
+
+            # Generator modelling: same nuisance direction within each run,
+            # while its response magnitude may differ by era.
+            rel_model = abs(nf_mg / nf_amc - 1.0)
+            delta = nominal.Clone(_NAMES.unique(f"DY_NFModel_{year}"))
+            delta.SetDirectory(0)
+            delta.Scale(rel_model)
+            model_delta_by_group[run_group(year)].append(delta)
+            summary.append(
+                f"DY_NFModel/DY/{year}: OK (rel={rel_model:.4g})"
+            )
+
+        for group, pieces in model_delta_by_group.items():
+            if not pieces:
+                continue
+            add_symmetric_delta_hist(
+                sum_hists(pieces, f"DY_NFModel_{group}_delta"), down2, up2
+            )
+            summary.append(f"DY_NFModel/DY/{group}: correlated across group")
+
+        if nf_errors:
+            detail = "; ".join(nf_errors)
+            errors.append(
+                "Missing/invalid data-driven DY NF metadata: " + detail
+            )
+            summary.append("DY_NF_metadata/DY: MISSING (" + detail + ")")
+        else:
+            summary.append("DY_NF_metadata/DY: OK")
     # Final generator theory: tt/ST only.  No generic tt_xsec or ST_xsec.
     _generator_theory_uncertainty(
         ROOT,
@@ -2700,7 +2752,7 @@ No-argument behaviour:
     parser.add_argument("--st-file", default="NIsoMuon_ST.root")
     parser.add_argument("--others-file", default="NIsoMuon_Others.root")
 
-    parser.add_argument("--blind-low", type=float, default=10.4, help="lower edge of dimuon-mass blind interval; default: 10.4 GeV")
+    parser.add_argument("--blind-low", type=float, default=11., help="lower edge of dimuon-mass blind interval; default: 11 GeV")
     parser.add_argument("--blind-high", type=float, default=80.0, help="upper edge of dimuon-mass blind interval; default: 80 GeV")
     parser.add_argument("--blind-visible-data-max", type=float, default=9.0)
     parser.add_argument("--toy-seed", type=int, default=37829)

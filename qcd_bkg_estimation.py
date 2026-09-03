@@ -43,7 +43,7 @@ Fit modes and objectives
   --mode qcd-mc
       Fits the QCD MC shape.  --fit-objective auto selects ROOT weighted
       likelihood; chi2 and log-chi2 are available as cross-checks.
-The interval 9 < m(mumu) < 10.4 GeV is excluded from every QCD-MC fit objective
+The interval 9 < m(mumu) < 11 GeV is excluded from every QCD-MC fit objective
 and diagnostic.
 
 Required option
@@ -165,7 +165,7 @@ SS_REGION = "SS_POGMedium_tight_BJet_NIsoDimuon"
 OS_REGION = "OS_POGMedium_tight_BJet_NIsoDimuon"
 HIST_NAME = "Dilepton_Mass"
 
-QCD_FIT_EXCLUDED_RANGES: Tuple[Tuple[float, float], ...] = ((9.0, 10.4),)
+QCD_FIT_EXCLUDED_RANGES: Tuple[Tuple[float, float], ...] = ((9.0, 11.),)
 TAIL_DIAGNOSTIC_MIN = 20.0
 
 
@@ -1023,7 +1023,7 @@ def make_variable_binning(mode: ModeConfig) -> List[float]:
         tail_edges = (15.0, 16.0, 17.0, 19.0, 21.0, 30.0, 40.0, 50.0, 100.0)
     else:
         segments = (
-            (0.0, 9.0, 0.1), (9.0, 10.4, 0.2), (10.4, 11.0, 0.6),
+            (0.0, 9.0, 0.1), (9.0, 11., 0.2),
             (11.0, 20.0, 0.5), (20.0, 40.0, 2.0), (40.0, 70.0, 5.0),
         )
         tail_edges = (70.0, 80.0, 90.0, 100.0)
@@ -1111,7 +1111,7 @@ def yields_agree(a: float, b: float) -> bool:
 
 def prepare_histograms(ROOT, source_hist, mode: ModeConfig, rebin_factor: int) -> PreparedHistograms:
     base_edges = make_variable_binning(mode)
-    protected = (9.0, 10.4) if mode.key == QCD_MODE.key else ()
+    protected = (9.0, 11.) if mode.key == QCD_MODE.key else ()
     final_edges = merge_adjacent_bin_edges(base_edges, rebin_factor, protected)
 
     base_source = source_hist.Clone(_NAMES.unique("base_rebin_source"))
@@ -1246,7 +1246,7 @@ def build_fit_data(ROOT, prepared: PreparedHistograms, mode: ModeConfig, objecti
         # Preserve the original SS-data fitting path exactly: fit the smooth
         # density function and let ROOT's I option perform the bin integration.
         # The explicit bin-average wrapper remains useful for QCD MC, where the
-        # 9--10.4 GeV veto interval must be rejected bin by bin.
+        # 9--11. GeV veto interval must be rejected bin by bin.
         options = "S R I Q 0 N" if mode.key == SS_MODE.key else "S R Q 0 N"
         return FitData(objective, prepared.density, options, n_points)
 
@@ -2505,7 +2505,7 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
             "[fit.root] Shape-envelope models = "
             + ", ".join(model_labels[key] for key in SS_SHAPE_ALTERNATIVES)
         )
-        allowed_ranges = ((5.0, 9.0), (10.4, 80.0))
+        allowed_ranges = ((5.0, 9.0), (11., 80.0))
 
         run_syst = era_dir(args, args.year, "RunSyst")
         run_syst.mkdir(parents=True, exist_ok=True)

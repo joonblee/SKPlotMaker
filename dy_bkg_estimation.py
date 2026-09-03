@@ -36,9 +36,12 @@ In NF mode only the one-dimensional Dilepton_Mass histogram is required.
 The Dilepton_Mass_<parameter> two-dimensional histogram is used only when
 --method tf is explicitly requested.
 
-The fixed NF windows are 5 < m < 9 GeV for background-subtracted data and
-10.4 < m < 80 GeV for the DY-MC closure test.  The script writes the central
-NIsoMuon_DYJets_est.root and TF/LightJetStat templates under RunSyst/.
+In the default NF mode, the production normalization factor is measured from
+DY simulation in 11 < m < 80 GeV.  The aMC@NLO sample defines the central NF
+and the MG LO sample defines the generator-modelling variation.  The final DY
+prediction is the background-subtracted light-jet data distribution multiplied
+by the aMC@NLO NF.  The nominal NIsoMuon_DYJets_est.root additionally stores
+the primitive pre-NF light-jet source and NF metadata under DYAux/.
 
 Required option
 ---------------
@@ -99,15 +102,26 @@ VALID_ERAS = list(ERA_GROUPS.keys())
 DEFAULT_BASE_DIR = "/data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon"
 PLOT_DIR = "/data6/Users/joonblee/PlotMaker/plots"
 
-# Edit these values directly if either constant-NF normalisation window is changed.
-# No command-line option is intentionally provided for these windows.
-NF_MASS_WINDOW = (5.0, 9.0)          # Data - background MC
-DY_MC_NF_MASS_WINDOW = (10.4, 80.0)  # DY MC and DY + Z' MC closure tests
+# Constant MC-NF extraction window.  Both aMC@NLO (central) and MG LO
+# (alternative model) use exactly the same reconstructed-mass interval.
+# 11 GeV is intentionally above the m(ll)>10 GeV generation threshold.
+DY_MC_NF_MASS_WINDOW = (11.0, 80.0)
 
-# CMS-style nuisance labels used in the output ROOT directory names.
+# Legacy TF-mode nuisance labels.  NF mode no longer writes Up/Down templates;
+# it writes primitive statistical inputs under DYAux instead.
 TF_SYST_NAME = "TF"
 NF_SYST_NAME = "TF"
 LIGHTJET_STAT_SYST_NAME = "LightJetStat"
+
+DY_AMC_DEFAULT_FILE = "NIsoMuon_DYJets_Inclusive.root"
+DY_MG_DEFAULT_FILE = "NIsoMuon_DYJets_MG_Inclusive.root"
+DY_AUX_DIR = "DYAux"
+DY_AUX_SOURCE_HIST = "LightJetSource"
+DY_AUX_NF_AMC_HIST = "NF_aMC"
+DY_AUX_NF_MG_HIST = "NF_MG"
+DY_AUX_NF_MODEL_HIST = "NFModelRel"
+DY_AUX_NF_AMC_INPUTS_HIST = "NFInputs_aMC"
+DY_AUX_NF_MG_INPUTS_HIST = "NFInputs_MG"
 
 DEFAULT_MASS_BINS = [
     0.0, 0.5, 1.0, 1.5, 2.0, 2.5,
@@ -551,6 +565,20 @@ class EstimateResult:
     factor_error: float = math.nan
 
 
+@dataclass
+class NFFactorResult:
+    """One constant B-jet/light-jet MC normalization-factor measurement."""
+
+    value: float
+    error: float
+    b_yield: float
+    b_error: float
+    l_yield: float
+    l_error: float
+    window_low: float
+    window_high: float
+
+
 def _empty_mass_histogram(h2_source, name: str):
     out = h2_source.ProjectionX(name)
     out.Reset()
@@ -585,6 +613,89 @@ def _integral_and_error_in_open_range(hist, x_min: float, x_max: float) -> Tuple
         error = float(hist.GetBinError(ibin))
         variance += error * error
     return total, math.sqrt(max(0.0, variance))
+
+
+def measure_nf(
+    h_b_mass_input,
+    h_l_mass_input,
+    name: str,
+    norm_window: Tuple[float, float],
+) -> NFFactorResult:
+    """Measure B/L in one MC sample and propagate the full finite-MC error."""
+    if h_b_mass_input.InheritsFrom("TH2") or h_l_mass_input.InheritsFrom("TH2"):
+        raise TypeError(f"[ERROR] {name}: NF measurement expects one-dimensional histograms.")
+    assert_same_1d_binning(
+        h_b_mass_input, h_l_mass_input, f"{name} B-jet", f"{name} Light-jet"
+    )
+    low, high = norm_window
+    b_yield, b_error = _integral_and_error_in_open_range(h_b_mass_input, low, high)
+    l_yield, l_error = _integral_and_error_in_open_range(h_l_mass_input, low, high)
+    if b_yield <= 0.0 or l_yield <= 0.0:
+        raise ValueError(
+            f"[ERROR] Cannot derive {name} NF in {low:g} < m < {high:g} GeV: "
+            f"B={b_yield:g}, L={l_yield:g}."
+        )
+    nf = b_yield / l_yield
+    nf_error = math.sqrt(
+        (b_error / l_yield) ** 2
+        + (b_yield * l_error / (l_yield * l_yield)) ** 2
+    )
+    return NFFactorResult(
+        value=nf,
+        error=nf_error,
+        b_yield=b_yield,
+        b_error=b_error,
+        l_yield=l_yield,
+        l_error=l_error,
+        window_low=low,
+        window_high=high,
+    )
+
+
+def build_nf_prediction_from_source(
+    ROOT,
+    h_light_source,
+    factor: NFFactorResult,
+    name: str,
+) -> EstimateResult:
+    """Multiply a pre-NF light-jet source by an independently measured MC NF.
+
+    The central TH1 bin error contains only the source (LightJetStat) component.
+    NFStat and NFModel are intentionally NOT folded into these bin errors; they
+    are stored as separate DYAux metadata and profiled independently in Combine.
+    """
+    central = clone_hist(ROOT, h_light_source, name + "_central")
+    light_sigma = clone_hist(ROOT, h_light_source, name + "_light_sigma")
+    factor_down = clone_hist(ROOT, h_light_source, name + "_factor_down_unused")
+    factor_up = clone_hist(ROOT, h_light_source, name + "_factor_up_unused")
+
+    for ix in range(0, h_light_source.GetNbinsX() + 2):
+        source = float(h_light_source.GetBinContent(ix))
+        source_error = abs(float(h_light_source.GetBinError(ix)))
+        prediction = source * factor.value
+        sigma_light = source_error * abs(factor.value)
+
+        central.SetBinContent(ix, prediction)
+        central.SetBinError(ix, sigma_light)
+        light_sigma.SetBinContent(ix, sigma_light)
+        light_sigma.SetBinError(ix, 0.0)
+        factor_down.SetBinContent(ix, prediction)
+        factor_down.SetBinError(ix, 0.0)
+        factor_up.SetBinContent(ix, prediction)
+        factor_up.SetBinError(ix, 0.0)
+
+    light_down, light_up = _make_binwise_variations(
+        ROOT, central, light_sigma, name + "_lightjet_stat"
+    )
+    return EstimateResult(
+        central=central,
+        factor_down=factor_down,
+        factor_up=factor_up,
+        lightjet_stat_down=light_down,
+        lightjet_stat_up=light_up,
+        factor_value=factor.value,
+        factor_error=factor.error,
+    )
 
 
 def apply_2d_tf(ROOT, h2_source, h_tf, name: str) -> Any:
@@ -1044,42 +1155,54 @@ def _systematic_region(reg_b: str, syst_name: str, direction: str) -> str:
     )
 
 
+def _write_nf_scalar(ROOT, directory, name: str, value: float, error: float = 0.0):
+    directory.cd()
+    h = ROOT.TH1D(name, "", 1, 0.0, 1.0)
+    h.SetDirectory(0)
+    h.SetBinContent(1, float(value))
+    h.SetBinError(1, float(error))
+    h.GetXaxis().SetBinLabel(1, name)
+    h.Write(name)
+    return h
+
+
+def _write_nf_inputs(ROOT, directory, name: str, result: NFFactorResult) -> None:
+    labels_values = [
+        ("BJetYield", result.b_yield),
+        ("BJetError", result.b_error),
+        ("LightJetYield", result.l_yield),
+        ("LightJetError", result.l_error),
+        ("WindowLow", result.window_low),
+        ("WindowHigh", result.window_high),
+    ]
+    directory.cd()
+    h = ROOT.TH1D(name, "", len(labels_values), 0.5, len(labels_values) + 0.5)
+    h.SetDirectory(0)
+    for ibin, (label, value) in enumerate(labels_values, start=1):
+        h.GetXaxis().SetBinLabel(ibin, label)
+        h.SetBinContent(ibin, float(value))
+        h.SetBinError(ibin, 0.0)
+    h.Write(name)
+
+
 def write_data_driven_root_outputs(
     ROOT,
     args,
     estimate: EstimateResult,
     reg_b: str,
+    *,
+    nf_source=None,
+    nf_amc=None,
+    nf_mg=None,
 ) -> None:
-    """Write central, factor-stat, and light-jet-stat templates.
+    """Write the final DY estimate.
 
-    For backward compatibility with the existing counting workflow, the
-    nominal histogram errors retain only the light-jet statistical component.
-    The TF/NF factor component is stored exclusively in its Up/Down templates.
-    An explicit ``DY_LightJetStat`` pair is also written for shape-based uses;
-    it must not be enabled simultaneously with a separate DY statistical
-    nuisance derived from the nominal histogram errors.
+    NF mode writes the final aMC-NF-scaled prediction in the historical B-jet
+    path for compatibility with plotter/qcd_bkg_estimation, plus primitive
+    inputs under DYAux.  No NF-mode DY Up/Down templates are written.
+
+    TF mode retains the historical RunSyst template output unchanged.
     """
-    factor_syst_name = TF_SYST_NAME if args.method == "tf" else NF_SYST_NAME
-    variations = [
-        (factor_syst_name, estimate.factor_down, estimate.factor_up),
-        (
-            LIGHTJET_STAT_SYST_NAME,
-            estimate.lightjet_stat_down,
-            estimate.lightjet_stat_up,
-        ),
-    ]
-
-    print("[INFO] Exporting 7500-bin DY estimate and separated systematic templates...")
-    print(
-        "[INFO] Output nuisance templates: "
-        f"{factor_syst_name}Down/Up, "
-        f"{LIGHTJET_STAT_SYST_NAME}Down/Up"
-    )
-    print(
-        "[INFO] Nominal TH1 errors contain the same light-jet statistical component; "
-        f"use either those errors (e.g. DY_stat/autoMCStats) or {LIGHTJET_STAT_SYST_NAME}, not both."
-    )
-
     def make_output(source, directory_name: str, clear_errors: bool = True):
         hist_name = f"Dilepton_Mass___{directory_name}"
         out = copy_to_full_mass_axis(ROOT, source, hist_name, "central")
@@ -1089,24 +1212,84 @@ def write_data_driven_root_outputs(
         return out
 
     dir_name_cent = reg_b
-    h_central_7500 = make_output(estimate.central, dir_name_cent, clear_errors=True)
 
+    if args.method == "nf":
+        if nf_source is None or nf_amc is None or nf_mg is None:
+            raise ValueError("[ERROR] NF output requires source, aMC NF and MG NF inputs.")
+        if nf_amc.value <= 0.0:
+            raise ValueError("[ERROR] aMC NF must be positive.")
+
+        # Retain LightJetStat in the central histogram bin errors.  NFStat and
+        # generator modelling are stored separately below.
+        h_central_7500 = make_output(estimate.central, dir_name_cent, clear_errors=False)
+        h_source_7500 = copy_to_full_mass_axis(
+            ROOT, nf_source, DY_AUX_SOURCE_HIST, "central"
+        )
+        zero_hist_range(h_source_7500, 9.0, 10.4)
+        h_source_7500.SetName(DY_AUX_SOURCE_HIST)
+        h_source_7500.SetTitle("")
+
+        model_rel = abs(nf_mg.value / nf_amc.value - 1.0)
+
+        out_dir_nominal = period_output_dir(args)
+        os.makedirs(out_dir_nominal, exist_ok=True)
+        out_path_nominal = os.path.join(out_dir_nominal, "NIsoMuon_DYJets_est.root")
+        f_out = ROOT.TFile.Open(out_path_nominal, "RECREATE")
+        if not f_out or f_out.IsZombie():
+            raise OSError(f"[ERROR] Could not create ROOT output: {out_path_nominal}")
+
+        f_out.mkdir(dir_name_cent).cd()
+        h_central_7500.Write()
+
+        f_out.cd()
+        aux = f_out.mkdir(DY_AUX_DIR)
+        aux.cd()
+        h_source_7500.Write(DY_AUX_SOURCE_HIST)
+        _write_nf_scalar(ROOT, aux, DY_AUX_NF_AMC_HIST, nf_amc.value, nf_amc.error)
+        _write_nf_scalar(ROOT, aux, DY_AUX_NF_MG_HIST, nf_mg.value, nf_mg.error)
+        _write_nf_scalar(ROOT, aux, DY_AUX_NF_MODEL_HIST, model_rel, 0.0)
+        _write_nf_inputs(ROOT, aux, DY_AUX_NF_AMC_INPUTS_HIST, nf_amc)
+        _write_nf_inputs(ROOT, aux, DY_AUX_NF_MG_INPUTS_HIST, nf_mg)
+        f_out.Close()
+
+        print(f"[SAVED] Exported aMC-NF DY prediction to: {out_path_nominal}")
+        print(
+            f"[SAVED] DYAux: NF_aMC={nf_amc.value:.8g} +/- {nf_amc.error:.8g}; "
+            f"NF_MG={nf_mg.value:.8g} +/- {nf_mg.error:.8g}; "
+            f"model |MG/aMC-1|={model_rel:.6g}"
+        )
+
+        # The new NF model does not consume DY RunSyst templates.  Remove a
+        # stale file from an older run so it cannot be mistaken for current input.
+        stale = os.path.join(
+            period_output_dir(args, "RunSyst"), "NIsoMuon_DYJets_est.root"
+        )
+        if os.path.exists(stale):
+            os.remove(stale)
+            print(f"[CLEAN] Removed stale NF-mode DY RunSyst file: {stale}")
+        return
+
+    # ------------------------------------------------------------------
+    # Legacy parameter-dependent TF mode: preserve the upstream behavior.
+    # ------------------------------------------------------------------
+    factor_syst_name = TF_SYST_NAME
+    variations = [
+        (factor_syst_name, estimate.factor_down, estimate.factor_up),
+        (
+            LIGHTJET_STAT_SYST_NAME,
+            estimate.lightjet_stat_down,
+            estimate.lightjet_stat_up,
+        ),
+    ]
+    h_central_7500 = make_output(estimate.central, dir_name_cent, clear_errors=True)
     output_variations = []
     for syst_name, h_down, h_up in variations:
         dir_down = _systematic_region(reg_b, syst_name, "Down")
         dir_up = _systematic_region(reg_b, syst_name, "Up")
         output_variations.append(
-            (
-                dir_down,
-                make_output(h_down, dir_down),
-                dir_up,
-                make_output(h_up, dir_up),
-            )
+            (dir_down, make_output(h_down, dir_down), dir_up, make_output(h_up, dir_up))
         )
 
-    # Retain only the light-jet statistical component in nominal TH1 errors.
-    # This preserves the existing DY_stat/IntegralAndError workflow while the
-    # factor uncertainty remains exclusive to TF or DY_NFStat templates.
     light_down_7500 = next(
         item[1] for item in output_variations
         if f"_Syst_{LIGHTJET_STAT_SYST_NAME}Down_" in item[0]
@@ -1124,34 +1307,26 @@ def write_data_driven_root_outputs(
     out_dir_nominal = period_output_dir(args)
     os.makedirs(out_dir_nominal, exist_ok=True)
     out_path_nominal = os.path.join(out_dir_nominal, "NIsoMuon_DYJets_est.root")
-
     f_out_nominal = ROOT.TFile.Open(out_path_nominal, "RECREATE")
     if not f_out_nominal or f_out_nominal.IsZombie():
         raise OSError(f"[ERROR] Could not create ROOT output: {out_path_nominal}")
     f_out_nominal.mkdir(dir_name_cent).cd()
     h_central_7500.Write()
     f_out_nominal.Close()
-    print(f"[SAVED] Exported 7500-bin central estimation to: {out_path_nominal}")
 
     out_dir_syst = period_output_dir(args, "RunSyst")
     os.makedirs(out_dir_syst, exist_ok=True)
     out_path_syst = os.path.join(out_dir_syst, "NIsoMuon_DYJets_est.root")
-
     f_out_syst = ROOT.TFile.Open(out_path_syst, "RECREATE")
     if not f_out_syst or f_out_syst.IsZombie():
         raise OSError(f"[ERROR] Could not create ROOT output: {out_path_syst}")
-
     f_out_syst.mkdir(dir_name_cent).cd()
     h_central_7500.Write()
     for dir_down, h_down, dir_up, h_up in output_variations:
-        f_out_syst.cd()
-        f_out_syst.mkdir(dir_down).cd()
-        h_down.Write()
-        f_out_syst.cd()
-        f_out_syst.mkdir(dir_up).cd()
-        h_up.Write()
+        f_out_syst.cd(); f_out_syst.mkdir(dir_down).cd(); h_down.Write()
+        f_out_syst.cd(); f_out_syst.mkdir(dir_up).cd(); h_up.Write()
     f_out_syst.Close()
-    print(f"[SAVED] Exported separated systematic templates to: {out_path_syst}")
+    print(f"[SAVED] Exported legacy TF systematic templates to: {out_path_syst}")
 
 # ==============================================================================
 # Plotting Routines
@@ -1273,7 +1448,7 @@ def draw_styled_plot(ROOT, targets: List[Tuple], preds: List[Tuple], ratios: Lis
     for h_line, label in pred_legend_entries: legend.AddEntry(h_line, label, "l")
     legend.Draw()
 
-    draw_text = f"TF Extraction ({tf_parameter_display(args.tf_param)})" if is_tf else "Kinematic Reweighting Closure Test"
+    draw_text = (f"TF Extraction ({tf_parameter_display(args.tf_param)})" if is_tf else ("Constant-NF Closure Test" if args.method == "nf" else "Kinematic Reweighting Closure Test"))
     draw_cms_text(ROOT, args.era, draw_text, extra_info)
 
     upper.SetTickx(); upper.SetTicky(); upper.RedrawAxis()
@@ -1379,7 +1554,7 @@ def draw_validation_plot(ROOT, args, folder, var_name, tf_bins, out_name, title_
         ("NIsoMuon_Others.root", color_Others, "Others"),
         ("NIsoMuon_Top.root", color_Top, "Top"),
         ("NIsoMuon_QCD_Inclusive.root", color_QCD, "QCD"),
-        ("NIsoMuon_DYJets_Inclusive.root", color_DY, "DY")
+        (args.dy_amc_file, color_DY, "DY")
     ]
 
     stack = ROOT.THStack(f"stack_val_{folder}_{out_name}", "")
@@ -1536,6 +1711,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional legacy trigger subdirectory; empty for SKOutput",
     )
     parser.add_argument("--base-dir", default=DEFAULT_BASE_DIR, help="Base directory")
+    parser.add_argument(
+        "--dy-amc-file", default=DY_AMC_DEFAULT_FILE,
+        help="Central aMC@NLO DY ROOT filename used to measure the NF",
+    )
+    parser.add_argument(
+        "--dy-mg-file", default=DY_MG_DEFAULT_FILE,
+        help="Alternative MG LO DY ROOT filename used for NF modelling uncertainty",
+    )
     parser.add_argument("--xmin", type=float, default=5.0, help="Minimum mass value shown")
     parser.add_argument("--xmax", type=float, default=150.0, help="Maximum mass value shown")
     parser.add_argument("--ratio-min", type=float, default=0.0, help="Mass Ratio-panel y minimum")
@@ -1615,14 +1798,14 @@ def main(argv=None):
         )
     else:
         print(
-            "[INFO] Constant NF windows: "
-            f"Data - Bkg MC: {NF_MASS_WINDOW[0]:g} < m(mumu) < {NF_MASS_WINDOW[1]:g} GeV; "
-            f"DY MC: {DY_MC_NF_MASS_WINDOW[0]:g} < m(mumu) < {DY_MC_NF_MASS_WINDOW[1]:g} GeV"
+            "[INFO] Production NF: aMC@NLO B/light ratio from "
+            f"{DY_MC_NF_MASS_WINDOW[0]:g} < m(mumu) < {DY_MC_NF_MASS_WINDOW[1]:g} GeV"
         )
+        print(f"[INFO] Central DY NF file: {args.dy_amc_file}")
+        print(f"[INFO] Alternate DY NF file: {args.dy_mg_file}")
         print(
-            "[INFO] Statistical decomposition: "
-            f"{NF_SYST_NAME} = B-jet normalisation-window statistics; "
-            f"{LIGHTJET_STAT_SYST_NAME} = light-jet bin statistics plus the correlated NF denominator effect"
+            "[INFO] Statistical decomposition: LightJetStat = data light-jet source Sumw2; "
+            "NFStat = full aMC B/L finite-MC statistics; NFModel = symmetric aMC-vs-MG difference"
         )
     if args.blind:
         print("[INFO] B-jet Signal Region Blinding is ENABLED (9 < m(mumu) < 80 GeV)")
@@ -1646,6 +1829,7 @@ def main(argv=None):
     h2_b_dy_signal_raw = h2_l_dy_signal_raw = None
 
     h1_b_dy_raw = h1_l_dy_raw = None
+    h1_b_dy_mg_raw = h1_l_dy_mg_raw = None
     h1_b_data_sub_raw = h1_l_data_sub_raw = None
     h1_b_dy_signal_raw = h1_l_dy_signal_raw = None
 
@@ -1658,11 +1842,11 @@ def main(argv=None):
         print("[INFO] TF mode: loading Dilepton_Mass_<parameter> 2D histograms.")
 
         h2_b_dy_raw = load_histogram_across_eras(
-            ROOT, args, "NIsoMuon_DYJets_Inclusive.root",
+            ROOT, args, args.dy_amc_file,
             reg_b, hist_2d_b, "h2_b_dy_raw", required=True,
         )
         h2_l_dy_raw = load_histogram_across_eras(
-            ROOT, args, "NIsoMuon_DYJets_Inclusive.root",
+            ROOT, args, args.dy_amc_file,
             reg_l, hist_2d_l, "h2_l_dy_raw", required=True,
         )
         assert_same_2d_binning(
@@ -1695,27 +1879,41 @@ def main(argv=None):
         )
 
     else:
-        print("[INFO] NF mode: loading one-dimensional Dilepton_Mass histograms only.")
+        print("[INFO] NF mode: loading 1D mass histograms for aMC@NLO, MG LO and data source.")
 
         h1_b_dy_raw = load_histogram_across_eras(
-            ROOT, args, "NIsoMuon_DYJets_Inclusive.root",
-            reg_b, hist_1d_b, "h1_b_dy_raw", required=True,
+            ROOT, args, args.dy_amc_file,
+            reg_b, hist_1d_b, "h1_b_dy_amc_raw", required=True,
         )
         h1_l_dy_raw = load_histogram_across_eras(
-            ROOT, args, "NIsoMuon_DYJets_Inclusive.root",
-            reg_l, hist_1d_l, "h1_l_dy_raw", required=True,
+            ROOT, args, args.dy_amc_file,
+            reg_l, hist_1d_l, "h1_l_dy_amc_raw", required=True,
         )
         assert_same_1d_binning(
-            h1_b_dy_raw, h1_l_dy_raw, "DY B-jet", "DY Light-jet"
+            h1_b_dy_raw, h1_l_dy_raw, "DY aMC B-jet", "DY aMC Light-jet"
         )
 
-        print("[INFO] Loading background-subtracted data from 1D mass histograms...")
-        h1_b_data_sub_raw = load_subtracted_histogram(
-            ROOT, args, reg_b, hist_1d_b
+        h1_b_dy_mg_raw = load_histogram_across_eras(
+            ROOT, args, args.dy_mg_file,
+            reg_b, hist_1d_b, "h1_b_dy_mg_raw", required=True,
         )
-        h1_l_data_sub_raw = load_subtracted_histogram(
-            ROOT, args, reg_l, hist_1d_l
+        h1_l_dy_mg_raw = load_histogram_across_eras(
+            ROOT, args, args.dy_mg_file,
+            reg_l, hist_1d_l, "h1_l_dy_mg_raw", required=True,
         )
+        assert_same_1d_binning(
+            h1_b_dy_mg_raw, h1_l_dy_mg_raw, "DY MG B-jet", "DY MG Light-jet"
+        )
+        assert_same_1d_binning(
+            h1_l_dy_raw, h1_l_dy_mg_raw, "DY aMC Light-jet", "DY MG Light-jet"
+        )
+
+        # The production source is Data - QCD - Top - Others in the light-jet
+        # region.  The B-jet subtraction is loaded only for the blinded closure
+        # comparison; it is NOT used to determine the production NF.
+        print("[INFO] Loading background-subtracted data mass histograms...")
+        h1_b_data_sub_raw = load_subtracted_histogram(ROOT, args, reg_b, hist_1d_b)
+        h1_l_data_sub_raw = load_subtracted_histogram(ROOT, args, reg_l, hist_1d_l)
         assert_same_1d_binning(
             h1_b_data_sub_raw,
             h1_l_data_sub_raw,
@@ -1898,29 +2096,28 @@ def main(argv=None):
             ROOT, h1_b_data_sub_raw, "mass_actual_data_raw"
         )
 
-        dy_estimate = build_nf_estimate(
-            ROOT,
-            h1_b_dy_raw,
-            h1_l_dy_raw,
-            "mass_pred_dy",
-            DY_MC_NF_MASS_WINDOW,
+        nf_amc = measure_nf(
+            h1_b_dy_raw, h1_l_dy_raw, "aMC@NLO", DY_MC_NF_MASS_WINDOW
         )
-        data_estimate = build_nf_estimate(
-            ROOT,
-            h1_b_data_sub_raw,
-            h1_l_data_sub_raw,
-            "mass_pred_data",
-            NF_MASS_WINDOW,
+        nf_mg = measure_nf(
+            h1_b_dy_mg_raw, h1_l_dy_mg_raw, "MG LO", DY_MC_NF_MASS_WINDOW
+        )
+        dy_estimate = build_nf_prediction_from_source(
+            ROOT, h1_l_dy_raw, nf_amc, "mass_pred_dy_amc_closure"
+        )
+        data_estimate = build_nf_prediction_from_source(
+            ROOT, h1_l_data_sub_raw, nf_amc, "mass_pred_data_amc_nf"
+        )
+        model_rel = abs(nf_mg.value / nf_amc.value - 1.0)
+        print(
+            f"[NF] aMC@NLO: {nf_amc.value:.8g} +/- {nf_amc.error:.8g} "
+            f"(stat, {DY_MC_NF_MASS_WINDOW[0]:g}<m<{DY_MC_NF_MASS_WINDOW[1]:g})"
         )
         print(
-            f"[NF] DY MC: {dy_estimate.factor_value:.8g} +/- "
-            f"{dy_estimate.factor_error:.8g}"
+            f"[NF] MG LO:    {nf_mg.value:.8g} +/- {nf_mg.error:.8g} "
+            f"(stat, {DY_MC_NF_MASS_WINDOW[0]:g}<m<{DY_MC_NF_MASS_WINDOW[1]:g})"
         )
-        print(
-            "[NF] Data - Bkg MC: "
-            f"{data_estimate.factor_value:.8g} +/- "
-            f"{data_estimate.factor_error:.8g}"
-        )
+        print(f"[NF] modelling |MG/aMC-1| = {model_rel:.8g}")
 
     h1_mass_pred_dy_raw = dy_estimate.central
     h1_mass_pred_data_raw = data_estimate.central
@@ -1954,8 +2151,14 @@ def main(argv=None):
             )
         h1_mass_pred_dy_signal_closure_raw = signal_estimate.central
 
-    # Production always uses the nominal data-driven estimate for the selected method.
-    write_data_driven_root_outputs(ROOT, args, data_estimate, reg_b)
+    # NF production uses the data light-jet source times the aMC@NLO NF.
+    if args.method == "nf":
+        write_data_driven_root_outputs(
+            ROOT, args, data_estimate, reg_b,
+            nf_source=h1_l_data_sub_raw, nf_amc=nf_amc, nf_mg=nf_mg,
+        )
+    else:
+        write_data_driven_root_outputs(ROOT, args, data_estimate, reg_b)
 
     # The analyser does not fill 9--10.4 GeV.  Keep this excluded interval at zero.
     raw_mass_hists = [
@@ -2028,8 +2231,9 @@ def main(argv=None):
         ]
     else:
         extra_info_closure = [
-            f"Data: NF from {NF_MASS_WINDOW[0]:g} < m < {NF_MASS_WINDOW[1]:g} GeV",
-            f"DY MC: NF from {DY_MC_NF_MASS_WINDOW[0]:g} < m < {DY_MC_NF_MASS_WINDOW[1]:g} GeV",
+            f"aMC NF: {nf_amc.value:.5g} #pm {nf_amc.error:.3g} (stat)",
+            f"MG NF: {nf_mg.value:.5g}; |MG/aMC-1|={abs(nf_mg.value/nf_amc.value-1.0):.3g}",
+            f"NF measured in {DY_MC_NF_MASS_WINDOW[0]:g} < m < {DY_MC_NF_MASS_WINDOW[1]:g} GeV",
             "Upsilon region discarded (9.0-10.4 GeV)",
         ]
     if args.inject_signal:
@@ -2045,10 +2249,10 @@ def main(argv=None):
         injected_prediction_label = "light-jet #times TF(DY + Z' MC)"
     else:
         dy_prediction_label = (
-            f"light-jet #times {dy_estimate.factor_value:.6g} (DY MC)"
+            f"light-jet #times {nf_amc.value:.6g} (DY aMC@NLO)"
         )
         data_prediction_label = (
-            f"light-jet #times {data_estimate.factor_value:.6g} (Data - Bkg MC)"
+            f"light-jet data #times {nf_amc.value:.6g} (aMC NF)"
         )
         injected_prediction_label = (
             f"light-jet #times {signal_estimate.factor_value:.6g} (DY + Z' MC)"
