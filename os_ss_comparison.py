@@ -10,6 +10,7 @@ PyROOT replacement for the historical OS_SS_ComparisonPlot.cc:
   * lower panel: OS / SS
   * optional --apply-scale rescales SS by one OS/SS integral ratio
   * default mass binning is identical to dy_bkg_estimation.py
+  * OS and SS jet categories can be selected independently
 
 Current input layout:
   /data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon/<era>/
@@ -19,13 +20,25 @@ The script supports three comparison modes:
   * subtract-nonqcd: Data - Top - DY - Others
   * qcd-mc: OS and SS QCD MC only from NIsoMuon_QCD_Inclusive.root
 
+Available categories:
+  * bjet:       standard BJet category (at least one independent Medium b-tagged jet)
+  * lightjet:   standard LightJet category
+  * onebjet:    test category with exactly one Medium b-tagged analysis jet
+  * inclusive:  test category with no b-tag requirement or veto
+
 Examples:
-  python3 plot_os_ss_comparison.py --era Run2 --mode raw-data
-  python3 plot_os_ss_comparison.py --era Run2 --mode subtract-nonqcd
-  python3 plot_os_ss_comparison.py --era Run2 --mode qcd-mc
-  python3 plot_os_ss_comparison.py --era Run2 --mode qcd-mc --apply-scale
-  python3 plot_os_ss_comparison.py --era Run2 --mode qcd-mc \
+  python3 os_ss_comparison.py --era Run2 --mode raw-data
+  python3 os_ss_comparison.py --era Run2 --mode subtract-nonqcd
+  python3 os_ss_comparison.py --era Run2 --mode qcd-mc
+  python3 os_ss_comparison.py --era Run2 --mode qcd-mc --apply-scale
+  python3 os_ss_comparison.py --era Run2 --os-category bjet --ss-category onebjet
+  python3 os_ss_comparison.py --era Run2 --os-category bjet --ss-category inclusive
+  python3 os_ss_comparison.py --era Run2 --mode qcd-mc \
       --no-variable-binning --bin-width 1
+
+The historical --jet-flavour/--jet-flavor option is retained as a shorthand
+for setting both OS and SS categories when --os-category/--ss-category are not
+specified.
 '''
 
 from __future__ import annotations
@@ -80,9 +93,8 @@ DEFAULT_MASS_BINS = [
     0.0, 0.5, 1.0, 1.5, 2.0, 2.5,
     3.0, 3.5, 4.0, 4.5,
     5.0, 6.0, 7.0, 8.0, 9.0,
-    10.0, 12.0, 14., 16., 18.,
-    #20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55., 60., 65.0, 70.0, 75.0, 80.0, 
-    20.0, 25., 30.0, 40.0, 60., 80.,
+    10.0, 12.0, 14.0, 16.0, 18.0,
+    20.0, 25.0, 30.0, 40.0, 60.0, 80.0,
     85.0, 90.0, 95.0, 100.0, 105.0, 110.0,
     120.0, 130.0, 150.0,
 ]
@@ -132,18 +144,65 @@ def years_for_era(value: str) -> Tuple[str, ...]:
         ) from exc
 
 
-def canonical_jet_flavour(value: str) -> str:
-    key = re.sub(r"[^a-z]", "", value.lower())
-    if key in {"b", "bjet", "btag", "btagged"}:
+def canonical_jet_category(value: str) -> str:
+    key = re.sub(r"[^a-z0-9]", "", value.lower())
+
+    if key in {"b", "bjet", "btag", "btagged", "standardbjet"}:
         return "bjet"
     if key in {"light", "lightjet", "lj"}:
         return "lightjet"
-    raise PlotError(f"Unknown jet flavour: {value}")
+    if key in {
+        "oneb",
+        "onebjet",
+        "1b",
+        "1bjet",
+        "exactlyoneb",
+        "exactlyonebjet",
+        "singleb",
+        "singlebjet",
+    }:
+        return "onebjet"
+    if key in {
+        "inclusive",
+        "inclusivejet",
+        "incl",
+        "incljet",
+        "alljet",
+        "alljets",
+    }:
+        return "inclusive"
+
+    raise PlotError(
+        f"Unknown jet category: {value}. "
+        "Use bjet, lightjet, onebjet, or inclusive."
+    )
 
 
-def region(sign: str, muon_id: str, jet_id: str, jet_flavour: str) -> str:
-    jet_tag = "BJet" if canonical_jet_flavour(jet_flavour) == "bjet" else "LightJet"
-    return f"{sign}_{muon_id}_{jet_id}_{jet_tag}_NIsoDimuon"
+def category_root_tag(category: str) -> str:
+    category = canonical_jet_category(category)
+    return {
+        "bjet": "BJet",
+        "lightjet": "LightJet",
+        "onebjet": "OneBJet",
+        "inclusive": "InclusiveJet",
+    }[category]
+
+
+def category_label(category: str) -> str:
+    category = canonical_jet_category(category)
+    return {
+        "bjet": "b-jet category",
+        "lightjet": "light-jet category",
+        "onebjet": "exactly-one-b-jet category",
+        "inclusive": "inclusive-jet category",
+    }[category]
+
+
+def region(sign: str, muon_id: str, jet_id: str, category: str) -> str:
+    return (
+        f"{sign}_{muon_id}_{jet_id}_"
+        f"{category_root_tag(category)}_NIsoDimuon"
+    )
 
 
 def hist_path(reg: str, hist_name: str) -> str:
@@ -205,15 +264,15 @@ def load_across_eras(
     return sum_hists(pieces, f"{prefix}_{canonical_era(args.era)}_{reg}")
 
 
-def load_data(ROOT, args, sign: str):
-    reg = region(sign, args.muon_id, args.jet_id, args.jet_flavour)
+def load_data(ROOT, args, sign: str, category: str):
+    reg = region(sign, args.muon_id, args.jet_id, category)
     return load_across_eras(
         ROOT, args, "data.root", reg, args.hist_name, f"data_{sign}"
     )
 
 
-def load_qcd_mc(ROOT, args, sign: str):
-    reg = region(sign, args.muon_id, args.jet_id, args.jet_flavour)
+def load_qcd_mc(ROOT, args, sign: str, category: str):
+    reg = region(sign, args.muon_id, args.jet_id, category)
     return load_across_eras(
         ROOT,
         args,
@@ -224,9 +283,9 @@ def load_qcd_mc(ROOT, args, sign: str):
     )
 
 
-def load_qcd_enriched_data(ROOT, args, sign: str):
+def load_qcd_enriched_data(ROOT, args, sign: str, category: str):
     # Data - Top - DY - Others, matching the QCD normalization ingredients.
-    reg = region(sign, args.muon_id, args.jet_id, args.jet_flavour)
+    reg = region(sign, args.muon_id, args.jet_id, category)
     out = load_across_eras(
         ROOT, args, "data.root", reg, args.hist_name, f"dataSub_{sign}"
     )
@@ -242,11 +301,12 @@ def load_qcd_enriched_data(ROOT, args, sign: str):
         )
         out.Add(h, -1.0)
 
-    # Final data-driven DY is an OS b-jet prediction. SS uses DY MC.
+    # The final data-driven DY prediction exists for the nominal OS BJet
+    # category. Other categories use DY MC, including the new SS test regions.
     if (
         sign == "OS"
         and args.dy_method == "data-driven"
-        and canonical_jet_flavour(args.jet_flavour) == "bjet"
+        and canonical_jet_category(category) == "bjet"
     ):
         dy_file = "NIsoMuon_DYJets_est.root"
     else:
@@ -399,6 +459,13 @@ def positive_minimum(*hists) -> float:
     return min(values) if values else 1.0
 
 
+def resolve_categories(args) -> Tuple[str, str]:
+    legacy = canonical_jet_category(args.jet_flavour)
+    os_category = canonical_jet_category(args.os_category or legacy)
+    ss_category = canonical_jet_category(args.ss_category or legacy)
+    return os_category, ss_category
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="Draw current NIsoMuon OS-vs-SS dimuon distributions."
@@ -411,7 +478,30 @@ def main(argv=None) -> int:
     parser.add_argument("--muon-id", default=DEFAULT_MUON_ID)
     parser.add_argument("--jet-id", default=DEFAULT_JET_ID)
     parser.add_argument(
-        "--jet-flavour", "--jet-flavor", default=DEFAULT_JET_FLAVOUR
+        "--jet-flavour",
+        "--jet-flavor",
+        default=DEFAULT_JET_FLAVOUR,
+        help=(
+            "Backward-compatible shorthand for setting both OS and SS jet "
+            "categories. Default: bjet. --os-category/--ss-category override it."
+        ),
+    )
+    parser.add_argument(
+        "--os-category",
+        default=None,
+        help=(
+            "OS jet category: bjet, lightjet, onebjet, or inclusive. "
+            "Default: value of --jet-flavour."
+        ),
+    )
+    parser.add_argument(
+        "--ss-category",
+        default=None,
+        help=(
+            "SS jet category: bjet, lightjet, onebjet, or inclusive. "
+            "Use onebjet/inclusive for the new SS test regions. "
+            "Default: value of --jet-flavour."
+        ),
     )
     parser.add_argument("--hist-name", default=DEFAULT_HIST_NAME)
 
@@ -503,19 +593,32 @@ def main(argv=None) -> int:
     if args.ratio_max <= args.ratio_min:
         raise PlotError("--ratio-max must be larger than --ratio-min")
 
+    os_category, ss_category = resolve_categories(args)
+    args.os_category = os_category
+    args.ss_category = ss_category
+
+    print(
+        f"[CATEGORY] OS = {category_root_tag(os_category)} "
+        f"({category_label(os_category)})"
+    )
+    print(
+        f"[CATEGORY] SS = {category_root_tag(ss_category)} "
+        f"({category_label(ss_category)})"
+    )
+
     ROOT = import_root()
 
     if args.mode == "subtract-nonqcd":
-        h_os_raw = load_qcd_enriched_data(ROOT, args, "OS")
-        h_ss_raw = load_qcd_enriched_data(ROOT, args, "SS")
+        h_os_raw = load_qcd_enriched_data(ROOT, args, "OS", os_category)
+        h_ss_raw = load_qcd_enriched_data(ROOT, args, "SS", ss_category)
         content_label = "Data - non-QCD"
     elif args.mode == "qcd-mc":
-        h_os_raw = load_qcd_mc(ROOT, args, "OS")
-        h_ss_raw = load_qcd_mc(ROOT, args, "SS")
+        h_os_raw = load_qcd_mc(ROOT, args, "OS", os_category)
+        h_ss_raw = load_qcd_mc(ROOT, args, "SS", ss_category)
         content_label = "QCD MC"
     else:
-        h_os_raw = load_data(ROOT, args, "OS")
-        h_ss_raw = load_data(ROOT, args, "SS")
+        h_os_raw = load_data(ROOT, args, "OS", os_category)
+        h_ss_raw = load_data(ROOT, args, "SS", ss_category)
         content_label = "Data"
 
     os_norm, os_norm_err = integral_open(h_os_raw, args.norm_min, args.norm_max)
@@ -627,25 +730,32 @@ def main(argv=None) -> int:
     h_ss.Draw("HIST SAME")
     h_os.Draw("PE SAME")
 
-    legend = ROOT.TLegend(0.62, 0.68, 0.93, 0.86)
+    legend = ROOT.TLegend(0.55, 0.66, 0.93, 0.86)
     legend.SetBorderSize(0)
     legend.SetFillStyle(0)
     legend.SetTextFont(42)
-    legend.SetTextSize(0.032)
-    legend.AddEntry(h_os, f"OS {content_label}", "lep")
+    legend.SetTextSize(0.030)
+    legend.AddEntry(
+        h_os,
+        f"OS {content_label}, {category_root_tag(os_category)}",
+        "lep",
+    )
 
-    ss_label = f"SS {content_label}"
+    ss_label = f"SS {content_label}, {category_root_tag(ss_category)}"
     if args.apply_scale:
         ss_label += f" #times {scale_factor:.3g}"
     legend.AddEntry(h_ss, ss_label, "l")
     legend.AddEntry(h_ss_band, "SS stat. unc.", "f")
     legend.Draw()
 
-    info = [
-        "b-jet category"
-        if canonical_jet_flavour(args.jet_flavour) == "bjet"
-        else "light-jet category"
-    ]
+    if os_category == ss_category:
+        info = [category_label(os_category)]
+    else:
+        info = [
+            f"OS: {category_label(os_category)}",
+            f"SS: {category_label(ss_category)}",
+        ]
+
     if args.mode == "subtract-nonqcd":
         info.append("Top, DY, Others subtracted")
     elif args.mode == "qcd-mc":
@@ -715,15 +825,14 @@ def main(argv=None) -> int:
         if args.apply_scale
         else ""
     )
-    jet_tag = (
-        "BJet"
-        if canonical_jet_flavour(args.jet_flavour) == "bjet"
-        else "LightJet"
-    )
+
+    os_tag = category_root_tag(os_category)
+    ss_tag = category_root_tag(ss_category)
+    category_tag = os_tag if os_tag == ss_tag else f"OS{os_tag}_SS{ss_tag}"
 
     base_name = (
         f"OS_SS_Comparison_{canonical_era(args.era)}_"
-        f"{args.muon_id}_{args.jet_id}_{jet_tag}_{mode_tag}{scale_tag}"
+        f"{args.muon_id}_{args.jet_id}_{category_tag}_{mode_tag}{scale_tag}"
     ).replace(".", "p")
 
     extensions = [
@@ -746,4 +855,3 @@ if __name__ == "__main__":
     except PlotError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         raise SystemExit(2)
-
