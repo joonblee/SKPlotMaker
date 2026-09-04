@@ -1,0 +1,749 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+'''
+OS-vs-SS dimuon comparison for the current NIsoMuon Run-2/Run-3 SKOutput.
+
+PyROOT replacement for the historical OS_SS_ComparisonPlot.cc:
+  * OS: black data points
+  * SS: red line with a statistical uncertainty band
+  * lower panel: OS / SS
+  * optional --apply-scale rescales SS by one OS/SS integral ratio
+  * default mass binning is identical to dy_bkg_estimation.py
+
+Current input layout:
+  /data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon/<era>/
+
+The script supports three comparison modes:
+  * raw-data: raw OS and SS data, matching the historical C++ macro
+  * subtract-nonqcd: Data - Top - DY - Others
+  * qcd-mc: OS and SS QCD MC only from NIsoMuon_QCD_Inclusive.root
+
+Examples:
+  python3 plot_os_ss_comparison.py --era Run2 --mode raw-data
+  python3 plot_os_ss_comparison.py --era Run2 --mode subtract-nonqcd
+  python3 plot_os_ss_comparison.py --era Run2 --mode qcd-mc
+  python3 plot_os_ss_comparison.py --era Run2 --mode qcd-mc --apply-scale
+  python3 plot_os_ss_comparison.py --era Run2 --mode qcd-mc \
+      --no-variable-binning --bin-width 1
+'''
+
+from __future__ import annotations
+
+import argparse
+import math
+import os
+import re
+import sys
+from array import array
+from pathlib import Path
+from typing import Dict, List, Sequence, Tuple
+
+RUN2_ERAS: Tuple[str, ...] = ("2016preVFP", "2016postVFP", "2017", "2018")
+RUN3_ERAS: Tuple[str, ...] = ("2022", "2022EE", "2023", "2023BPix")
+YEARS: Tuple[str, ...] = RUN2_ERAS + RUN3_ERAS
+
+ERA_GROUPS: Dict[str, Tuple[str, ...]] = {
+    **{era: (era,) for era in YEARS},
+    "Run2": RUN2_ERAS,
+    "Run3": RUN3_ERAS,
+    "Run2+3": YEARS,
+    "full": YEARS,
+}
+
+DEFAULT_BASE_DIR = "/data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon"
+DEFAULT_OUTPUT_DIR = "/data6/Users/joonblee/PlotMaker/plots"
+
+LUMI_FB: Dict[str, float] = {
+    "2016preVFP": 19.52,
+    "2016postVFP": 16.81,
+    "2017": 41.48,
+    "2018": 59.83,
+    "2022": 7.9804,
+    "2022EE": 26.6717,
+    "2023": 18.064,
+    "2023BPix": 9.693,
+}
+RUN2_LUMI_LABEL_FB = 138
+RUN3_LUMI_LABEL_FB = 62
+
+DEFAULT_MUON_ID = "POGMedium"
+DEFAULT_JET_ID = "tight"
+DEFAULT_JET_FLAVOUR = "bjet"
+DEFAULT_HIST_NAME = "Dilepton_Mass"
+
+DEFAULT_NORM_MIN = 6.0
+DEFAULT_NORM_MAX = 9.0
+
+# Keep the default mass binning identical to dy_bkg_estimation.py.
+DEFAULT_MASS_BINS = [
+    0.0, 0.5, 1.0, 1.5, 2.0, 2.5,
+    3.0, 3.5, 4.0, 4.5,
+    5.0, 6.0, 7.0, 8.0, 9.0,
+    10.0, 12.0, 14., 16., 18.,
+    #20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55., 60., 65.0, 70.0, 75.0, 80.0, 
+    20.0, 25., 30.0, 40.0, 60., 80.,
+    85.0, 90.0, 95.0, 100.0, 105.0, 110.0,
+    120.0, 130.0, 150.0,
+]
+
+
+class PlotError(RuntimeError):
+    pass
+
+
+def import_root():
+    try:
+        import ROOT  # type: ignore
+    except Exception as exc:
+        raise PlotError(
+            "Could not import PyROOT. Run inside ROOT/CMSSW. "
+            f"Original error: {exc}"
+        )
+    ROOT.gROOT.SetBatch(True)
+    ROOT.gStyle.SetOptStat(0)
+    ROOT.gStyle.SetOptTitle(0)
+    try:
+        ROOT.TH1.AddDirectory(False)
+    except Exception:
+        pass
+    return ROOT
+
+
+def canonical_era(value: str) -> str:
+    key = value.strip().lower().replace(" ", "")
+    aliases = {
+        "run2": "Run2",
+        "run3": "Run3",
+        "run2+3": "Run2+3",
+        "run23": "Run2+3",
+        "full": "full",
+    }
+    return aliases.get(key, value)
+
+
+def years_for_era(value: str) -> Tuple[str, ...]:
+    era = canonical_era(value)
+    try:
+        return ERA_GROUPS[era]
+    except KeyError as exc:
+        raise PlotError(
+            f"Unknown era {value!r}. Use one of: {', '.join(ERA_GROUPS)}"
+        ) from exc
+
+
+def canonical_jet_flavour(value: str) -> str:
+    key = re.sub(r"[^a-z]", "", value.lower())
+    if key in {"b", "bjet", "btag", "btagged"}:
+        return "bjet"
+    if key in {"light", "lightjet", "lj"}:
+        return "lightjet"
+    raise PlotError(f"Unknown jet flavour: {value}")
+
+
+def region(sign: str, muon_id: str, jet_id: str, jet_flavour: str) -> str:
+    jet_tag = "BJet" if canonical_jet_flavour(jet_flavour) == "bjet" else "LightJet"
+    return f"{sign}_{muon_id}_{jet_id}_{jet_tag}_NIsoDimuon"
+
+
+def hist_path(reg: str, hist_name: str) -> str:
+    return f"{reg}/{hist_name}___{reg}"
+
+
+def era_dir(args, year: str) -> str:
+    parts = [args.base_dir, year]
+    if args.trigger:
+        parts.append(args.trigger)
+    return os.path.join(*parts)
+
+
+def open_hist(ROOT, filename: str, path: str, clone_name: str):
+    if not os.path.isfile(filename):
+        raise PlotError(f"Missing ROOT file: {filename}")
+    f = ROOT.TFile.Open(filename, "READ")
+    if not f or f.IsZombie():
+        if f:
+            f.Close()
+        raise PlotError(f"Could not open ROOT file: {filename}")
+    h = f.Get(path)
+    if not h:
+        f.Close()
+        raise PlotError(f"Missing histogram: {filename}:{path}")
+    out = h.Clone(clone_name)
+    out.SetDirectory(0)
+    out.Sumw2()
+    f.Close()
+    return out
+
+
+def sum_hists(hists: Sequence[object], name: str):
+    if not hists:
+        return None
+    out = hists[0].Clone(name)
+    out.SetDirectory(0)
+    out.Sumw2()
+    for h in hists[1:]:
+        out.Add(h)
+    return out
+
+
+def load_across_eras(
+    ROOT,
+    args,
+    relative_file: str,
+    reg: str,
+    hist_name: str,
+    prefix: str,
+):
+    pieces = []
+    path = hist_path(reg, hist_name)
+    for year in years_for_era(args.era):
+        filename = os.path.join(era_dir(args, year), relative_file)
+        pieces.append(
+            open_hist(ROOT, filename, path, f"{prefix}_{year}_{reg}")
+        )
+    return sum_hists(pieces, f"{prefix}_{canonical_era(args.era)}_{reg}")
+
+
+def load_data(ROOT, args, sign: str):
+    reg = region(sign, args.muon_id, args.jet_id, args.jet_flavour)
+    return load_across_eras(
+        ROOT, args, "data.root", reg, args.hist_name, f"data_{sign}"
+    )
+
+
+def load_qcd_mc(ROOT, args, sign: str):
+    reg = region(sign, args.muon_id, args.jet_id, args.jet_flavour)
+    return load_across_eras(
+        ROOT,
+        args,
+        "NIsoMuon_QCD_Inclusive.root",
+        reg,
+        args.hist_name,
+        f"qcdmc_{sign}",
+    )
+
+
+def load_qcd_enriched_data(ROOT, args, sign: str):
+    # Data - Top - DY - Others, matching the QCD normalization ingredients.
+    reg = region(sign, args.muon_id, args.jet_id, args.jet_flavour)
+    out = load_across_eras(
+        ROOT, args, "data.root", reg, args.hist_name, f"dataSub_{sign}"
+    )
+
+    for bg_file in ("NIsoMuon_Top.root", "NIsoMuon_Others.root"):
+        h = load_across_eras(
+            ROOT,
+            args,
+            bg_file,
+            reg,
+            args.hist_name,
+            f"subtract_{sign}_{bg_file}",
+        )
+        out.Add(h, -1.0)
+
+    # Final data-driven DY is an OS b-jet prediction. SS uses DY MC.
+    if (
+        sign == "OS"
+        and args.dy_method == "data-driven"
+        and canonical_jet_flavour(args.jet_flavour) == "bjet"
+    ):
+        dy_file = "NIsoMuon_DYJets_est.root"
+    else:
+        dy_file = "NIsoMuon_DYJets_Inclusive.root"
+
+    h_dy = load_across_eras(
+        ROOT, args, dy_file, reg, args.hist_name, f"subtract_{sign}_DY"
+    )
+    out.Add(h_dy, -1.0)
+    return out
+
+
+def make_variable_edges(
+    xmin: float,
+    xmax: float,
+    requested_edges: Sequence[float] = DEFAULT_MASS_BINS,
+) -> List[float]:
+    if xmax <= xmin:
+        raise PlotError("--xmax must be larger than --xmin")
+
+    edges = [float(x) for x in requested_edges if xmin <= float(x) <= xmax]
+    if not edges or not math.isclose(edges[0], xmin, rel_tol=0.0, abs_tol=1.0e-9):
+        edges.insert(0, float(xmin))
+    if not math.isclose(edges[-1], xmax, rel_tol=0.0, abs_tol=1.0e-9):
+        edges.append(float(xmax))
+
+    unique = []
+    for value in edges:
+        if not unique or not math.isclose(
+            value, unique[-1], rel_tol=0.0, abs_tol=1.0e-9
+        ):
+            unique.append(value)
+
+    if len(unique) < 2:
+        raise PlotError("Could not construct variable mass binning")
+    return unique
+
+
+def make_uniform_edges(xmin: float, xmax: float, width: float) -> List[float]:
+    if width <= 0:
+        raise PlotError("--bin-width must be positive")
+    if xmax <= xmin:
+        raise PlotError("--xmax must be larger than --xmin")
+
+    n = int(round((xmax - xmin) / width))
+    if n <= 0 or not math.isclose(
+        xmin + n * width, xmax, rel_tol=0.0, abs_tol=1.0e-8
+    ):
+        raise PlotError(
+            f"[{xmin:g},{xmax:g}] is not an integer number of {width:g}-GeV bins"
+        )
+    return [xmin + i * width for i in range(n + 1)]
+
+
+def make_edges(
+    xmin: float,
+    xmax: float,
+    width: float,
+    variable_binning: bool,
+) -> List[float]:
+    if variable_binning:
+        return make_variable_edges(xmin, xmax)
+    return make_uniform_edges(xmin, xmax, width)
+
+
+def rebin_hist(hist, edges: Sequence[float], name: str):
+    arr = array("d", [float(x) for x in edges])
+    out = hist.Rebin(len(edges) - 1, name, arr)
+    out.SetDirectory(0)
+    out.Sumw2()
+    return out
+
+
+def integral_open(hist, xmin: float, xmax: float) -> Tuple[float, float]:
+    value = 0.0
+    variance = 0.0
+    for ib in range(1, hist.GetNbinsX() + 1):
+        x = float(hist.GetXaxis().GetBinCenter(ib))
+        if not (xmin < x < xmax):
+            continue
+        value += float(hist.GetBinContent(ib))
+        error = float(hist.GetBinError(ib))
+        variance += error * error
+    return value, math.sqrt(max(0.0, variance))
+
+
+def divide_by_bin_width(hist) -> None:
+    for ib in range(1, hist.GetNbinsX() + 1):
+        width = float(hist.GetXaxis().GetBinWidth(ib))
+        if width <= 0.0:
+            continue
+        hist.SetBinContent(ib, float(hist.GetBinContent(ib)) / width)
+        hist.SetBinError(ib, float(hist.GetBinError(ib)) / width)
+
+
+def cms_lumi_label(era: str) -> str:
+    era = canonical_era(era)
+    if era in {"Run2+3", "full"}:
+        return (
+            f"{RUN2_LUMI_LABEL_FB} fb^{{-1}} (13 TeV) + "
+            f"{RUN3_LUMI_LABEL_FB} fb^{{-1}} (13.6 TeV)"
+        )
+    if era == "Run2":
+        return f"{RUN2_LUMI_LABEL_FB} fb^{{-1}} (13 TeV)"
+    if era == "Run3":
+        return f"{RUN3_LUMI_LABEL_FB} fb^{{-1}} (13.6 TeV)"
+    energy = "13.6 TeV" if era in RUN3_ERAS else "13 TeV"
+    return f"{LUMI_FB[era]:.1f} fb^{{-1}} ({energy})"
+
+
+def draw_cms_header(ROOT, pad, args, extra_lines: Sequence[str]) -> List[object]:
+    keep = []
+    pad.cd()
+
+    latex = ROOT.TLatex()
+    latex.SetNDC(True)
+    latex.SetTextFont(42)
+    latex.SetTextColor(ROOT.kBlack)
+
+    latex.SetTextAlign(11)
+    latex.SetTextSize(0.047)
+    latex.DrawLatex(0.120, 0.925, "#bf{CMS} #it{Preliminary}")
+
+    latex.SetTextAlign(31)
+    latex.SetTextSize(0.038)
+    latex.DrawLatex(0.950, 0.925, cms_lumi_label(args.era))
+
+    latex.SetTextAlign(11)
+    latex.SetTextSize(0.033)
+    latex.DrawLatex(0.155, 0.855, "Opposite-sign vs same-sign")
+
+    y = 0.810
+    latex.SetTextSize(0.029)
+    latex.SetTextColor(ROOT.kGray + 2)
+    for line in extra_lines:
+        latex.DrawLatex(0.155, y, line)
+        y -= 0.038
+
+    keep.append(latex)
+    return keep
+
+
+def positive_minimum(*hists) -> float:
+    values = []
+    for h in hists:
+        for ib in range(1, h.GetNbinsX() + 1):
+            value = float(h.GetBinContent(ib))
+            if value > 0.0:
+                values.append(value)
+    return min(values) if values else 1.0
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Draw current NIsoMuon OS-vs-SS dimuon distributions."
+    )
+    parser.add_argument("--era", required=True, choices=list(ERA_GROUPS.keys()))
+    parser.add_argument("--base-dir", default=DEFAULT_BASE_DIR)
+    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--trigger", default="")
+
+    parser.add_argument("--muon-id", default=DEFAULT_MUON_ID)
+    parser.add_argument("--jet-id", default=DEFAULT_JET_ID)
+    parser.add_argument(
+        "--jet-flavour", "--jet-flavor", default=DEFAULT_JET_FLAVOUR
+    )
+    parser.add_argument("--hist-name", default=DEFAULT_HIST_NAME)
+
+    parser.add_argument(
+        "--mode",
+        choices=("raw-data", "subtract-nonqcd", "qcd-mc"),
+        default="raw-data",
+        help=(
+            "comparison content: raw-data (default), "
+            "subtract-nonqcd = Data - Top - DY - Others, "
+            "or qcd-mc = QCD MC only"
+        ),
+    )
+    parser.add_argument(
+        "--subtract-nonqcd",
+        dest="mode",
+        action="store_const",
+        const="subtract-nonqcd",
+        help="backward-compatible alias for --mode subtract-nonqcd",
+    )
+    parser.add_argument(
+        "--qcd-mc",
+        dest="mode",
+        action="store_const",
+        const="qcd-mc",
+        help="alias for --mode qcd-mc",
+    )
+    parser.add_argument(
+        "--dy-method",
+        choices=("data-driven", "mc"),
+        default="data-driven",
+        help="DY subtraction method used only with --mode subtract-nonqcd.",
+    )
+
+    parser.add_argument("--xmin", type=float, default=6.0)
+    parser.add_argument("--xmax", type=float, default=80.0)
+    parser.add_argument(
+        "--bin-width",
+        type=float,
+        default=1.0,
+        help=(
+            "uniform bin width used only with --no-variable-binning; "
+            "default: 1 GeV"
+        ),
+    )
+    parser.add_argument(
+        "--no-variable-binning",
+        dest="variable_binning",
+        action="store_false",
+        help=(
+            "disable the default dy_bkg_estimation.py-style variable mass "
+            "binning and use --bin-width instead"
+        ),
+    )
+    parser.set_defaults(variable_binning=True)
+    parser.add_argument("--logy", action="store_true")
+    parser.add_argument("--ymin", type=float, default=None)
+    parser.add_argument("--ymax", type=float, default=None)
+
+    parser.add_argument(
+        "--apply-scale",
+        action="store_true",
+        help="Scale SS by OS/SS in --norm-min/--norm-max.",
+    )
+    parser.add_argument("--norm-min", type=float, default=DEFAULT_NORM_MIN)
+    parser.add_argument("--norm-max", type=float, default=DEFAULT_NORM_MAX)
+
+    parser.add_argument("--ratio-min", type=float, default=0.0)
+    parser.add_argument("--ratio-max", type=float, default=2.0)
+
+    parser.add_argument(
+        "--no-bin-width",
+        dest="divide_by_width",
+        action="store_false",
+        help="Do not divide rebinned distributions by bin width.",
+    )
+    parser.set_defaults(divide_by_width=True)
+
+    parser.add_argument(
+        "--extensions",
+        default="pdf,png",
+        help="Comma-separated output extensions; default: pdf,png",
+    )
+
+    args = parser.parse_args(argv)
+
+    if args.norm_max <= args.norm_min:
+        raise PlotError("--norm-max must be larger than --norm-min")
+    if args.ratio_max <= args.ratio_min:
+        raise PlotError("--ratio-max must be larger than --ratio-min")
+
+    ROOT = import_root()
+
+    if args.mode == "subtract-nonqcd":
+        h_os_raw = load_qcd_enriched_data(ROOT, args, "OS")
+        h_ss_raw = load_qcd_enriched_data(ROOT, args, "SS")
+        content_label = "Data - non-QCD"
+    elif args.mode == "qcd-mc":
+        h_os_raw = load_qcd_mc(ROOT, args, "OS")
+        h_ss_raw = load_qcd_mc(ROOT, args, "SS")
+        content_label = "QCD MC"
+    else:
+        h_os_raw = load_data(ROOT, args, "OS")
+        h_ss_raw = load_data(ROOT, args, "SS")
+        content_label = "Data"
+
+    os_norm, os_norm_err = integral_open(h_os_raw, args.norm_min, args.norm_max)
+    ss_norm, ss_norm_err = integral_open(h_ss_raw, args.norm_min, args.norm_max)
+
+    if ss_norm <= 0.0:
+        raise PlotError(
+            f"SS integral is non-positive in "
+            f"{args.norm_min:g}<m<{args.norm_max:g}: {ss_norm:g}"
+        )
+
+    scale_factor = os_norm / ss_norm
+
+    print(
+        f"[OS/SS] normalization window: "
+        f"{args.norm_min:g} < m(mumu) < {args.norm_max:g} GeV"
+    )
+    print(f"[OS/SS] OS integral = {os_norm:.10g} +/- {os_norm_err:.10g}")
+    print(f"[OS/SS] SS integral = {ss_norm:.10g} +/- {ss_norm_err:.10g}")
+    print(f"[OS/SS] OS/SS scale = {scale_factor:.10g}")
+
+    edges = make_edges(
+        args.xmin,
+        args.xmax,
+        args.bin_width,
+        args.variable_binning,
+    )
+    print(
+        "[BINNING] "
+        + ("variable: " if args.variable_binning else "uniform: ")
+        + ", ".join(f"{edge:g}" for edge in edges)
+    )
+    h_os = rebin_hist(h_os_raw, edges, "h_os_compare")
+    h_ss = rebin_hist(h_ss_raw, edges, "h_ss_compare")
+
+    if args.apply_scale:
+        h_ss.Scale(scale_factor)
+
+    if args.divide_by_width:
+        divide_by_bin_width(h_os)
+        divide_by_bin_width(h_ss)
+
+    h_os.SetMarkerStyle(20)
+    h_os.SetMarkerSize(0.85)
+    h_os.SetMarkerColor(ROOT.kBlack)
+    h_os.SetLineColor(ROOT.kBlack)
+    h_os.SetLineWidth(1)
+
+    h_ss.SetMarkerSize(0.0)
+    h_ss.SetLineColor(ROOT.kRed + 1)
+    h_ss.SetLineWidth(2)
+    h_ss.SetFillStyle(0)
+
+    h_ss_band = h_ss.Clone("h_ss_compare_band")
+    h_ss_band.SetDirectory(0)
+    h_ss_band.SetMarkerSize(0.0)
+    h_ss_band.SetLineWidth(0)
+    h_ss_band.SetFillColor(ROOT.kGray + 1)
+    h_ss_band.SetFillStyle(3144)
+
+    canvas = ROOT.TCanvas("c_os_ss", "", 900, 900)
+    upper = ROOT.TPad("upper", "", 0.0, 0.30, 1.0, 1.0)
+    lower = ROOT.TPad("lower", "", 0.0, 0.00, 1.0, 0.30)
+
+    upper.SetLeftMargin(0.120)
+    upper.SetRightMargin(0.050)
+    upper.SetTopMargin(0.100)
+    upper.SetBottomMargin(0.030)
+
+    lower.SetLeftMargin(0.120)
+    lower.SetRightMargin(0.050)
+    lower.SetTopMargin(0.040)
+    lower.SetBottomMargin(0.350)
+
+    if args.logy:
+        upper.SetLogy(True)
+
+    upper.Draw()
+    lower.Draw()
+
+    upper.cd()
+
+    max_y = max(float(h_os.GetMaximum()), float(h_ss.GetMaximum()))
+    ymax = args.ymax if args.ymax is not None else max_y * (50.0 if args.logy else 1.45)
+
+    if args.ymin is not None:
+        ymin = args.ymin
+    elif args.logy:
+        ymin = max(1.0e-3, 0.5 * positive_minimum(h_os, h_ss))
+    else:
+        ymin = 0.0
+
+    h_os.SetMinimum(ymin)
+    h_os.SetMaximum(max(ymax, ymin * 10.0 if args.logy else ymax))
+
+    h_os.GetYaxis().SetTitle(
+        "Events / GeV" if args.divide_by_width else "Events / bin"
+    )
+    h_os.GetYaxis().SetTitleFont(42)
+    h_os.GetYaxis().SetLabelFont(42)
+    h_os.GetYaxis().SetTitleSize(0.055)
+    h_os.GetYaxis().SetLabelSize(0.045)
+    h_os.GetYaxis().SetTitleOffset(1.05)
+    h_os.GetXaxis().SetLabelSize(0.0)
+    h_os.GetXaxis().SetTitleSize(0.0)
+
+    h_os.Draw("PE")
+    h_ss_band.Draw("E2 SAME")
+    h_ss.Draw("HIST SAME")
+    h_os.Draw("PE SAME")
+
+    legend = ROOT.TLegend(0.62, 0.68, 0.93, 0.86)
+    legend.SetBorderSize(0)
+    legend.SetFillStyle(0)
+    legend.SetTextFont(42)
+    legend.SetTextSize(0.032)
+    legend.AddEntry(h_os, f"OS {content_label}", "lep")
+
+    ss_label = f"SS {content_label}"
+    if args.apply_scale:
+        ss_label += f" #times {scale_factor:.3g}"
+    legend.AddEntry(h_ss, ss_label, "l")
+    legend.AddEntry(h_ss_band, "SS stat. unc.", "f")
+    legend.Draw()
+
+    info = [
+        "b-jet category"
+        if canonical_jet_flavour(args.jet_flavour) == "bjet"
+        else "light-jet category"
+    ]
+    if args.mode == "subtract-nonqcd":
+        info.append("Top, DY, Others subtracted")
+    elif args.mode == "qcd-mc":
+        info.append("QCD simulation only")
+    if args.apply_scale:
+        info.append(
+            f"SS scaled using {args.norm_min:g} < m < {args.norm_max:g} GeV"
+        )
+
+    keep = draw_cms_header(ROOT, upper, args, info)
+    upper.SetTickx()
+    upper.SetTicky()
+    upper.RedrawAxis()
+
+    lower.cd()
+
+    h_ratio = h_os.Clone("h_os_over_ss")
+    h_ratio.SetDirectory(0)
+    h_ratio.Divide(h_ss)
+
+    h_ratio.SetMarkerStyle(20)
+    h_ratio.SetMarkerSize(0.75)
+    h_ratio.SetMarkerColor(ROOT.kBlack)
+    h_ratio.SetLineColor(ROOT.kBlack)
+
+    h_ratio.GetYaxis().SetRangeUser(args.ratio_min, args.ratio_max)
+    h_ratio.GetYaxis().SetTitle("OS / SS")
+    h_ratio.GetYaxis().SetTitleFont(42)
+    h_ratio.GetYaxis().SetLabelFont(42)
+    h_ratio.GetYaxis().SetTitleSize(0.11)
+    h_ratio.GetYaxis().SetTitleOffset(0.50)
+    h_ratio.GetYaxis().SetLabelSize(0.09)
+    h_ratio.GetYaxis().SetNdivisions(505)
+
+    h_ratio.GetXaxis().SetTitle("m_{#mu#mu} [GeV]")
+    h_ratio.GetXaxis().SetTitleFont(42)
+    h_ratio.GetXaxis().SetLabelFont(42)
+    h_ratio.GetXaxis().SetTitleSize(0.13)
+    h_ratio.GetXaxis().SetTitleOffset(1.05)
+    h_ratio.GetXaxis().SetLabelSize(0.10)
+
+    h_ratio.Draw("PE")
+
+    unity = ROOT.TLine(args.xmin, 1.0, args.xmax, 1.0)
+    unity.SetLineColor(ROOT.kRed + 1)
+    unity.SetLineStyle(2)
+    unity.SetLineWidth(2)
+    unity.Draw("SAME")
+    h_ratio.Draw("PE SAME")
+    keep.append(unity)
+
+    lower.SetGridy(True)
+    lower.SetTickx()
+    lower.SetTicky()
+    lower.RedrawAxis()
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    mode_tag = {
+        "raw-data": "Data",
+        "subtract-nonqcd": "DataMinusNonQCD",
+        "qcd-mc": "QCDMC",
+    }[args.mode]
+    scale_tag = (
+        f"_SSScaled_{args.norm_min:g}to{args.norm_max:g}"
+        if args.apply_scale
+        else ""
+    )
+    jet_tag = (
+        "BJet"
+        if canonical_jet_flavour(args.jet_flavour) == "bjet"
+        else "LightJet"
+    )
+
+    base_name = (
+        f"OS_SS_Comparison_{canonical_era(args.era)}_"
+        f"{args.muon_id}_{args.jet_id}_{jet_tag}_{mode_tag}{scale_tag}"
+    ).replace(".", "p")
+
+    extensions = [
+        x.strip().lstrip(".")
+        for x in args.extensions.split(",")
+        if x.strip()
+    ]
+
+    for ext in extensions:
+        output = output_dir / f"{base_name}.{ext}"
+        canvas.SaveAs(str(output))
+        print(f"[SAVED] {output}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except PlotError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        raise SystemExit(2)
+
