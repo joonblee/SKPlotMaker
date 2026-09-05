@@ -745,7 +745,7 @@ def positive_integer(value: str) -> int:
     return parsed
 
 
-def positive_float(value: str) -> int:
+def positive_float(value: str) -> float:
     try:
         parsed = float(value)
     except ValueError as exc:
