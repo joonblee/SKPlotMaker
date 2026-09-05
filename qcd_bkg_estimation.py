@@ -59,6 +59,7 @@ Main optional controls
   --fit-max-attempts N
   --fit-attempt-details
   --initial-values-only
+  --use-ss-anchor-constraints
   --no-prefer-full-run-anchor
   --allow-invalid-fit-output
   --print-shape-syst-bin-info
@@ -88,7 +89,7 @@ Examples
   python3 qcd_bkg_estimation.py --mode qcd-mc --year Run3 \
       --fit-objective log-chi2 --log-relative-error-floor 0.10
   python3 qcd_bkg_estimation.py --mode qcd-mc --year 2018 \
-      --initial-values-only
+      --use-ss-anchor-constraints
 
 Build every per-era and full-run anchor:
   for era in 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix; do
@@ -337,8 +338,8 @@ SS_MODE = ModeConfig(
     display_name="SS data",
     file_name="SS_fit",
     region=SS_REGION,
-    fit_min=10.0,
-    fit_max=80.0,
+    fit_min=5.0,
+    fit_max=30.0,
     plot_tag="SS",
     legend_label="Data - MC^{Top, Others}",
     components=(
@@ -353,8 +354,8 @@ QCD_MODE = ModeConfig(
     display_name="QCD MC",
     file_name="QCDMC_fit",
     region=OS_REGION,
-    fit_min=6.0,
-    fit_max=70.0,
+    fit_min=5.0,
+    fit_max=80.0,
     plot_tag="QCD",
     legend_label="QCD MC",
     components=(("NIsoMuon_QCD_Inclusive", +1.0),),
@@ -400,20 +401,18 @@ MODEL_SHAPE_PARAMETER_NAMES: Dict[str, Tuple[str, ...]] = {
     "exp_logistic": ("k", "m0", "w"),
 }
 
-# One adopted set of global hard bounds.  n>=0.15 prevents Power x Exp from
-# collapsing exactly to a pure exponential.  QCD-MC anchor bounds below can be
-# narrower than these global bounds.
+# Broad global hard bounds used when no SS-derived QCD constraint is applied.
 BASE_SHAPE_BOUNDS: Dict[str, Tuple[Tuple[str, float, float], ...]] = {
-    "power_erf": (("n", 2.0, 12.0), ("m0", 2.0, 30.0), ("w", 0.20, 8.0)),
-    "power_logistic": (("n", 2.0, 12.0), ("m0", 2.0, 30.0), ("w", 0.20, 8.0)),
+    "power_erf": (("n", 0.5, 15.0), ("m0", 0.0, 35.0), ("w", 0.10, 15.0)),
+    "power_logistic": (("n", 0.5, 15.0), ("m0", 0.0, 35.0), ("w", 0.10, 15.0)),
     "power_exp_erf": (
-        ("n", 0.15, 15.0), ("k", 0.0, 5.0), ("m0", 2.0, 35.0), ("w", 0.20, 8.0)
+        ("n", 0.05, 20.0), ("k", 0.0, 5.0), ("m0", 0.0, 35.0), ("w", 0.10, 15.0)
     ),
     "power_exp_logistic": (
-        ("n", 0.15, 15.0), ("k", 0.0, 5.0), ("m0", 2.0, 35.0), ("w", 0.20, 8.0)
+        ("n", 0.05, 20.0), ("k", 0.0, 5.0), ("m0", 0.0, 35.0), ("w", 0.10, 15.0)
     ),
-    "exp_erf": (("k", 0.0, 5.0), ("m0", 6.0, 35.0), ("w", 0.20, 15.0)),
-    "exp_logistic": (("k", 0.0, 5.0), ("m0", 6.0, 35.0), ("w", 0.20, 15.0)),
+    "exp_erf": (("k", 0.0, 5.0), ("m0", 0.0, 35.0), ("w", 0.10, 20.0)),
+    "exp_logistic": (("k", 0.0, 5.0), ("m0", 0.0, 35.0), ("w", 0.10, 20.0)),
 }
 
 # Static multi-start shape seeds.  Partner-fit and same-era SS-anchor seeds are
@@ -746,7 +745,7 @@ def positive_integer(value: str) -> int:
     return parsed
 
 
-def positive_float(value: str) -> float:
+def positive_float(value: str) -> int:
     try:
         parsed = float(value)
     except ValueError as exc:
@@ -811,10 +810,20 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "In qcd-mc mode, use the resolved SS-data anchor values as the first "
             "shape seeds, but do not apply their shape or amplitude hard "
-            "constraints. The common BASE_SHAPE_BOUNDS and broad adaptive A "
-            "bounds remain active."
+            "constraints. This is the default. The common BASE_SHAPE_BOUNDS and "
+            "broad adaptive A bounds remain active."
         ),
     )
+    parser.add_argument(
+        "--use-ss-anchor-constraints",
+        dest="initial_values_only",
+        action="store_false",
+        help=(
+            "In qcd-mc mode, restore the previous behaviour in which the SS-data "
+            "anchor is used both as an initial seed and as hard parameter bounds."
+        ),
+    )
+    parser.set_defaults(initial_values_only=True)
     parser.add_argument("--allow-invalid-fit-output", action="store_true")
     parser.add_argument("--print-shape-syst-bin-info", action="store_true")
     parser.add_argument("--print-raw-shape-debug", action="store_true")
@@ -1116,7 +1125,10 @@ def yields_agree(a: float, b: float) -> bool:
 
 def prepare_histograms(ROOT, source_hist, mode: ModeConfig, rebin_factor: int) -> PreparedHistograms:
     base_edges = make_variable_binning(mode)
-    protected = (9.0, 11.) if mode.key == QCD_MODE.key else (10.0, 80.0)
+    if mode.key == QCD_MODE.key:
+        protected = (mode.fit_min, 9.0, 11.0, mode.fit_max)
+    else:
+        protected = (mode.fit_min, mode.fit_max)
     final_edges = merge_adjacent_bin_edges(base_edges, rebin_factor, protected)
 
     base_source = source_hist.Clone(_NAMES.unique("base_rebin_source"))
