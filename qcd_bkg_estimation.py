@@ -167,8 +167,10 @@ HIST_NAME = "Dilepton_Mass"
 
 QCD_FIT_EXCLUDED_RANGES: Tuple[Tuple[float, float], ...] = ((9.0, 11.),)
 
-# OS/SS normalization factor applied to the fitted SS QCD shape.
-QCD_NORMALISATION_WINDOW: Tuple[float, float] = (6.0, 9.0)
+# OS/SS transfer-factor windows.  The transfer factor measured in data at low
+# mass is transported to the high-mass search region with the QCD-MC double ratio.
+QCD_TRANSFER_LOW_WINDOW: Tuple[float, float] = (5.0, 9.0)
+QCD_TRANSFER_HIGH_WINDOW: Tuple[float, float] = (11.0, 80.0)
 
 TAIL_DIAGNOSTIC_MIN = 20.0
 
@@ -335,14 +337,13 @@ SS_MODE = ModeConfig(
     display_name="SS data",
     file_name="SS_fit",
     region=SS_REGION,
-    fit_min=6.0,
-    fit_max=50.0,
+    fit_min=10.0,
+    fit_max=80.0,
     plot_tag="SS",
-    legend_label="Data - MC^{Top, DY, Others}",
+    legend_label="Data - MC^{Top, Others}",
     components=(
         ("data", +1.0),
         ("NIsoMuon_Top", -1.0),
-        ("NIsoMuon_DYJets_Inclusive", -1.0),
         ("NIsoMuon_Others", -1.0),
     ),
 )
@@ -1024,7 +1025,7 @@ def make_variable_binning(mode: ModeConfig) -> List[float]:
     edges: List[float] = []
     if mode.key == SS_MODE.key:
         segments = ((0.0, 8.0, 0.1), (8.0, 11.0, 0.2), (11.0, 15.0, 0.5))
-        tail_edges = (15.0, 16.0, 17.0, 19.0, 21.0, 30.0, 40.0, 50.0, 100.0)
+        tail_edges = (15.0, 16.0, 17.0, 19.0, 21.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0)
     else:
         segments = (
             (0.0, 9.0, 0.1), (9.0, 11., 0.2),
@@ -1115,7 +1116,7 @@ def yields_agree(a: float, b: float) -> bool:
 
 def prepare_histograms(ROOT, source_hist, mode: ModeConfig, rebin_factor: int) -> PreparedHistograms:
     base_edges = make_variable_binning(mode)
-    protected = (9.0, 11.) if mode.key == QCD_MODE.key else ()
+    protected = (9.0, 11.) if mode.key == QCD_MODE.key else (10.0, 80.0)
     final_edges = merge_adjacent_bin_edges(base_edges, rebin_factor, protected)
 
     base_source = source_hist.Clone(_NAMES.unique("base_rebin_source"))
@@ -2334,7 +2335,7 @@ def draw_fit_plot(
     frame.GetXaxis().SetTitleOffset(1.1)
     frame.GetXaxis().SetTitleSize(0.1)
     frame.GetXaxis().SetLabelSize(0.09)
-    frame.GetYaxis().SetTitle("fit / QCD MC" if mode.key == QCD_MODE.key else "fit / (Data-MC^{Top,DY,Others})")
+    frame.GetYaxis().SetTitle("fit / QCD MC" if mode.key == QCD_MODE.key else "fit / (Data-MC^{Top,Others})")
     frame.GetYaxis().SetTitleSize(0.095)
     frame.GetYaxis().SetTitleOffset(0.40)
     frame.GetYaxis().SetLabelSize(0.075)
@@ -2442,7 +2443,7 @@ def make_output_histogram(out_file, source_hist, directory_name: str, histogram_
 def print_saved_histogram(hist, directory_name: str, histogram_name: str) -> None:
     print(
         f"[fit.root] Saved {directory_name}/{histogram_name}: Nbins={hist.GetNbinsX()}, "
-        f"Xmin={hist.GetXaxis().GetXmin():g}, Xmax={hist.GetXaxis().GetXmax():g}"
+        f"Xmin={hist.GetXaxis().GetXmin():g} Xmax={hist.GetXaxis().GetXmax():g}"
     )
 
 
@@ -2465,53 +2466,102 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
     os_path = hist_path(OS_REGION)
     f_data = files["data"]
     f_top = files["NIsoMuon_Top"]
-    f_dy = files["NIsoMuon_DYJets_Inclusive"]
     f_others = files["NIsoMuon_Others"]
 
     h_data_ss = get_histogram_clone(f_data, ss_path, "hDataSSForNorm")
     h_top_ss = get_histogram_clone(f_top, ss_path, "hTopSSForNorm")
-    h_dy_ss = get_histogram_clone(f_dy, ss_path, "hDYSSForNorm")
     h_others_ss = get_histogram_clone(f_others, ss_path, "hOthersSSForNorm")
     h_data_os = get_histogram_clone(f_data, os_path, "hDataOSForNorm")
     h_top_os = get_histogram_clone(f_top, os_path, "hTopOSForNorm")
     h_others_os = get_histogram_clone(f_others, os_path, "hOthersOSForNorm")
 
     f_dy_est = open_root_file(ROOT, directory / "NIsoMuon_DYJets_est.root")
+    f_qcd = open_root_file(ROOT, directory / "NIsoMuon_QCD_Inclusive.root")
     try:
         h_dy_os = get_histogram_clone(f_dy_est, os_path, "hDYOSForNorm")
-        required = [h_data_ss, h_top_ss, h_dy_ss, h_others_ss, h_data_os, h_top_os, h_dy_os, h_others_os]
+        h_qcd_ss = get_histogram_clone(f_qcd, ss_path, "hQCDSSForTransfer")
+        h_qcd_os = get_histogram_clone(f_qcd, os_path, "hQCDOSForTransfer")
+        required = [
+            h_data_ss, h_top_ss, h_others_ss,
+            h_data_os, h_top_os, h_dy_os, h_others_os,
+            h_qcd_ss, h_qcd_os,
+        ]
         if any(hist is None for hist in required):
-            raise KeyError("A required SS/OS normalisation histogram is missing.")
+            raise KeyError("A required SS/OS transfer-factor histogram is missing.")
 
+        # Match os_ss_comparison.py: no DY subtraction in SS; use the
+        # data-driven DY estimate in OS.
         h_ss = clone_detached(h_data_ss, "hSSForNorm_DataMinusBG")
         h_os = clone_detached(h_data_os, "hOSForNorm_DataMinusBG")
-        for hist in (h_top_ss, h_dy_ss, h_others_ss):
+        for hist in (h_top_ss, h_others_ss):
             h_ss.Add(hist, -1.0)
         for hist in (h_top_os, h_dy_os, h_others_os):
             h_os.Add(hist, -1.0)
 
-        norm_low, norm_high = QCD_NORMALISATION_WINDOW
-        ss_integral = integral_in_window(h_ss, norm_low, norm_high)
-        os_integral = integral_in_window(h_os, norm_low, norm_high)
-        if ss_integral <= 0.0 or os_integral <= 0.0:
-            raise RuntimeError(
-                f"Non-positive {norm_low:g}--{norm_high:g} GeV normalisation yield: "
-                f"SS={ss_integral}, OS={os_integral}"
+        low_min, low_max = QCD_TRANSFER_LOW_WINDOW
+        high_min, high_max = QCD_TRANSFER_HIGH_WINDOW
+        dt_ss_low = integral_in_window(h_ss, low_min, low_max)
+        dt_os_low = integral_in_window(h_os, low_min, low_max)
+        mc_ss_low = integral_in_window(h_qcd_ss, low_min, low_max)
+        mc_os_low = integral_in_window(h_qcd_os, low_min, low_max)
+        mc_ss_high = integral_in_window(h_qcd_ss, high_min, high_max)
+        mc_os_high = integral_in_window(h_qcd_os, high_min, high_max)
+
+        for label, value in (
+            ("DT SS low", dt_ss_low),
+            ("DT OS low", dt_os_low),
+            ("QCD MC SS low", mc_ss_low),
+            ("QCD MC OS low", mc_os_low),
+            ("QCD MC SS high", mc_ss_high),
+            ("QCD MC OS high", mc_os_high),
+        ):
+            if value <= 0.0:
+                raise RuntimeError(f"Non-positive transfer-factor yield for {label}: {value}")
+
+        dt_low_ratio = dt_os_low / dt_ss_low
+        mc_low_ratio = mc_os_low / mc_ss_low
+        mc_high_ratio = mc_os_high / mc_ss_high
+        normalisation = dt_low_ratio * mc_high_ratio / mc_low_ratio
+        if normalisation <= 0.0 or not math.isfinite(normalisation):
+            raise RuntimeError(f"Invalid corrected QCD OS/SS transfer factor: {normalisation}")
+
+        # The modelling envelope is additive in transfer-factor space.  The
+        # ROOT NormDown/NormUp templates are written as the corresponding
+        # multiplicative yield ratios because QCD_norm is consumed as an
+        # asymmetric lnN nuisance downstream.
+        norm_abs_unc = abs(normalisation - mc_high_ratio)
+        transfer_down = normalisation - norm_abs_unc
+        transfer_up = normalisation + norm_abs_unc
+        if transfer_down <= 0.0:
+            print(
+                "[WARNING] QCD transfer-factor Down variation is non-positive; "
+                "clipping it to a small positive value for lnN compatibility."
             )
-        normalisation = os_integral / ss_integral
-        rel_unc = math.sqrt(1.0 / os_integral + 1.0 / ss_integral)
-        norm_up = 1.0 + rel_unc
-        norm_down = 1.0 / norm_up
+            transfer_down = max(1.0e-6 * normalisation, 1.0e-12)
+        norm_down = transfer_down / normalisation
+        norm_up = transfer_up / normalisation
+
         print(
-            f"[fit.root] SS(Data-BG), {norm_low:g}<m<{norm_high:g} = "
-            f"{ss_integral:g}"
+            f"[fit.root] DT(Data-nonQCD) OS/SS, {low_min:g}<m<{low_max:g} = "
+            f"{dt_low_ratio:g}"
         )
         print(
-            f"[fit.root] OS(Data-BG), {norm_low:g}<m<{norm_high:g} = "
-            f"{os_integral:g}"
+            f"[fit.root] QCD MC OS/SS, {low_min:g}<m<{low_max:g} = "
+            f"{mc_low_ratio:g}"
         )
-        print(f"[fit.root] OS/SS ratio = {normalisation:g}")
-        print(f"[fit.root] Normalisation relative uncertainty = {rel_unc:g}")
+        print(
+            f"[fit.root] QCD MC OS/SS, {high_min:g}<m<{high_max:g} = "
+            f"{mc_high_ratio:g}"
+        )
+        print(
+            "[fit.root] Corrected OS/SS = DT(low) * MC(high) / MC(low) = "
+            f"{normalisation:g}"
+        )
+        print(
+            f"[fit.root] Norm envelope: delta=|corrected-MC(high)|={norm_abs_unc:g}, "
+            f"Down={transfer_down:g} ({norm_down:g}), "
+            f"Up={transfer_up:g} ({norm_up:g})"
+        )
 
         main = selected_by_key[SS_NOMINAL_MODEL].function
         alternatives = [selected_by_key[key].function for key in SS_SHAPE_ALTERNATIVES]
@@ -2608,6 +2658,7 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
         print(f"[copy] {output} -> {copied}")
         return output, copied
     finally:
+        f_qcd.Close()
         f_dy_est.Close()
 
 
@@ -2825,4 +2876,3 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
