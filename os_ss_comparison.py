@@ -14,7 +14,7 @@ ERA_GROUPS = {**{x: (x,) for x in YEARS}, "Run2": RUN2, "Run3": RUN3, "Run2+3": 
 BASE = "/data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon"
 OUT = "/data6/Users/joonblee/PlotMaker/plots"
 LUMI = {"2016preVFP":19.52,"2016postVFP":16.81,"2017":41.48,"2018":59.83,"2022":7.9804,"2022EE":26.6717,"2023":18.064,"2023BPix":9.693}
-MASS_BINS = [0.,.5,1.,1.5,2.,2.1,2.2,2.3,2.4,2.5,2.6,2.7,2.8,2.9,3.,3.1,3.2,3.3,3.4,3.5,3.7,4.,4.5,5.,6.,7.,8.,9.,10.,11.,13.,15.,20.,30.,40.,60.,80.,100.]
+MASS_BINS = [0.,.5,1.,1.5,2.,2.1,2.2,2.3,2.4,2.5,2.6,2.7,2.8,2.9,3.,3.1,3.2,3.3,3.4,3.5,3.7,4.,4.5,5.,6.,7.,8.,9.,10.,11.,15.,20.,25.,30.,35.,40.,50.,60.,80.,100.]
 NONQCD_OS = ("NIsoMuon_Top.root", "NIsoMuon_DYJets_est.root", "NIsoMuon_Others.root")
 NONQCD_SS = ("NIsoMuon_Top.root", "NIsoMuon_Others.root")
 
@@ -119,7 +119,7 @@ def main():
     p.add_argument("--era",required=True,choices=list(ERA_GROUPS)); p.add_argument("--base-dir",default=BASE); p.add_argument("--output-dir",default=OUT); p.add_argument("--trigger",default="")
     p.add_argument("--qcd-file",default="NIsoMuon_QCD_Inclusive.root"); p.add_argument("--muon-id",default="POGMedium"); p.add_argument("--jet-id",default="tight"); p.add_argument("--hist-name",default="Dilepton_Mass")
     p.add_argument("--xmin",type=float,default=5.); p.add_argument("--xmax",type=float,default=80.); p.add_argument("--bin-width",type=float,default=1.); p.add_argument("--no-variable-binning",dest="variable_binning",action="store_false"); p.set_defaults(variable_binning=True)
-    p.add_argument("--logx",action="store_true"); p.add_argument("--logy",action="store_true"); p.add_argument("--ymin",type=float); p.add_argument("--ymax",type=float); p.add_argument("--ratio-min",type=float,default=0.); p.add_argument("--ratio-max",type=float,default=4.); p.add_argument("--no-bin-width",dest="divide_by_width",action="store_false"); p.set_defaults(divide_by_width=True)
+    p.add_argument("--logx",action="store_true"); p.add_argument("--logy",action="store_true"); p.add_argument("--ymin",type=float); p.add_argument("--ymax",type=float); p.add_argument("--ratio-min",type=float,default=0.); p.add_argument("--ratio-max",type=float,default=5.); p.add_argument("--no-bin-width",dest="divide_by_width",action="store_false"); p.set_defaults(divide_by_width=True)
     b=p.add_mutually_exclusive_group(); b.add_argument("--blind",dest="blind",action="store_true",help="Blind data in 11<m<80 GeV (default)"); b.add_argument("--unblind",dest="blind",action="store_false",help="Show data in 11<m<80 GeV"); p.set_defaults(blind=True)
     p.add_argument("--extensions",default="pdf,png"); args=p.parse_args()
     if args.xmax<=args.xmin: raise PlotError("--xmax must be larger than --xmin")
