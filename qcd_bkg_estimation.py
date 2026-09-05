@@ -74,9 +74,9 @@ Main optional controls
 Luminosity labels [fb^-1]
 -------------------------
   2016preVFP 19.5, 2016postVFP 16.8, 2016 36.31,
-  2017 42.07, 2018 59.56, Run2 137.94,
+  2017 42.07, 2018 59.56, Run2 138,
   2022 7.98, 2022EE 26.67, 2022 total 34.65,
-  2023 17.7, 2023BPix 9.5, 2023 total 27.20, Run3 61.85.
+  2023 17.7, 2023BPix 9.5, 2023 total 27.20, Run3 62.
 The luminosities affect labels only; the fit uses event yields already stored
 in the input ROOT files.
 
@@ -94,7 +94,7 @@ Examples
       --use-ss-anchor-constraints
 
 Build every per-era and full-run anchor:
-  for era in 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix; do
+  for era in Run2 Run3 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix; do
     python3 qcd_bkg_estimation.py --mode ss-data --year "$era"
   done
   python3 qcd_bkg_estimation.py --mode ss-data --year Run2
@@ -157,11 +157,11 @@ LUMI_FB: Dict[str, float] = {
 }
 PERIOD_LUMI_FB: Dict[str, float] = {
     "2016": 36.31,
-    "Run2": 137.94,
+    "Run2": 138,
     "2022total": 34.65,
     "2023total": 27.20,
-    "Run3": 61.85,
-    "Run2+3": 199.79,
+    "Run3": 62,
+    "Run2+3": 200,
 }
 
 SS_REGION = "SS_POGMedium_tight_BJet_NIsoDimuon"
