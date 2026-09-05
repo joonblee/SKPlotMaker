@@ -2565,6 +2565,22 @@ def fit_integral_in_output_bin(function, hist, index: int, allowed_ranges: Seque
     return total
 
 
+def fit_integral_with_transfer(
+    function,
+    hist,
+    index: int,
+    low_transfer: float,
+    high_transfer: float,
+) -> float:
+    low_value = fit_integral_in_output_bin(
+        function, hist, index, (QCD_TRANSFER_LOW_WINDOW,)
+    )
+    high_value = fit_integral_in_output_bin(
+        function, hist, index, (QCD_TRANSFER_HIGH_WINDOW,)
+    )
+    return low_transfer * low_value + high_transfer * high_value
+
+
 def make_output_histogram(out_file, source_hist, directory_name: str, histogram_name: str):
     directory = out_file.mkdir(directory_name)
     if not directory:
@@ -2659,19 +2675,37 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
         dt_low_ratio = dt_os_low / dt_ss_low
         mc_low_ratio = mc_os_low / mc_ss_low
         mc_high_ratio = mc_os_high / mc_ss_high
-        normalisation = dt_low_ratio * mc_high_ratio / mc_low_ratio
-        if normalisation <= 0.0 or not math.isfinite(normalisation):
-            raise RuntimeError(f"Invalid corrected QCD OS/SS transfer factor: {normalisation}")
 
-        # QCD_norm is a multiplicative lnN nuisance.  Define the modelling
-        # uncertainty symmetrically in log space, with one 1-sigma variation
-        # reaching the uncorrected high-mass QCD-MC transfer factor.
-        log_kappa = abs(math.log(normalisation / mc_high_ratio))
-        norm_kappa = math.exp(log_kappa)
-        norm_down = 1.0 / norm_kappa
-        norm_up = norm_kappa
-        transfer_down = normalisation * norm_down
-        transfer_up = normalisation * norm_up
+        # Piecewise OS/SS transfer prescription:
+        #   low mass (5--9 GeV): use the data-measured OS/SS ratio directly;
+        #   high mass (11--80 GeV): transport that data calibration with the
+        #   QCD-MC high/low double ratio.
+        low_normalisation = dt_low_ratio
+        high_normalisation = dt_low_ratio * mc_high_ratio / mc_low_ratio
+        for label, value in (
+            ("low-mass QCD OS/SS transfer factor", low_normalisation),
+            ("high-mass corrected QCD OS/SS transfer factor", high_normalisation),
+        ):
+            if value <= 0.0 or not math.isfinite(value):
+                raise RuntimeError(f"Invalid {label}: {value}")
+
+        # QCD_norm is symmetric in log space.  In each mass region, one
+        # 1-sigma direction reaches the corresponding uncorrected QCD-MC
+        # OS/SS ratio.  With the present double-ratio construction the low-
+        # and high-mass fractional kappas are algebraically identical, but
+        # they are calculated separately here to keep the prescription clear.
+        low_log_kappa = abs(math.log(low_normalisation / mc_low_ratio))
+        high_log_kappa = abs(math.log(high_normalisation / mc_high_ratio))
+        low_norm_kappa = math.exp(low_log_kappa)
+        high_norm_kappa = math.exp(high_log_kappa)
+        low_norm_down = 1.0 / low_norm_kappa
+        low_norm_up = low_norm_kappa
+        high_norm_down = 1.0 / high_norm_kappa
+        high_norm_up = high_norm_kappa
+        low_transfer_down = low_normalisation * low_norm_down
+        low_transfer_up = low_normalisation * low_norm_up
+        high_transfer_down = high_normalisation * high_norm_down
+        high_transfer_up = high_normalisation * high_norm_up
 
         print(
             f"[fit.root] DT(Data-nonQCD) OS/SS, {low_min:g}<m<{low_max:g} = "
@@ -2686,13 +2720,22 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
             f"{mc_high_ratio:g}"
         )
         print(
-            "[fit.root] Corrected OS/SS = DT(low) * MC(high) / MC(low) = "
-            f"{normalisation:g}"
+            "[fit.root] Low-mass central OS/SS = DT(low) = "
+            f"{low_normalisation:g}"
         )
         print(
-            "[fit.root] Norm lnN: kappa=exp(|ln(corrected/MC(high))|)="
-            f"{norm_kappa:g}, Down={transfer_down:g} ({norm_down:g}), "
-            f"Up={transfer_up:g} ({norm_up:g})"
+            "[fit.root] High-mass central OS/SS = DT(low) * MC(high) / MC(low) = "
+            f"{high_normalisation:g}"
+        )
+        print(
+            "[fit.root] Low-mass Norm lnN vs MC(low): "
+            f"kappa={low_norm_kappa:g}, Down={low_transfer_down:g} "
+            f"({low_norm_down:g}), Up={low_transfer_up:g} ({low_norm_up:g})"
+        )
+        print(
+            "[fit.root] High-mass Norm lnN vs MC(high): "
+            f"kappa={high_norm_kappa:g}, Down={high_transfer_down:g} "
+            f"({high_norm_down:g}), Up={high_transfer_up:g} ({high_norm_up:g})"
         )
 
         main = selected_by_key[SS_NOMINAL_MODEL].function
@@ -2703,7 +2746,7 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
             "[fit.root] Shape-envelope models = "
             + ", ".join(model_labels[key] for key in SS_SHAPE_ALTERNATIVES)
         )
-        allowed_ranges = ((5.0, 9.0), (11., 80.0))
+        allowed_ranges = (QCD_TRANSFER_LOW_WINDOW, QCD_TRANSFER_HIGH_WINDOW)
 
         run_syst = era_dir(args, args.year, "RunSyst")
         run_syst.mkdir(parents=True, exist_ok=True)
@@ -2716,7 +2759,10 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
             central_name = f"{HIST_NAME}___{OS_REGION}"
             h_central, d_central = make_output_histogram(root_file, h_data_os, OS_REGION, central_name)
             for ibin in range(1, h_central.GetNbinsX() + 1):
-                value = normalisation * fit_integral_in_output_bin(main, h_central, ibin, allowed_ranges)
+                value = fit_integral_with_transfer(
+                    main, h_central, ibin,
+                    low_normalisation, high_normalisation,
+                )
                 h_central.SetBinContent(ibin, value)
                 h_central.SetBinError(ibin, 0.0)
             d_central.cd()
@@ -2733,13 +2779,20 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
                 low = h_up.GetXaxis().GetBinLowEdge(ibin)
                 high = h_up.GetXaxis().GetBinUpEdge(ibin)
                 central_ss = fit_integral_in_output_bin(main, h_up, ibin, allowed_ranges)
-                central_os = normalisation * central_ss
+                central_os = fit_integral_with_transfer(
+                    main, h_up, ibin,
+                    low_normalisation, high_normalisation,
+                )
                 max_dev = 0.0
                 details = []
-                if central_ss != 0.0:
+                if central_os != 0.0:
                     for alt in alternatives:
                         alt_ss = fit_integral_in_output_bin(alt, h_up, ibin, allowed_ranges)
-                        dev = abs(alt_ss / central_ss - 1.0)
+                        alt_os = fit_integral_with_transfer(
+                            alt, h_up, ibin,
+                            low_normalisation, high_normalisation,
+                        )
+                        dev = abs(alt_os / central_os - 1.0)
                         max_dev = max(max_dev, dev)
                         details.append((alt_ss, dev))
                 ### multiplicative approach ###
@@ -2774,9 +2827,18 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
             h_norm_up, d_norm_up = make_output_histogram(root_file, h_data_os, norm_up_dir, norm_up_name)
             h_norm_down, d_norm_down = make_output_histogram(root_file, h_data_os, norm_down_dir, norm_down_name)
             for ibin in range(1, h_central.GetNbinsX() + 1):
-                value = h_central.GetBinContent(ibin)
-                h_norm_up.SetBinContent(ibin, value * norm_up)
-                h_norm_down.SetBinContent(ibin, value * norm_down)
+                value_up = fit_integral_with_transfer(
+                    main, h_central, ibin,
+                    low_normalisation * low_norm_up,
+                    high_normalisation * high_norm_up,
+                )
+                value_down = fit_integral_with_transfer(
+                    main, h_central, ibin,
+                    low_normalisation * low_norm_down,
+                    high_normalisation * high_norm_down,
+                )
+                h_norm_up.SetBinContent(ibin, value_up)
+                h_norm_down.SetBinContent(ibin, value_down)
                 h_norm_up.SetBinError(ibin, 0.0)
                 h_norm_down.SetBinError(ibin, 0.0)
             d_norm_up.cd(); h_norm_up.Write(norm_up_name, ROOT.TObject.kOverwrite)
