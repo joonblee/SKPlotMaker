@@ -14,7 +14,7 @@ ERA_GROUPS = {**{x: (x,) for x in YEARS}, "Run2": RUN2, "Run3": RUN3, "Run2+3": 
 BASE = "/data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon"
 OUT = "/data6/Users/joonblee/PlotMaker/plots"
 LUMI = {"2016preVFP":19.52,"2016postVFP":16.81,"2017":41.48,"2018":59.83,"2022":7.9804,"2022EE":26.6717,"2023":18.064,"2023BPix":9.693}
-MASS_BINS = [0.,.5,1.,1.5,2.,2.5,3.,3.5,4.,4.5,5.,6.,7.,8.,9.,10.,11.,15.,20.,30.,40.,50.,60.,70.,80.]
+MASS_BINS = [0.,.5,1.,1.5,2.,2.1,2.2,2.3,2.4,2.5,2.6,2.7,2.8,2.9,3.,3.1,3.2,3.3,3.4,3.5,3.7,4.,4.5,5.,6.,7.,8.,9.,10.,11.,15.,20.,30.,40.,50.,60.,80.,100.]
 NONQCD = ("NIsoMuon_Top.root", "NIsoMuon_DYJets_Inclusive.root", "NIsoMuon_Others.root")
 
 class PlotError(RuntimeError): pass
@@ -117,9 +117,9 @@ def main():
     p=argparse.ArgumentParser(description="BJet OS/SS: QCD MC overlaid with Data - nonQCD MC")
     p.add_argument("--era",required=True,choices=list(ERA_GROUPS)); p.add_argument("--base-dir",default=BASE); p.add_argument("--output-dir",default=OUT); p.add_argument("--trigger",default="")
     p.add_argument("--qcd-file",default="NIsoMuon_QCD_Inclusive.root"); p.add_argument("--muon-id",default="POGMedium"); p.add_argument("--jet-id",default="tight"); p.add_argument("--hist-name",default="Dilepton_Mass")
-    p.add_argument("--xmin",type=float,default=2.); p.add_argument("--xmax",type=float,default=80.); p.add_argument("--bin-width",type=float,default=1.); p.add_argument("--no-variable-binning",dest="variable_binning",action="store_false"); p.set_defaults(variable_binning=True)
-    p.add_argument("--logx",action="store_true"); p.add_argument("--logy",action="store_true"); p.add_argument("--ymin",type=float); p.add_argument("--ymax",type=float); p.add_argument("--ratio-min",type=float,default=0.); p.add_argument("--ratio-max",type=float,default=2.5); p.add_argument("--no-bin-width",dest="divide_by_width",action="store_false"); p.set_defaults(divide_by_width=True)
-    b=p.add_mutually_exclusive_group(); b.add_argument("--blind-data",dest="blind",action="store_true",help="Blind data in 11<m<80 GeV (default)"); b.add_argument("--unblind-data",dest="blind",action="store_false",help="Show data in 11<m<80 GeV"); p.set_defaults(blind=True)
+    p.add_argument("--xmin",type=float,default=2.); p.add_argument("--xmax",type=float,default=100.); p.add_argument("--bin-width",type=float,default=1.); p.add_argument("--no-variable-binning",dest="variable_binning",action="store_false"); p.set_defaults(variable_binning=True)
+    p.add_argument("--logx",action="store_true"); p.add_argument("--logy",action="store_true"); p.add_argument("--ymin",type=float); p.add_argument("--ymax",type=float); p.add_argument("--ratio-min",type=float,default=0.); p.add_argument("--ratio-max",type=float,default=4.); p.add_argument("--no-bin-width",dest="divide_by_width",action="store_false"); p.set_defaults(divide_by_width=True)
+    b=p.add_mutually_exclusive_group(); b.add_argument("--blind",dest="blind",action="store_true",help="Blind data in 11<m<80 GeV (default)"); b.add_argument("--unblind",dest="blind",action="store_false",help="Show data in 11<m<80 GeV"); p.set_defaults(blind=True)
     p.add_argument("--extensions",default="pdf,png"); args=p.parse_args()
     if args.xmax<=args.xmin: raise PlotError("--xmax must be larger than --xmin")
     if args.logx and args.xmin<=0: raise PlotError("--logx requires --xmin > 0")
@@ -146,12 +146,12 @@ def main():
     qos.SetMinimum(ymin); qos.SetMaximum(max(ymax,ymin*10 if args.logy else ymax)); qos.GetYaxis().SetTitle("Events / GeV" if args.divide_by_width else "Events / bin"); qos.GetXaxis().SetRangeUser(args.xmin,args.xmax); qos.GetXaxis().SetLabelSize(0)
     qos.Draw("HIST"); qss.Draw("HIST SAME"); dos.Draw("E1P SAME"); dss.Draw("E1P SAME")
     leg=ROOT.TLegend(.56,.67,.94,.86); leg.SetBorderSize(0); leg.SetFillStyle(0); leg.AddEntry(qos,"QCD MC, OS","l"); leg.AddEntry(qss,"QCD MC, SS","l"); leg.AddEntry(dos,"Data - nonQCD MC, OS","lep"); leg.AddEntry(dss,"Data - nonQCD MC, SS","lep"); leg.Draw()
-    tx=ROOT.TLatex(); tx.SetNDC(); tx.SetTextFont(42); tx.SetTextSize(.047); tx.DrawLatex(.12,.925,"#bf{CMS} #it{Preliminary}"); tx.SetTextAlign(31); tx.SetTextSize(.038); tx.DrawLatex(.95,.925,lumi_label(args.era)); tx.SetTextAlign(11); tx.SetTextSize(.031); tx.DrawLatex(.15,.865,"BJet category: OS vs SS")
-    box=ROOT.TPaveText(.145,.59,.535,.815,"NDC"); box.SetBorderSize(0); box.SetFillStyle(0); box.SetTextAlign(12); box.SetTextSize(.025); box.AddText("Integrated OS/SS"); box.AddText(f"6<m_{{#mu#mu}}<9: QCD {fmt(qlow)}, Data {fmt(dlow)}"); box.AddText(f"11<m_{{#mu#mu}}<80: QCD {fmt(qhigh)}"); box.AddText("Data = blinded" if args.blind else f"Data = {fmt(dhigh)}"); box.Draw()
+    tx=ROOT.TLatex(); tx.SetNDC(); tx.SetTextFont(42); tx.SetTextSize(.047); tx.DrawLatex(.12,.925,"#bf{CMS} #it{Preliminary}"); tx.SetTextAlign(31); tx.SetTextSize(.038); tx.DrawLatex(.95,.925,lumi_label(args.era)); tx.SetTextAlign(11); tx.SetTextSize(.035); tx.DrawLatex(.15,.8,"BJet category: OS vs SS")
+    box=ROOT.TPaveText(.13,.07,.8,.45,"NDC"); box.SetBorderSize(0); box.SetFillStyle(0); box.SetTextAlign(12); box.SetTextSize(.03); box.AddText("Integrated OS/SS"); box.AddText("6<m_{{#mu#mu}}<9:"); box.AddText(f"  QCD MC = {fmt(qlow)}"); box.AddText(f"  Data = {fmt(dlow)}"); box.AddText("11<m_{{#mu#mu}}<80:"); box.AddText(f"  QCD MC ={fmt(qhigh)}"); box.AddText(f"  Data = blinded" if args.blind else f"  Data = {fmt(dhigh)}"); box.Draw()
     lo.cd(); qr=ratio_hist(qos,qss,"qr"); dr=ratio_hist(dos,dss,"dr"); qr.SetLineColor(ROOT.kRed+1); qr.SetMarkerColor(ROOT.kRed+1); qr.SetMarkerStyle(20); dr.SetMarkerColor(ROOT.kBlack); dr.SetLineColor(ROOT.kBlack); dr.SetMarkerStyle(20)
     qr.GetYaxis().SetRangeUser(args.ratio_min,args.ratio_max); qr.GetYaxis().SetTitle("OS / SS"); qr.GetYaxis().SetTitleSize(.11); qr.GetYaxis().SetTitleOffset(.50); qr.GetYaxis().SetLabelSize(.09); qr.GetYaxis().SetNdivisions(505); qr.GetXaxis().SetTitle("m_{#mu#mu} [GeV]"); qr.GetXaxis().SetTitleSize(.13); qr.GetXaxis().SetLabelSize(.10); qr.GetXaxis().SetRangeUser(args.xmin,args.xmax)
     qr.Draw("E1P"); dr.Draw("E1P SAME"); line=ROOT.TLine(args.xmin,1,args.xmax,1); line.SetLineStyle(2); line.SetLineColor(ROOT.kGray+2); line.Draw("SAME"); qr.Draw("E1P SAME"); dr.Draw("E1P SAME"); lo.SetGridy()
-    rleg=ROOT.TLegend(.58,.74,.94,.94); rleg.SetBorderSize(0); rleg.SetFillStyle(0); rleg.SetTextSize(.075); rleg.AddEntry(qr,"QCD MC","lep"); rleg.AddEntry(dr,"Data - nonQCD MC","lep"); rleg.Draw()
+    #rleg=ROOT.TLegend(.58,.74,.94,.94); rleg.SetBorderSize(0); rleg.SetFillStyle(0); rleg.SetTextSize(.075); rleg.AddEntry(qr,"QCD MC","lep"); rleg.AddEntry(dr,"Data - nonQCD MC","lep"); rleg.Draw()
     out=Path(args.output_dir); out.mkdir(parents=True,exist_ok=True); tag="Blind" if args.blind else "Unblind"; tag += "_LogX" if args.logx else ""; tag += "_LogY" if args.logy else ""; base=f"OS_SS_Comparison_{era_name(args.era)}_BJet_QCDMC_DataMinusNonQCDMC_{tag}"
     for ext in [x.strip().lstrip('.') for x in args.extensions.split(',') if x.strip()]: c.SaveAs(str(out/f"{base}.{ext}")); print("[SAVED]",out/f"{base}.{ext}")
 
