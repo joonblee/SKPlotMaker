@@ -2525,21 +2525,15 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
         if normalisation <= 0.0 or not math.isfinite(normalisation):
             raise RuntimeError(f"Invalid corrected QCD OS/SS transfer factor: {normalisation}")
 
-        # The modelling envelope is additive in transfer-factor space.  The
-        # ROOT NormDown/NormUp templates are written as the corresponding
-        # multiplicative yield ratios because QCD_norm is consumed as an
-        # asymmetric lnN nuisance downstream.
-        norm_abs_unc = abs(normalisation - mc_high_ratio)
-        transfer_down = normalisation - norm_abs_unc
-        transfer_up = normalisation + norm_abs_unc
-        if transfer_down <= 0.0:
-            print(
-                "[WARNING] QCD transfer-factor Down variation is non-positive; "
-                "clipping it to a small positive value for lnN compatibility."
-            )
-            transfer_down = max(1.0e-6 * normalisation, 1.0e-12)
-        norm_down = transfer_down / normalisation
-        norm_up = transfer_up / normalisation
+        # QCD_norm is a multiplicative lnN nuisance.  Define the modelling
+        # uncertainty symmetrically in log space, with one 1-sigma variation
+        # reaching the uncorrected high-mass QCD-MC transfer factor.
+        log_kappa = abs(math.log(normalisation / mc_high_ratio))
+        norm_kappa = math.exp(log_kappa)
+        norm_down = 1.0 / norm_kappa
+        norm_up = norm_kappa
+        transfer_down = normalisation * norm_down
+        transfer_up = normalisation * norm_up
 
         print(
             f"[fit.root] DT(Data-nonQCD) OS/SS, {low_min:g}<m<{low_max:g} = "
@@ -2558,8 +2552,8 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
             f"{normalisation:g}"
         )
         print(
-            f"[fit.root] Norm envelope: delta=|corrected-MC(high)|={norm_abs_unc:g}, "
-            f"Down={transfer_down:g} ({norm_down:g}), "
+            "[fit.root] Norm lnN: kappa=exp(|ln(corrected/MC(high))|)="
+            f"{norm_kappa:g}, Down={transfer_down:g} ({norm_down:g}), "
             f"Up={transfer_up:g} ({norm_up:g})"
         )
 
