@@ -8,7 +8,9 @@ PyROOT replacement for the historical OS_SS_ComparisonPlot.cc:
   * OS: black data points
   * SS: red line with a statistical uncertainty band
   * lower panel: OS / SS
-  * optional --apply-scale rescales SS by one OS/SS integral ratio
+  * optional --apply-scale rescales SS by the OS/SS integral ratio
+  * optional --overlay-lightjet adds LightJet OS/SS and its OS/SS ratio
+  * with --overlay-lightjet, primary and LightJet SS are scaled independently
   * default mass binning is identical to dy_bkg_estimation.py
   * OS and SS jet categories can be selected independently
 
@@ -33,6 +35,7 @@ Examples:
   python3 os_ss_comparison.py --era Run2 --mode qcd-mc --apply-scale
   python3 os_ss_comparison.py --era Run2 --os-category bjet --ss-category onebjet
   python3 os_ss_comparison.py --era Run2 --os-category bjet --ss-category inclusive
+  python3 os_ss_comparison.py --era Run2 --mode raw-data --overlay-lightjet
   python3 os_ss_comparison.py --era Run2 --mode qcd-mc \
       --no-variable-binning --bin-width 1
 
@@ -503,6 +506,15 @@ def main(argv=None) -> int:
             "Default: value of --jet-flavour."
         ),
     )
+    parser.add_argument(
+        "--overlay-lightjet",
+        action="store_true",
+        help=(
+            "Overlay LightJet OS and SS on the primary comparison and draw "
+            "the LightJet OS/SS ratio in the lower panel. If --apply-scale "
+            "is used, the LightJet SS scale is calculated independently."
+        ),
+    )
     parser.add_argument("--hist-name", default=DEFAULT_HIST_NAME)
 
     parser.add_argument(
@@ -597,6 +609,15 @@ def main(argv=None) -> int:
     args.os_category = os_category
     args.ss_category = ss_category
 
+    if args.overlay_lightjet and (
+        os_category == "lightjet" or ss_category == "lightjet"
+    ):
+        raise PlotError(
+            "--overlay-lightjet adds a separate LightJet OS/SS pair. "
+            "Use a non-LightJet primary OS/SS category (for example the "
+            "default BJet/BJet comparison)."
+        )
+
     print(
         f"[CATEGORY] OS = {category_root_tag(os_category)} "
         f"({category_label(os_category)})"
@@ -621,6 +642,23 @@ def main(argv=None) -> int:
         h_ss_raw = load_data(ROOT, args, "SS", ss_category)
         content_label = "Data"
 
+    h_light_os_raw = None
+    h_light_ss_raw = None
+    if args.overlay_lightjet:
+        if args.mode == "subtract-nonqcd":
+            h_light_os_raw = load_qcd_enriched_data(
+                ROOT, args, "OS", "lightjet"
+            )
+            h_light_ss_raw = load_qcd_enriched_data(
+                ROOT, args, "SS", "lightjet"
+            )
+        elif args.mode == "qcd-mc":
+            h_light_os_raw = load_qcd_mc(ROOT, args, "OS", "lightjet")
+            h_light_ss_raw = load_qcd_mc(ROOT, args, "SS", "lightjet")
+        else:
+            h_light_os_raw = load_data(ROOT, args, "OS", "lightjet")
+            h_light_ss_raw = load_data(ROOT, args, "SS", "lightjet")
+
     os_norm, os_norm_err = integral_open(h_os_raw, args.norm_min, args.norm_max)
     ss_norm, ss_norm_err = integral_open(h_ss_raw, args.norm_min, args.norm_max)
 
@@ -636,9 +674,46 @@ def main(argv=None) -> int:
         f"[OS/SS] normalization window: "
         f"{args.norm_min:g} < m(mumu) < {args.norm_max:g} GeV"
     )
-    print(f"[OS/SS] OS integral = {os_norm:.10g} +/- {os_norm_err:.10g}")
-    print(f"[OS/SS] SS integral = {ss_norm:.10g} +/- {ss_norm_err:.10g}")
-    print(f"[OS/SS] OS/SS scale = {scale_factor:.10g}")
+    print(
+        f"[OS/SS][{category_root_tag(os_category)}/"
+        f"{category_root_tag(ss_category)}] OS integral = "
+        f"{os_norm:.10g} +/- {os_norm_err:.10g}"
+    )
+    print(
+        f"[OS/SS][{category_root_tag(os_category)}/"
+        f"{category_root_tag(ss_category)}] SS integral = "
+        f"{ss_norm:.10g} +/- {ss_norm_err:.10g}"
+    )
+    print(
+        f"[OS/SS][{category_root_tag(os_category)}/"
+        f"{category_root_tag(ss_category)}] OS/SS scale = {scale_factor:.10g}"
+    )
+
+    light_scale_factor = None
+    if args.overlay_lightjet:
+        light_os_norm, light_os_norm_err = integral_open(
+            h_light_os_raw, args.norm_min, args.norm_max
+        )
+        light_ss_norm, light_ss_norm_err = integral_open(
+            h_light_ss_raw, args.norm_min, args.norm_max
+        )
+        if light_ss_norm <= 0.0:
+            raise PlotError(
+                f"LightJet SS integral is non-positive in "
+                f"{args.norm_min:g}<m<{args.norm_max:g}: {light_ss_norm:g}"
+            )
+        light_scale_factor = light_os_norm / light_ss_norm
+        print(
+            f"[OS/SS][LightJet] OS integral = "
+            f"{light_os_norm:.10g} +/- {light_os_norm_err:.10g}"
+        )
+        print(
+            f"[OS/SS][LightJet] SS integral = "
+            f"{light_ss_norm:.10g} +/- {light_ss_norm_err:.10g}"
+        )
+        print(
+            f"[OS/SS][LightJet] OS/SS scale = {light_scale_factor:.10g}"
+        )
 
     edges = make_edges(
         args.xmin,
@@ -654,12 +729,27 @@ def main(argv=None) -> int:
     h_os = rebin_hist(h_os_raw, edges, "h_os_compare")
     h_ss = rebin_hist(h_ss_raw, edges, "h_ss_compare")
 
+    h_light_os = None
+    h_light_ss = None
+    if args.overlay_lightjet:
+        h_light_os = rebin_hist(
+            h_light_os_raw, edges, "h_lightjet_os_compare"
+        )
+        h_light_ss = rebin_hist(
+            h_light_ss_raw, edges, "h_lightjet_ss_compare"
+        )
+
     if args.apply_scale:
         h_ss.Scale(scale_factor)
+        if args.overlay_lightjet:
+            h_light_ss.Scale(light_scale_factor)
 
     if args.divide_by_width:
         divide_by_bin_width(h_os)
         divide_by_bin_width(h_ss)
+        if args.overlay_lightjet:
+            divide_by_bin_width(h_light_os)
+            divide_by_bin_width(h_light_ss)
 
     h_os.SetMarkerStyle(20)
     h_os.SetMarkerSize(0.85)
@@ -678,6 +768,27 @@ def main(argv=None) -> int:
     h_ss_band.SetLineWidth(0)
     h_ss_band.SetFillColor(ROOT.kGray + 1)
     h_ss_band.SetFillStyle(3144)
+
+    h_light_ss_band = None
+    if args.overlay_lightjet:
+        h_light_os.SetMarkerStyle(24)
+        h_light_os.SetMarkerSize(0.90)
+        h_light_os.SetMarkerColor(ROOT.kBlue + 1)
+        h_light_os.SetLineColor(ROOT.kBlue + 1)
+        h_light_os.SetLineWidth(1)
+
+        h_light_ss.SetMarkerSize(0.0)
+        h_light_ss.SetLineColor(ROOT.kBlue + 1)
+        h_light_ss.SetLineStyle(2)
+        h_light_ss.SetLineWidth(2)
+        h_light_ss.SetFillStyle(0)
+
+        h_light_ss_band = h_light_ss.Clone("h_lightjet_ss_compare_band")
+        h_light_ss_band.SetDirectory(0)
+        h_light_ss_band.SetMarkerSize(0.0)
+        h_light_ss_band.SetLineWidth(0)
+        h_light_ss_band.SetFillColor(ROOT.kBlue - 9)
+        h_light_ss_band.SetFillStyle(3354)
 
     canvas = ROOT.TCanvas("c_os_ss", "", 900, 900)
     upper = ROOT.TPad("upper", "", 0.0, 0.30, 1.0, 1.0)
@@ -701,13 +812,17 @@ def main(argv=None) -> int:
 
     upper.cd()
 
-    max_y = max(float(h_os.GetMaximum()), float(h_ss.GetMaximum()))
+    plotted_hists = [h_os, h_ss]
+    if args.overlay_lightjet:
+        plotted_hists.extend([h_light_os, h_light_ss])
+
+    max_y = max(float(hist.GetMaximum()) for hist in plotted_hists)
     ymax = args.ymax if args.ymax is not None else max_y * (50.0 if args.logy else 1.45)
 
     if args.ymin is not None:
         ymin = args.ymin
     elif args.logy:
-        ymin = max(1.0e-3, 0.5 * positive_minimum(h_os, h_ss))
+        ymin = max(1.0e-3, 0.5 * positive_minimum(*plotted_hists))
     else:
         ymin = 0.0
 
@@ -727,14 +842,22 @@ def main(argv=None) -> int:
 
     h_os.Draw("PE")
     h_ss_band.Draw("E2 SAME")
+    if args.overlay_lightjet:
+        h_light_ss_band.Draw("E2 SAME")
     h_ss.Draw("HIST SAME")
+    if args.overlay_lightjet:
+        h_light_ss.Draw("HIST SAME")
+        h_light_os.Draw("PE SAME")
     h_os.Draw("PE SAME")
 
-    legend = ROOT.TLegend(0.55, 0.66, 0.93, 0.86)
+    if args.overlay_lightjet:
+        legend = ROOT.TLegend(0.50, 0.56, 0.93, 0.86)
+    else:
+        legend = ROOT.TLegend(0.55, 0.66, 0.93, 0.86)
     legend.SetBorderSize(0)
     legend.SetFillStyle(0)
     legend.SetTextFont(42)
-    legend.SetTextSize(0.030)
+    legend.SetTextSize(0.027 if args.overlay_lightjet else 0.030)
     legend.AddEntry(
         h_os,
         f"OS {content_label}, {category_root_tag(os_category)}",
@@ -745,7 +868,31 @@ def main(argv=None) -> int:
     if args.apply_scale:
         ss_label += f" #times {scale_factor:.3g}"
     legend.AddEntry(h_ss, ss_label, "l")
-    legend.AddEntry(h_ss_band, "SS stat. unc.", "f")
+    legend.AddEntry(
+        h_ss_band,
+        (
+            f"{category_root_tag(ss_category)} SS stat. unc."
+            if args.overlay_lightjet
+            else "SS stat. unc."
+        ),
+        "f",
+    )
+
+    if args.overlay_lightjet:
+        legend.AddEntry(
+            h_light_os,
+            f"OS {content_label}, LightJet",
+            "lep",
+        )
+        light_ss_label = f"SS {content_label}, LightJet"
+        if args.apply_scale:
+            light_ss_label += f" #times {light_scale_factor:.3g}"
+        legend.AddEntry(h_light_ss, light_ss_label, "l")
+        legend.AddEntry(
+            h_light_ss_band,
+            "LightJet SS stat. unc.",
+            "f",
+        )
     legend.Draw()
 
     if os_category == ss_category:
@@ -755,15 +902,23 @@ def main(argv=None) -> int:
             f"OS: {category_label(os_category)}",
             f"SS: {category_label(ss_category)}",
         ]
+    if args.overlay_lightjet:
+        info.append("LightJet OS/SS overlay")
 
     if args.mode == "subtract-nonqcd":
         info.append("Top, DY, Others subtracted")
     elif args.mode == "qcd-mc":
         info.append("QCD simulation only")
     if args.apply_scale:
-        info.append(
-            f"SS scaled using {args.norm_min:g} < m < {args.norm_max:g} GeV"
-        )
+        if args.overlay_lightjet:
+            info.append(
+                f"SS scaled independently using "
+                f"{args.norm_min:g} < m < {args.norm_max:g} GeV"
+            )
+        else:
+            info.append(
+                f"SS scaled using {args.norm_min:g} < m < {args.norm_max:g} GeV"
+            )
 
     keep = draw_cms_header(ROOT, upper, args, info)
     upper.SetTickx()
@@ -780,6 +935,16 @@ def main(argv=None) -> int:
     h_ratio.SetMarkerSize(0.75)
     h_ratio.SetMarkerColor(ROOT.kBlack)
     h_ratio.SetLineColor(ROOT.kBlack)
+
+    h_light_ratio = None
+    if args.overlay_lightjet:
+        h_light_ratio = h_light_os.Clone("h_lightjet_os_over_ss")
+        h_light_ratio.SetDirectory(0)
+        h_light_ratio.Divide(h_light_ss)
+        h_light_ratio.SetMarkerStyle(24)
+        h_light_ratio.SetMarkerSize(0.80)
+        h_light_ratio.SetMarkerColor(ROOT.kBlue + 1)
+        h_light_ratio.SetLineColor(ROOT.kBlue + 1)
 
     h_ratio.GetYaxis().SetRangeUser(args.ratio_min, args.ratio_max)
     h_ratio.GetYaxis().SetTitle("OS / SS")
@@ -805,6 +970,8 @@ def main(argv=None) -> int:
     unity.SetLineWidth(2)
     unity.Draw("SAME")
     h_ratio.Draw("PE SAME")
+    if args.overlay_lightjet:
+        h_light_ratio.Draw("PE SAME")
     keep.append(unity)
 
     lower.SetGridy(True)
@@ -830,9 +997,12 @@ def main(argv=None) -> int:
     ss_tag = category_root_tag(ss_category)
     category_tag = os_tag if os_tag == ss_tag else f"OS{os_tag}_SS{ss_tag}"
 
+    overlay_tag = "_OverlayLightJet" if args.overlay_lightjet else ""
+
     base_name = (
         f"OS_SS_Comparison_{canonical_era(args.era)}_"
-        f"{args.muon_id}_{args.jet_id}_{category_tag}_{mode_tag}{scale_tag}"
+        f"{args.muon_id}_{args.jet_id}_{category_tag}_{mode_tag}"
+        f"{scale_tag}{overlay_tag}"
     ).replace(".", "p")
 
     extensions = [
