@@ -42,7 +42,9 @@ Fit modes and objectives
       template plus Norm and analytic-function-envelope Shape variations.
   --mode qcd-mc
       Fits the QCD MC shape.  --fit-objective auto selects ROOT weighted
-      likelihood; chi2 and log-chi2 are available as cross-checks.
+      likelihood; chi2 and log-chi2 are available as cross-checks.  QCD-MC
+      log-chi2 fits use a weighted-likelihood prefit followed by a local
+      log-chi2 refinement to stabilise sparse Run-3 tails.
 The interval 9 < m(mumu) < 11 GeV is excluded from every QCD-MC fit objective
 and diagnostic.
 
@@ -1994,8 +1996,13 @@ def fit_one_model(
     selected_by_key: Dict[str, SelectedFit],
     anchor: Optional[FitAnchor],
     constraint: Optional[FitConstraint],
+    preferred_seed: Optional[Tuple[float, ...]] = None,
 ) -> SelectedFit:
-    seeds = build_seed_list(model, selected_by_key, anchor, constraint)[:max_attempts]
+    seeds = build_seed_list(model, selected_by_key, anchor, constraint)
+    if preferred_seed is not None:
+        clipped_prefit_seed = clip_seed(preferred_seed, shape_bounds(model, constraint))
+        seeds = deduplicate_seeds([clipped_prefit_seed, *seeds])
+    seeds = seeds[:max_attempts]
     candidates: List[FitCandidate] = []
 
     if model.key == "power_exp_logistic":
@@ -2046,6 +2053,62 @@ def fit_one_model(
     return selected
 
 
+
+def selected_shape_seed(selected: SelectedFit) -> Tuple[float, ...]:
+    return tuple(
+        float(selected.function.GetParameter(index))
+        for index in range(1, selected.model.npar)
+    )
+
+
+def build_log_prefit_constraint(
+    model: FitModelConfig,
+    prefit: SelectedFit,
+) -> FitConstraint:
+    """Build broad local bounds around a weighted-likelihood QCD-MC prefit.
+
+    The log-chi2 objective only contains positive bins and can develop remote
+    local minima when the Run-3 tail is sparse.  The weighted-likelihood prefit
+    locates the physically relevant basin using all non-negative weighted
+    counts; log-chi2 then refines the shape inside a deliberately broad local
+    neighbourhood.  This is not an SS-data constraint.
+    """
+    shape = selected_shape_seed(prefit)
+    relative_half_width = {"n": 0.75, "k": 1.00, "w": 1.00}
+    minimum_half_width = {"n": 1.00, "k": 0.10, "m0": 6.0, "w": 2.0}
+    local_bounds = []
+    for (name, global_low, global_high), value in zip(BASE_SHAPE_BOUNDS[model.key], shape):
+        half = max(
+            relative_half_width.get(name, 0.0) * abs(value),
+            minimum_half_width[name],
+        )
+        low = max(global_low, value - half)
+        high = min(global_high, value + half)
+        if not high > low:
+            low, high = global_low, global_high
+        local_bounds.append((name, low, high))
+
+    amplitude = max(abs(float(prefit.function.GetParameter(0))), 1e-20)
+    return FitConstraint(
+        source_label="weighted-likelihood prefit",
+        anchor=FitAnchor(amplitude=amplitude, shape=shape),
+        shape_bounds=tuple(local_bounds),
+        amplitude_reference=amplitude,
+        amplitude_bounds=(amplitude / 100.0, amplitude * 100.0),
+    )
+
+
+def selected_fit_rank(selected: SelectedFit, objective: str) -> Tuple[float, ...]:
+    if objective == "log-chi2":
+        log_metric = selected.metrics.log_chi2_ndf
+        stat_metric = selected.metrics.stat_chi2_ndf
+        return (
+            0.0 if selected.accepted else 1.0,
+            log_metric if math.isfinite(log_metric) else 1e99,
+            stat_metric if math.isfinite(stat_metric) else 1e99,
+        )
+    return diagnostics_score(selected.diagnostics)
+
 def fit_all_models(
     ROOT,
     density,
@@ -2053,6 +2116,7 @@ def fit_all_models(
     mode: ModeConfig,
     objective: str,
     args: argparse.Namespace,
+    prefit_data: Optional[FitData] = None,
 ):
     colours = (
         ROOT.kBlue + 1, ROOT.kRed + 1, ROOT.kGreen + 2,
@@ -2093,31 +2157,93 @@ def fit_all_models(
             for model in FIT_MODELS
         }
 
-    selected_by_key: Dict[str, SelectedFit] = {}
     internal_order = (
         "power_erf", "power_logistic", "exp_erf", "exp_logistic",
         "power_exp_erf", "power_exp_logistic",
     )
+
+    # QCD log-chi2 is sensitive to sparse positive-only Run-3 tails.  First
+    # locate the correct global basin with the weighted-likelihood objective,
+    # then use that solution as the first seed and (unless the user explicitly
+    # requested SS-anchor hard constraints) as a broad local parameter box.
+    prefit_by_key: Dict[str, SelectedFit] = {}
+    prefit_seeds: Dict[str, Tuple[float, ...]] = {}
+    effective_constraints = dict(constraints)
+    if mode.key == QCD_MODE.key and objective == "log-chi2":
+        if prefit_data is None:
+            raise RuntimeError("QCD log-chi2 requires a weighted-likelihood prefit dataset.")
+        prefit_attempts = min(args.fit_max_attempts, 12)
+        print(
+            "[LOG-CHI2 PREFIT] Running weighted-likelihood prefit before "
+            f"log-chi2 refinement (max attempts/model={prefit_attempts})."
+        )
+        for key in internal_order:
+            prefit_by_key[key] = fit_one_model(
+                ROOT, density, prefit_data, model_by_key[key], mode,
+                "weighted-likelihood", prefit_attempts,
+                args.log_relative_error_floor, False,
+                prefit_by_key, anchors[key], constraints[key],
+            )
+            prefit_seeds[key] = selected_shape_seed(prefit_by_key[key])
+            if constraints[key] is None:
+                effective_constraints[key] = build_log_prefit_constraint(
+                    model_by_key[key], prefit_by_key[key]
+                )
+                bounds_text = ", ".join(
+                    f"{name}=[{low:g},{high:g}]"
+                    for name, low, high in effective_constraints[key].shape_bounds
+                )
+                print(
+                    f"[LOG-CHI2 PREFIT] model={model_by_key[key].label.replace('#times','x')} "
+                    f"seed={prefit_seeds[key]} localBounds: {bounds_text}"
+                )
+
+    selected_by_key: Dict[str, SelectedFit] = {}
     for key in internal_order:
         selected_by_key[key] = fit_one_model(
             ROOT, density, fit_data, model_by_key[key], mode, objective,
             args.fit_max_attempts, args.log_relative_error_floor,
-            args.fit_attempt_details, selected_by_key, anchors[key], constraints[key],
+            args.fit_attempt_details, selected_by_key, anchors[key],
+            effective_constraints[key], prefit_seeds.get(key),
         )
 
-    # One compact recovery pass for invalid models, now with all partner results available.
+    # Recovery pass.  In log-chi2 mode, an accepted Minuit minimum can still be
+    # clearly pathological.  A very large recomputed log-chi2/ndf therefore
+    # triggers one SS-anchor-constrained retry; the retry is retained only when
+    # it actually improves the requested objective.
     for key in internal_order:
-        if selected_by_key[key].accepted:
+        current = selected_by_key[key]
+        pathological_log = (
+            mode.key == QCD_MODE.key
+            and objective == "log-chi2"
+            and (
+                not math.isfinite(current.metrics.log_chi2_ndf)
+                or current.metrics.log_chi2_ndf > 20.0
+            )
+        )
+        if current.accepted and not pathological_log:
             continue
-        print(f"[FIT RECOVERY] model={model_by_key[key].label.replace('#times','x')}")
+
+        retry_constraint = effective_constraints[key]
+        recovery_reason = "invalid fit"
+        if pathological_log:
+            recovery_reason = f"logChi2/ndf={current.metrics.log_chi2_ndf:.6g}"
+            if constraints[key] is None:
+                retry_constraint = build_qcd_constraint(
+                    ROOT, density, mode, args.year, model_by_key[key],
+                    resolved_anchors[key],
+                )
+        print(
+            f"[FIT RECOVERY] model={model_by_key[key].label.replace('#times','x')} "
+            f"reason={recovery_reason}"
+        )
         recovered = fit_one_model(
             ROOT, density, fit_data, model_by_key[key], mode, objective,
             args.fit_max_attempts, args.log_relative_error_floor,
-            args.fit_attempt_details, selected_by_key, anchors[key], constraints[key],
+            args.fit_attempt_details, selected_by_key, anchors[key],
+            retry_constraint, prefit_seeds.get(key),
         )
-        if diagnostics_score(recovered.diagnostics) < diagnostics_score(
-            selected_by_key[key].diagnostics
-        ):
+        if selected_fit_rank(recovered, objective) < selected_fit_rank(current, objective):
             selected_by_key[key] = recovered
 
     selected = []
@@ -2255,7 +2381,7 @@ def draw_cms_header(ROOT, pad, period: str) -> object:
     latex.SetTextAlign(31)
     latex.SetTextFont(42)
     latex.SetTextSize(0.034)
-    latex.DrawLatex(0.955, 0.935, cms_lumi_label(period))
+    latex.DrawLatex(0.935, 0.935, cms_lumi_label(period))
     return latex
 
 
@@ -2283,12 +2409,12 @@ def draw_fit_plot(
 
     canvas = ROOT.TCanvas("myCanvas", "", 1000, 1000)
     upper = ROOT.TPad("upper_pad", "", 0.0, 0.26, 1.0, 1.0, 0)
-    upper.SetLeftMargin(0.1)
+    upper.SetLeftMargin(0.12)
     upper.SetLogx(True)
     upper.SetLogy(True)
     upper.Draw()
     lower = ROOT.TPad("lower_pad", "", 0.0, 0.0, 1.0, 0.33, 0)
-    lower.SetLeftMargin(0.1)
+    lower.SetLeftMargin(0.12)
     lower.SetBottomMargin(0.3)
     lower.SetLogx(True)
     lower.Draw()
@@ -2300,10 +2426,10 @@ def draw_fit_plot(
         selected.function.Draw("LSAME")
 
     title_x = x_axis_title(ROOT, mode)
-    density.GetYaxis().SetTitle("Events (log)")
+    density.GetYaxis().SetTitle("Events/GeV (log)")
     density.GetYaxis().SetTitleSize(0.045)
     density.GetYaxis().SetLabelSize(0.040)
-    density.GetYaxis().SetTitleOffset(1.0)
+    density.GetYaxis().SetTitleOffset(1.18)
     density.GetXaxis().SetTitle(title_x)
     density.GetXaxis().SetTitleSize(0.0)
     density.GetXaxis().SetLabelSize(0.025)
@@ -2824,8 +2950,15 @@ def run(args: argparse.Namespace) -> int:
         fit_data = build_fit_data(
             ROOT, prepared, mode, objective, args.log_relative_error_floor
         )
+        prefit_data = None
+        if mode.key == QCD_MODE.key and objective == "log-chi2":
+            prefit_data = build_fit_data(
+                ROOT, prepared, mode, "weighted-likelihood",
+                args.log_relative_error_floor,
+            )
+            print("[INFO] log-chi2 stabilisation = weighted-likelihood prefit + local refinement")
         selected, colours, styles = fit_all_models(
-            ROOT, density, fit_data, mode, objective, args
+            ROOT, density, fit_data, mode, objective, args, prefit_data
         )
         pdf, png, plot_objects = draw_fit_plot(
             ROOT, args, mode, objective, density, selected, colours, styles
