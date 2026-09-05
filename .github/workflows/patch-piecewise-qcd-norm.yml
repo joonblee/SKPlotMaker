@@ -1,0 +1,85 @@
+name: One-shot piecewise QCD normalisation patch
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/patch-piecewise-qcd-norm.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Patch qcd_bkg_estimation.py
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('qcd_bkg_estimation.py')
+          text = path.read_text()
+
+          def replace_once(old, new):
+              global text
+              n = text.count(old)
+              if n != 1:
+                  raise RuntimeError(f'Expected one match, found {n}: {old[:120]!r}')
+              text = text.replace(old, new, 1)
+
+          # Helper: apply different OS/SS transfer factors to low- and high-mass
+          # parts of a single output bin. This remains correct even if a bin
+          # happens to touch a control/signal-region boundary.
+          marker = '''def make_output_histogram(out_file, source_hist, directory_name: str, histogram_name: str):\n'''
+          helper = '''def fit_integral_with_transfer(\n    function,\n    hist,\n    index: int,\n    low_transfer: float,\n    high_transfer: float,\n) -> float:\n    low_value = fit_integral_in_output_bin(\n        function, hist, index, (QCD_TRANSFER_LOW_WINDOW,)\n    )\n    high_value = fit_integral_in_output_bin(\n        function, hist, index, (QCD_TRANSFER_HIGH_WINDOW,)\n    )\n    return low_transfer * low_value + high_transfer * high_value\n\n\n'''
+          if helper not in text:
+              if marker not in text:
+                  raise RuntimeError('Could not find make_output_histogram marker')
+              text = text.replace(marker, helper + marker, 1)
+
+          old_norm = '''        dt_low_ratio = dt_os_low / dt_ss_low\n        mc_low_ratio = mc_os_low / mc_ss_low\n        mc_high_ratio = mc_os_high / mc_ss_high\n        normalisation = dt_low_ratio * mc_high_ratio / mc_low_ratio\n        if normalisation <= 0.0 or not math.isfinite(normalisation):\n            raise RuntimeError(f"Invalid corrected QCD OS/SS transfer factor: {normalisation}")\n\n        # QCD_norm is a multiplicative lnN nuisance.  Define the modelling\n        # uncertainty symmetrically in log space, with one 1-sigma variation\n        # reaching the uncorrected high-mass QCD-MC transfer factor.\n        log_kappa = abs(math.log(normalisation / mc_high_ratio))\n        norm_kappa = math.exp(log_kappa)\n        norm_down = 1.0 / norm_kappa\n        norm_up = norm_kappa\n        transfer_down = normalisation * norm_down\n        transfer_up = normalisation * norm_up\n'''
+          new_norm = '''        dt_low_ratio = dt_os_low / dt_ss_low\n        mc_low_ratio = mc_os_low / mc_ss_low\n        mc_high_ratio = mc_os_high / mc_ss_high\n\n        # Piecewise OS/SS transfer prescription:\n        #   low mass (5--9 GeV): use the data-measured OS/SS ratio directly;\n        #   high mass (11--80 GeV): transport that data calibration with the\n        #   QCD-MC high/low double ratio.\n        low_normalisation = dt_low_ratio\n        high_normalisation = dt_low_ratio * mc_high_ratio / mc_low_ratio\n        for label, value in (\n            ("low-mass QCD OS/SS transfer factor", low_normalisation),\n            ("high-mass corrected QCD OS/SS transfer factor", high_normalisation),\n        ):\n            if value <= 0.0 or not math.isfinite(value):\n                raise RuntimeError(f"Invalid {label}: {value}")\n\n        # QCD_norm is symmetric in log space.  In each mass region, one\n        # 1-sigma direction reaches the corresponding uncorrected QCD-MC\n        # OS/SS ratio.  With the present double-ratio construction the low-\n        # and high-mass fractional kappas are algebraically identical, but\n        # they are calculated separately here to keep the prescription clear.\n        low_log_kappa = abs(math.log(low_normalisation / mc_low_ratio))\n        high_log_kappa = abs(math.log(high_normalisation / mc_high_ratio))\n        low_norm_kappa = math.exp(low_log_kappa)\n        high_norm_kappa = math.exp(high_log_kappa)\n        low_norm_down = 1.0 / low_norm_kappa\n        low_norm_up = low_norm_kappa\n        high_norm_down = 1.0 / high_norm_kappa\n        high_norm_up = high_norm_kappa\n        low_transfer_down = low_normalisation * low_norm_down\n        low_transfer_up = low_normalisation * low_norm_up\n        high_transfer_down = high_normalisation * high_norm_down\n        high_transfer_up = high_normalisation * high_norm_up\n'''
+          replace_once(old_norm, new_norm)
+
+          old_print = '''        print(\n            "[fit.root] Corrected OS/SS = DT(low) * MC(high) / MC(low) = "\n            f"{normalisation:g}"\n        )\n        print(\n            "[fit.root] Norm lnN: kappa=exp(|ln(corrected/MC(high))|)="\n            f"{norm_kappa:g}, Down={transfer_down:g} ({norm_down:g}), "\n            f"Up={transfer_up:g} ({norm_up:g})"\n        )\n'''
+          new_print = '''        print(\n            "[fit.root] Low-mass central OS/SS = DT(low) = "\n            f"{low_normalisation:g}"\n        )\n        print(\n            "[fit.root] High-mass central OS/SS = DT(low) * MC(high) / MC(low) = "\n            f"{high_normalisation:g}"\n        )\n        print(\n            "[fit.root] Low-mass Norm lnN vs MC(low): "\n            f"kappa={low_norm_kappa:g}, Down={low_transfer_down:g} "\n            f"({low_norm_down:g}), Up={low_transfer_up:g} ({low_norm_up:g})"\n        )\n        print(\n            "[fit.root] High-mass Norm lnN vs MC(high): "\n            f"kappa={high_norm_kappa:g}, Down={high_transfer_down:g} "\n            f"({high_norm_down:g}), Up={high_transfer_up:g} ({high_norm_up:g})"\n        )\n'''
+          replace_once(old_print, new_print)
+
+          old_allowed = '''        allowed_ranges = ((5.0, 9.0), (11., 80.0))\n'''
+          new_allowed = '''        allowed_ranges = (QCD_TRANSFER_LOW_WINDOW, QCD_TRANSFER_HIGH_WINDOW)\n'''
+          replace_once(old_allowed, new_allowed)
+
+          old_central = '''            for ibin in range(1, h_central.GetNbinsX() + 1):\n                value = normalisation * fit_integral_in_output_bin(main, h_central, ibin, allowed_ranges)\n                h_central.SetBinContent(ibin, value)\n                h_central.SetBinError(ibin, 0.0)\n'''
+          new_central = '''            for ibin in range(1, h_central.GetNbinsX() + 1):\n                value = fit_integral_with_transfer(\n                    main, h_central, ibin,\n                    low_normalisation, high_normalisation,\n                )\n                h_central.SetBinContent(ibin, value)\n                h_central.SetBinError(ibin, 0.0)\n'''
+          replace_once(old_central, new_central)
+
+          old_shape = '''                central_ss = fit_integral_in_output_bin(main, h_up, ibin, allowed_ranges)\n                central_os = normalisation * central_ss\n                max_dev = 0.0\n                details = []\n                if central_ss != 0.0:\n                    for alt in alternatives:\n                        alt_ss = fit_integral_in_output_bin(alt, h_up, ibin, allowed_ranges)\n                        dev = abs(alt_ss / central_ss - 1.0)\n                        max_dev = max(max_dev, dev)\n                        details.append((alt_ss, dev))\n'''
+          new_shape = '''                central_ss = fit_integral_in_output_bin(main, h_up, ibin, allowed_ranges)\n                central_os = fit_integral_with_transfer(\n                    main, h_up, ibin,\n                    low_normalisation, high_normalisation,\n                )\n                max_dev = 0.0\n                details = []\n                if central_os != 0.0:\n                    for alt in alternatives:\n                        alt_ss = fit_integral_in_output_bin(alt, h_up, ibin, allowed_ranges)\n                        alt_os = fit_integral_with_transfer(\n                            alt, h_up, ibin,\n                            low_normalisation, high_normalisation,\n                        )\n                        dev = abs(alt_os / central_os - 1.0)\n                        max_dev = max(max_dev, dev)\n                        details.append((alt_ss, dev))\n'''
+          replace_once(old_shape, new_shape)
+
+          old_norm_templates = '''            for ibin in range(1, h_central.GetNbinsX() + 1):\n                value = h_central.GetBinContent(ibin)\n                h_norm_up.SetBinContent(ibin, value * norm_up)\n                h_norm_down.SetBinContent(ibin, value * norm_down)\n                h_norm_up.SetBinError(ibin, 0.0)\n                h_norm_down.SetBinError(ibin, 0.0)\n'''
+          new_norm_templates = '''            for ibin in range(1, h_central.GetNbinsX() + 1):\n                value_up = fit_integral_with_transfer(\n                    main, h_central, ibin,\n                    low_normalisation * low_norm_up,\n                    high_normalisation * high_norm_up,\n                )\n                value_down = fit_integral_with_transfer(\n                    main, h_central, ibin,\n                    low_normalisation * low_norm_down,\n                    high_normalisation * high_norm_down,\n                )\n                h_norm_up.SetBinContent(ibin, value_up)\n                h_norm_down.SetBinContent(ibin, value_down)\n                h_norm_up.SetBinError(ibin, 0.0)\n                h_norm_down.SetBinError(ibin, 0.0)\n'''
+          replace_once(old_norm_templates, new_norm_templates)
+
+          path.write_text(text)
+          PY
+
+      - name: Validate
+        shell: bash
+        run: |
+          python -m py_compile qcd_bkg_estimation.py
+          grep -q 'low_normalisation = dt_low_ratio' qcd_bkg_estimation.py
+          grep -q 'high_normalisation = dt_low_ratio \* mc_high_ratio / mc_low_ratio' qcd_bkg_estimation.py
+
+      - name: Commit fitter update
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add qcd_bkg_estimation.py
+          git commit -m 'Use region-dependent QCD OS/SS normalisation'
+          git push origin HEAD:master
