@@ -15,7 +15,8 @@ BASE = "/data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon"
 OUT = "/data6/Users/joonblee/PlotMaker/plots"
 LUMI = {"2016preVFP":19.52,"2016postVFP":16.81,"2017":41.48,"2018":59.83,"2022":7.9804,"2022EE":26.6717,"2023":18.064,"2023BPix":9.693}
 MASS_BINS = [0.,.5,1.,1.5,2.,2.1,2.2,2.3,2.4,2.5,2.6,2.7,2.8,2.9,3.,3.1,3.2,3.3,3.4,3.5,3.7,4.,4.5,5.,6.,7.,8.,9.,10.,11.,15.,20.,30.,40.,50.,60.,80.,100.]
-NONQCD = ("NIsoMuon_Top.root", "NIsoMuon_DYJets_Inclusive.root", "NIsoMuon_Others.root")
+NONQCD_OS = ("NIsoMuon_Top.root", "NIsoMuon_DYJets_est.root", "NIsoMuon_Others.root")
+NONQCD_SS = ("NIsoMuon_Top.root", "NIsoMuon_Others.root")
 
 class PlotError(RuntimeError): pass
 
@@ -57,7 +58,7 @@ def load(ROOT, args, relfile, sign, prefix):
 def qcd(ROOT,args,sign): return load(ROOT,args,args.qcd_file,sign,"qcd")
 def data_minus_nonqcd(ROOT,args,sign):
     out = load(ROOT,args,"data.root",sign,"data")
-    for f in NONQCD: out.Add(load(ROOT,args,f,sign,"sub"), -1.)
+    for f in (NONQCD_OS if sign == "OS" else NONQCD_SS): out.Add(load(ROOT,args,f,sign,"sub"), -1.)
     return out
 
 def edges(args):
