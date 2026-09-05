@@ -166,6 +166,10 @@ OS_REGION = "OS_POGMedium_tight_BJet_NIsoDimuon"
 HIST_NAME = "Dilepton_Mass"
 
 QCD_FIT_EXCLUDED_RANGES: Tuple[Tuple[float, float], ...] = ((9.0, 11.),)
+
+# OS/SS normalization factor applied to the fitted SS QCD shape.
+QCD_NORMALISATION_WINDOW: Tuple[float, float] = (6.0, 9.0)
+
 TAIL_DIAGNOSTIC_MIN = 20.0
 
 
@@ -331,7 +335,7 @@ SS_MODE = ModeConfig(
     display_name="SS data",
     file_name="SS_fit",
     region=SS_REGION,
-    fit_min=5.0,
+    fit_min=6.0,
     fit_max=50.0,
     plot_tag="SS",
     legend_label="Data - MC^{Top, DY, Others}",
@@ -348,7 +352,7 @@ QCD_MODE = ModeConfig(
     display_name="QCD MC",
     file_name="QCDMC_fit",
     region=OS_REGION,
-    fit_min=5.0,
+    fit_min=6.0,
     fit_max=70.0,
     plot_tag="QCD",
     legend_label="QCD MC",
@@ -2245,6 +2249,8 @@ def draw_cms_header(ROOT, pad, period: str) -> object:
 def x_axis_title(ROOT, mode: ModeConfig) -> str:
     # The QCD fitter only handles the dimuon-mass histogram, so no external
     # PlotterCore axis-title lookup is necessary.
+    if mode.key == SS_MODE.key:
+        return "m_{#mu^{#pm}#mu^{#pm}} [GeV]"
     return "m_{#mu^{+}#mu^{-}} [GeV]"
 
 
@@ -2484,16 +2490,26 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
         for hist in (h_top_os, h_dy_os, h_others_os):
             h_os.Add(hist, -1.0)
 
-        ss_integral = integral_in_window(h_ss, 5.0, 9.0)
-        os_integral = integral_in_window(h_os, 5.0, 9.0)
+        norm_low, norm_high = QCD_NORMALISATION_WINDOW
+        ss_integral = integral_in_window(h_ss, norm_low, norm_high)
+        os_integral = integral_in_window(h_os, norm_low, norm_high)
         if ss_integral <= 0.0 or os_integral <= 0.0:
-            raise RuntimeError(f"Non-positive 5--9 GeV normalisation yield: SS={ss_integral}, OS={os_integral}")
+            raise RuntimeError(
+                f"Non-positive {norm_low:g}--{norm_high:g} GeV normalisation yield: "
+                f"SS={ss_integral}, OS={os_integral}"
+            )
         normalisation = os_integral / ss_integral
         rel_unc = math.sqrt(1.0 / os_integral + 1.0 / ss_integral)
         norm_up = 1.0 + rel_unc
         norm_down = 1.0 / norm_up
-        print(f"[fit.root] SS(Data-BG), 5<m<9 = {ss_integral:g}")
-        print(f"[fit.root] OS(Data-BG), 5<m<9 = {os_integral:g}")
+        print(
+            f"[fit.root] SS(Data-BG), {norm_low:g}<m<{norm_high:g} = "
+            f"{ss_integral:g}"
+        )
+        print(
+            f"[fit.root] OS(Data-BG), {norm_low:g}<m<{norm_high:g} = "
+            f"{os_integral:g}"
+        )
         print(f"[fit.root] OS/SS ratio = {normalisation:g}")
         print(f"[fit.root] Normalisation relative uncertainty = {rel_unc:g}")
 
