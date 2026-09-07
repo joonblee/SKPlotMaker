@@ -71,6 +71,10 @@ Examples
   python3 dy_bkg_estimation.py --era 2023BPix --inject-signal \
       --signal-mass 20 --signal-scale 0.002 --blind
 
+  for era in Run2 Run3 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix;
+    do python3 dy_bkg_estimation.py --era ${era} --blind;
+  done
+
 Running with no arguments prints this guide and all command-line options, then
 exits without opening ROOT files or writing templates.
 """
@@ -127,7 +131,7 @@ DEFAULT_MASS_BINS = [
     0.0, 0.5, 1.0, 1.5, 2.0, 2.5,
     3.0, 3.5, 4.0, 4.5,
     5.0, 6.0, 7.0, 8.0, 9.0,
-    10.0, 15., 20.0, 25.,
+    11.0, 15., 20.0, 25.,
     30.0, 35., 40., 45., 50., 55., 60., 65., 70., 75., 80., 85., 90., 95., 100., 105., 110., 120., 130., 150.
 ]
 
@@ -1206,7 +1210,7 @@ def write_data_driven_root_outputs(
     def make_output(source, directory_name: str, clear_errors: bool = True):
         hist_name = f"Dilepton_Mass___{directory_name}"
         out = copy_to_full_mass_axis(ROOT, source, hist_name, "central")
-        zero_hist_range(out, 9.0, 10.4)
+        zero_hist_range(out, 9.0, 11.)
         if clear_errors:
             _clear_hist_errors(out)
         return out
@@ -1225,7 +1229,7 @@ def write_data_driven_root_outputs(
         h_source_7500 = copy_to_full_mass_axis(
             ROOT, nf_source, DY_AUX_SOURCE_HIST, "central"
         )
-        zero_hist_range(h_source_7500, 9.0, 10.4)
+        zero_hist_range(h_source_7500, 9.0, 11.)
         h_source_7500.SetName(DY_AUX_SOURCE_HIST)
         h_source_7500.SetTitle("")
 
@@ -2160,7 +2164,7 @@ def main(argv=None):
     else:
         write_data_driven_root_outputs(ROOT, args, data_estimate, reg_b)
 
-    # The analyser does not fill 9--10.4 GeV.  Keep this excluded interval at zero.
+    # The analyser does not fill 9--11. GeV.  Keep this excluded interval at zero.
     raw_mass_hists = [
         h1_mass_actual_dy_raw,
         h1_mass_pred_dy_raw,
@@ -2172,7 +2176,7 @@ def main(argv=None):
             [h1_mass_actual_dy_signal_raw, h1_mass_pred_dy_signal_closure_raw]
         )
     for hist in raw_mass_hists:
-        zero_hist_range(hist, 9.0, 10.4)
+        zero_hist_range(hist, 9.0, 11.)
 
     h1_mass_actual_dy = rebin_hist(
         ROOT, h1_mass_actual_dy_raw, "mass_actual_dy", args.variable_binning, args.rebin
@@ -2227,14 +2231,14 @@ def main(argv=None):
     if args.method == "tf":
         extra_info_closure = [
             f"Transfer factor function: {tf_param_plot_label}",
-            "Upsilon region discarded (9.0-10.4 GeV)",
+            "Upsilon region discarded (9.-11. GeV)",
         ]
     else:
         extra_info_closure = [
             f"aMC NF: {nf_amc.value:.5g} #pm {nf_amc.error:.3g} (stat)",
             f"MG NF: {nf_mg.value:.5g}; |MG/aMC-1|={abs(nf_mg.value/nf_amc.value-1.0):.3g}",
             f"NF measured in {DY_MC_NF_MASS_WINDOW[0]:g} < m < {DY_MC_NF_MASS_WINDOW[1]:g} GeV",
-            "Upsilon region discarded (9.0-10.4 GeV)",
+            "Upsilon region discarded (9.-11. GeV)",
         ]
     if args.inject_signal:
         extra_info_closure.append(
@@ -2372,7 +2376,7 @@ def main(argv=None):
             extra_info=[
                 f"m(Z') = {signal_mass_display(args.signal_mass)} GeV",
                 f"Signal scale = {args.signal_scale:g}",
-                "Upsilon region discarded (9.0-10.4 GeV)",
+                "Upsilon region discarded (9.-11. GeV)",
             ],
         )
 

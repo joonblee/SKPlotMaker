@@ -1,26 +1,11 @@
 #!/usr/bin/env bash
 
 # NIsoMuon Run-2/Run-3 ROOT-file merger
-# =====================================
-#
-# This script is safe to run either as
-#
-#   source hadd.sh Run3 all
-#
-# or
-#
-#   bash hadd.sh Run3 all
-#
-# IMPORTANT:
-#   - There is no `exit` in this script, so sourcing it will not close your shell/SSH session.
-#   - There is no `set -e`, `pipefail`, process substitution, or shell pipeline.
-#   - Missing input files are simply skipped.
-#
-# Fixed base directory:
-#   /data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon
+# Updated for the NPS-26-009 SKNano production layout (2026-08-25).
 #
 # Usage:
 #   source hadd.sh ERA_SELECTION [COLLECTION]
+#   bash   hadd.sh ERA_SELECTION [COLLECTION]
 #
 # ERA_SELECTION:
 #   2016preVFP, 2016postVFP, 2017, 2018,
@@ -33,49 +18,17 @@
 #   RunXSecSyst  : <BASE>/RunXSecSyst/<era>
 #   all          : all three
 #
-# Process grouping:
-#   data:
-#     Run2        -> SingleMuon_*
-#     2022/2022EE -> Muon_*
-#     2023/2023BPix -> Muon0_* + Muon1_*
-#     Per-era merged output is <BASE>/<era>/data.root (no DATA/ subdirectory).
+# Current production policy:
+#   nominal      : data + all nominal backgrounds + signal
+#   RunSyst      : tt/ST/Others + signal, OS BJet histograms only
+#   RunXSecSyst  : tt/ST/Others only, OS BJet histograms only
 #
-# Period merge:
-#   source hadd.sh Run2
-#     -> <BASE>/Run2/*.root
-#   source hadd.sh Run3
-#     -> <BASE>/Run3/*.root
-#   For RunSyst/RunXSecSyst the same structure is used under the collection:
-#     <BASE>/RunSyst/Run2/, <BASE>/RunSyst/Run3/, etc.
-#
-#   QCD:
-#     all QCD_Pt-*_MuEnriched
-#
-#   DY:
-#     aMC -> DYJets + DYJets10to50
-#     MG  -> DYJets_MG + DYJets10to50_MG
-#     These are NEVER mixed.
-#
-#   ST:
-#     Run2 -> SingleTop_*
-#     Run3 -> ST_*
-#
-#   ttbar:
-#     TTLL_powheg + TTLJ_powheg + TTJJ_powheg ONLY.
-#     TTLL tune/hdamp/mtop/ext samples are excluded.
-#
-#   Others:
-#     Run2 -> WJets_MG, TTG, TTWToLNu, TTZToLLNuNu
-#     Run3 -> TTG_PTG10to100, TTG_PTG100to200, TTG_PTG200toInf,
-#             TTZ_NoFullyHad, WJets_MG
-#
-# Examples:
-#   source hadd.sh 2023
-#   source hadd.sh Run3 nominal
-#   source hadd.sh Run2 RunSyst
-#   source hadd.sh all RunXSecSyst
-#   source hadd.sh Run3 all
-#   source hadd.sh all all
+# Important details:
+#   * Run-3 TTLL_powheg_ext1 is included in tt where it exists.
+#   * A separate NIsoMuon_tW.root is made so the tW-only normalisation
+#     uncertainty can be propagated without assigning it to all single top.
+#   * pT-binned Z' samples are merged into NIsoMuon_Zp_M-<mass>.root.
+#   * Mixed summary files (AllMC/QCDTop) are made only for nominal production.
 
 print_help() {
     echo "NIsoMuon Run-2/Run-3 ROOT-file merger"
@@ -94,10 +47,6 @@ print_help() {
     echo
     echo "COLLECTION (default: nominal):"
     echo "  nominal, RunSyst, RunXSecSyst, all"
-    echo
-    echo "Examples:"
-    echo "  source hadd.sh Run3 all"
-    echo "  source hadd.sh all all"
 }
 
 run_hadd() {
@@ -106,7 +55,6 @@ run_hadd() {
 
     local inputs=()
     local file
-
     for file in "$@"; do
         if [[ -f "$file" ]]; then
             inputs+=("$file")
@@ -115,7 +63,6 @@ run_hadd() {
 
     if (( ${#inputs[@]} == 0 )); then
         echo "[skip] no input files for $output"
-        rm -f "$output"
         return 0
     fi
 
@@ -130,7 +77,6 @@ run_hadd() {
 
     hadd -f "$output" "${inputs[@]}"
     local status=$?
-
     if (( status != 0 )); then
         echo "[ERROR] hadd failed: $output"
         return "$status"
@@ -142,19 +88,14 @@ run_hadd() {
 
 is_run2() {
     case "$1" in
-        2016preVFP|2016postVFP|2017|2018)
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
+        2016preVFP|2016postVFP|2017|2018) return 0 ;;
+        *) return 1 ;;
     esac
 }
 
 get_dir() {
     local era="$1"
     local collection="$2"
-
     if [[ "$collection" == "nominal" ]]; then
         DIR="$BASE_DIR/$era"
     else
@@ -184,8 +125,23 @@ merge_data() {
 merge_qcd() {
     local dir="$1"
     local inputs=( "$dir"/Skim_NIsoMuon_QCD_Pt-*_MuEnriched.root )
-
     run_hadd "$dir/NIsoMuon_QCD_Inclusive.root" "${inputs[@]}"
+}
+
+merge_dy() {
+    local dir="$1"
+
+    local amc_inputs=(
+        "$dir/Skim_NIsoMuon_DYJets.root"
+        "$dir/Skim_NIsoMuon_DYJets10to50.root"
+    )
+    local mg_inputs=(
+        "$dir/Skim_NIsoMuon_DYJets_MG.root"
+        "$dir/Skim_NIsoMuon_DYJets10to50_MG.root"
+    )
+
+    run_hadd "$dir/NIsoMuon_DYJets_Inclusive.root" "${amc_inputs[@]}"
+    run_hadd "$dir/NIsoMuon_DYJets_MG_Inclusive.root" "${mg_inputs[@]}"
 }
 
 merge_st() {
@@ -202,13 +158,41 @@ merge_st() {
     run_hadd "$dir/NIsoMuon_ST.root" "${inputs[@]}"
 }
 
+merge_tw() {
+    local era="$1"
+    local dir="$2"
+    local inputs=()
+
+    if is_run2 "$era"; then
+        inputs=(
+            "$dir/Skim_NIsoMuon_SingleTop_tW_top_NoFullyHad.root"
+            "$dir/Skim_NIsoMuon_SingleTop_tW_antitop_NoFullyHad.root"
+        )
+    else
+        inputs=(
+            "$dir/Skim_NIsoMuon_ST_tW_top_Semilep.root"
+            "$dir/Skim_NIsoMuon_ST_tW_antitop_Semilep.root"
+            "$dir/Skim_NIsoMuon_ST_tW_top_Lep.root"
+            "$dir/Skim_NIsoMuon_ST_tW_antitop_Lep.root"
+        )
+    fi
+
+    run_hadd "$dir/NIsoMuon_tW.root" "${inputs[@]}"
+}
+
 merge_ttbar() {
-    local dir="$1"
+    local era="$1"
+    local dir="$2"
     local inputs=(
         "$dir/Skim_NIsoMuon_TTLL_powheg.root"
         "$dir/Skim_NIsoMuon_TTLJ_powheg.root"
         "$dir/Skim_NIsoMuon_TTJJ_powheg.root"
     )
+
+    # Run-3 uses TTLL_powheg_ext1 as a nominal extension in eras where it exists.
+    if ! is_run2 "$era"; then
+        inputs+=( "$dir/Skim_NIsoMuon_TTLL_powheg_ext1.root" )
+    fi
 
     run_hadd "$dir/NIsoMuon_tt.root" "${inputs[@]}"
 }
@@ -219,25 +203,7 @@ merge_top() {
         "$dir/NIsoMuon_ST.root"
         "$dir/NIsoMuon_tt.root"
     )
-
     run_hadd "$dir/NIsoMuon_Top.root" "${inputs[@]}"
-}
-
-merge_dy() {
-    local dir="$1"
-
-    local amc_inputs=(
-        "$dir/Skim_NIsoMuon_DYJets.root"
-        "$dir/Skim_NIsoMuon_DYJets10to50.root"
-    )
-
-    local mg_inputs=(
-        "$dir/Skim_NIsoMuon_DYJets_MG.root"
-        "$dir/Skim_NIsoMuon_DYJets10to50_MG.root"
-    )
-
-    run_hadd "$dir/NIsoMuon_DYJets_Inclusive.root" "${amc_inputs[@]}"
-    run_hadd "$dir/NIsoMuon_DYJets_MG_Inclusive.root" "${mg_inputs[@]}"
 }
 
 merge_others() {
@@ -249,21 +215,70 @@ merge_others() {
         inputs=(
             "$dir/Skim_NIsoMuon_WJets_MG.root"
             "$dir/Skim_NIsoMuon_TTG.root"
-            "$dir/Skim_NIsoMuon_TTWToLNu.root"
             "$dir/Skim_NIsoMuon_TTZToLLNuNu.root"
-            "$dir/Skim_NIsoMuon_ttZToLLNuNu.root"
         )
     else
         inputs=(
+            "$dir/Skim_NIsoMuon_WJets_MG.root"
+            "$dir/Skim_NIsoMuon_TTZ_NoFullyHad.root"
             "$dir/Skim_NIsoMuon_TTG_PTG10to100.root"
             "$dir/Skim_NIsoMuon_TTG_PTG100to200.root"
             "$dir/Skim_NIsoMuon_TTG_PTG200toInf.root"
-            "$dir/Skim_NIsoMuon_TTZ_NoFullyHad.root"
-            "$dir/Skim_NIsoMuon_WJets_MG.root"
         )
     fi
 
     run_hadd "$dir/NIsoMuon_Others.root" "${inputs[@]}"
+}
+
+merge_signals() {
+    local dir="$1"
+    local files=( "$dir"/Skim_NIsoMuon_Zp_M-*.root )
+    local masses=()
+    local file base mass
+    declare -A seen_mass=()
+
+    for file in "${files[@]}"; do
+        base="$(basename "$file")"
+        if [[ "$base" =~ ^Skim_NIsoMuon_Zp_M-([0-9]+([p.][0-9]+)?)(_Pt-|\.root) ]]; then
+            mass="${BASH_REMATCH[1]}"
+            if [[ -z "${seen_mass[$mass]+x}" ]]; then
+                masses+=("$mass")
+                seen_mass[$mass]=1
+            fi
+        fi
+    done
+
+    if (( ${#masses[@]} == 0 )); then
+        echo "[skip] no signal input files under $dir"
+        return 0
+    fi
+
+    # Numerical sort keeps 12,15,...,70 in a predictable order.
+    mapfile -t masses < <(printf '%s\n' "${masses[@]}" | sort -g)
+
+    for mass in "${masses[@]}"; do
+        local inputs=(
+            "$dir"/Skim_NIsoMuon_Zp_M-"$mass"_Pt-*_hw7.root
+            "$dir"/Skim_NIsoMuon_Zp_M-"$mass"_Pt-*.root
+            "$dir"/Skim_NIsoMuon_Zp_M-"$mass".root
+        )
+
+        # Remove duplicates because the generic _Pt-* glob also matches _Pt-*_hw7.
+        local unique_inputs=()
+        declare -A seen_file=()
+        local input
+        for input in "${inputs[@]}"; do
+            [[ -f "$input" ]] || continue
+            if [[ -z "${seen_file[$input]+x}" ]]; then
+                unique_inputs+=("$input")
+                seen_file[$input]=1
+            fi
+        done
+
+        run_hadd "$dir/NIsoMuon_Zp_M-$mass.root" "${unique_inputs[@]}" || return $?
+    done
+
+    return 0
 }
 
 merge_summary() {
@@ -275,14 +290,14 @@ merge_summary() {
         "$dir/NIsoMuon_QCD_Inclusive.root"
         "$dir/NIsoMuon_Others.root"
     )
-
     local qcdtop_inputs=(
         "$dir/NIsoMuon_Top.root"
         "$dir/NIsoMuon_QCD_Inclusive.root"
     )
 
-    run_hadd "$dir/NIsoMuon_AllMC.root" "${allmc_inputs[@]}"
-    run_hadd "$dir/NIsoMuon_QCDTop.root" "${qcdtop_inputs[@]}"
+    run_hadd "$dir/NIsoMuon_AllMC.root" "${allmc_inputs[@]}" || return $?
+    run_hadd "$dir/NIsoMuon_QCDTop.root" "${qcdtop_inputs[@]}" || return $?
+    return 0
 }
 
 run_one() {
@@ -304,31 +319,35 @@ run_one() {
         return 0
     fi
 
-    # Data exists only in the nominal collection.
     if [[ "$collection" == "nominal" ]]; then
-        merge_data "$era" "$dir"
+        merge_data "$era" "$dir" || return $?
+        merge_qcd "$dir" || return $?
+        merge_dy "$dir" || return $?
     fi
 
-    merge_qcd "$dir"
-    merge_st "$era" "$dir"
-    merge_ttbar "$dir"
-    merge_top "$dir"
-    merge_dy "$dir"
-    merge_others "$era" "$dir"
+    # Both systematic productions contain only the restricted tt/ST/Others set.
+    merge_st "$era" "$dir" || return $?
+    merge_tw "$era" "$dir" || return $?
+    merge_ttbar "$era" "$dir" || return $?
+    merge_top "$dir" || return $?
+    merge_others "$era" "$dir" || return $?
 
-    # RunXSecSyst is process-specific and does not need these mixed summary files.
+    # Signal is produced for nominal and RunSyst, but not RunXSecSyst.
     if [[ "$collection" != "RunXSecSyst" ]]; then
-        merge_summary "$dir"
+        merge_signals "$dir" || return $?
+    fi
+
+    # Mixed summaries are meaningful only for the complete nominal process set.
+    if [[ "$collection" == "nominal" ]]; then
+        merge_summary "$dir" || return $?
     fi
 
     return 0
 }
 
-
 get_period_dir() {
     local period="$1"
     local collection="$2"
-
     if [[ "$collection" == "nominal" ]]; then
         PERIOD_DIR="$BASE_DIR/$period"
     else
@@ -339,7 +358,6 @@ get_period_dir() {
 get_era_dir() {
     local era="$1"
     local collection="$2"
-
     if [[ "$collection" == "nominal" ]]; then
         ERA_DIR="$BASE_DIR/$era"
     else
@@ -360,12 +378,41 @@ merge_period_file() {
 
     for era in "$@"; do
         get_era_dir "$era" "$collection"
-        if [[ -f "$ERA_DIR/$filename" ]]; then
-            inputs+=( "$ERA_DIR/$filename" )
-        fi
+        [[ -f "$ERA_DIR/$filename" ]] && inputs+=( "$ERA_DIR/$filename" )
     done
 
     run_hadd "$output" "${inputs[@]}"
+}
+
+merge_period_signals() {
+    local period="$1"
+    local collection="$2"
+    shift 2
+    local eras=( "$@" )
+    local masses=()
+    local era file base mass
+    declare -A seen_mass=()
+
+    for era in "${eras[@]}"; do
+        get_era_dir "$era" "$collection"
+        for file in "$ERA_DIR"/NIsoMuon_Zp_M-*.root; do
+            [[ -f "$file" ]] || continue
+            base="$(basename "$file")"
+            if [[ "$base" =~ ^NIsoMuon_Zp_M-([0-9]+([p.][0-9]+)?)\.root$ ]]; then
+                mass="${BASH_REMATCH[1]}"
+                if [[ -z "${seen_mass[$mass]+x}" ]]; then
+                    masses+=("$mass")
+                    seen_mass[$mass]=1
+                fi
+            fi
+        done
+    done
+
+    mapfile -t masses < <(printf '%s\n' "${masses[@]}" | sed '/^$/d' | sort -g)
+    for mass in "${masses[@]}"; do
+        merge_period_file "$period" "$collection" "NIsoMuon_Zp_M-$mass.root" "${eras[@]}" || return $?
+    done
+    return 0
 }
 
 merge_period() {
@@ -383,23 +430,26 @@ merge_period() {
     echo "[output dir]   $PERIOD_DIR"
     echo "################################################################"
 
-    # Data is only produced for the nominal collection.
     if [[ "$collection" == "nominal" ]]; then
-        merge_period_file "$period" "$collection" "data.root" "${eras[@]}"
+        merge_period_file "$period" "$collection" "data.root" "${eras[@]}" || return $?
+        merge_period_file "$period" "$collection" "NIsoMuon_QCD_Inclusive.root" "${eras[@]}" || return $?
+        merge_period_file "$period" "$collection" "NIsoMuon_DYJets_Inclusive.root" "${eras[@]}" || return $?
+        merge_period_file "$period" "$collection" "NIsoMuon_DYJets_MG_Inclusive.root" "${eras[@]}" || return $?
     fi
 
-    merge_period_file "$period" "$collection" "NIsoMuon_QCD_Inclusive.root"       "${eras[@]}"
-    merge_period_file "$period" "$collection" "NIsoMuon_ST.root"                  "${eras[@]}"
-    merge_period_file "$period" "$collection" "NIsoMuon_tt.root"                  "${eras[@]}"
-    merge_period_file "$period" "$collection" "NIsoMuon_Top.root"                 "${eras[@]}"
-    merge_period_file "$period" "$collection" "NIsoMuon_DYJets_Inclusive.root"    "${eras[@]}"
-    merge_period_file "$period" "$collection" "NIsoMuon_DYJets_MG_Inclusive.root" "${eras[@]}"
-    merge_period_file "$period" "$collection" "NIsoMuon_Others.root"              "${eras[@]}"
+    merge_period_file "$period" "$collection" "NIsoMuon_ST.root" "${eras[@]}" || return $?
+    merge_period_file "$period" "$collection" "NIsoMuon_tW.root" "${eras[@]}" || return $?
+    merge_period_file "$period" "$collection" "NIsoMuon_tt.root" "${eras[@]}" || return $?
+    merge_period_file "$period" "$collection" "NIsoMuon_Top.root" "${eras[@]}" || return $?
+    merge_period_file "$period" "$collection" "NIsoMuon_Others.root" "${eras[@]}" || return $?
 
-    # RunXSecSyst intentionally has no mixed summary files.
     if [[ "$collection" != "RunXSecSyst" ]]; then
-        merge_period_file "$period" "$collection" "NIsoMuon_AllMC.root"            "${eras[@]}"
-        merge_period_file "$period" "$collection" "NIsoMuon_QCDTop.root"           "${eras[@]}"
+        merge_period_signals "$period" "$collection" "${eras[@]}" || return $?
+    fi
+
+    if [[ "$collection" == "nominal" ]]; then
+        merge_period_file "$period" "$collection" "NIsoMuon_AllMC.root" "${eras[@]}" || return $?
+        merge_period_file "$period" "$collection" "NIsoMuon_QCDTop.root" "${eras[@]}" || return $?
     fi
 
     return 0
@@ -459,18 +509,10 @@ hadd_main() {
     esac
 
     case "$collection_selection" in
-        nominal|Nominal|"")
-            collections=(nominal)
-            ;;
-        RunSyst|runsyst)
-            collections=(RunSyst)
-            ;;
-        RunXSecSyst|runxsecsyst)
-            collections=(RunXSecSyst)
-            ;;
-        all)
-            collections=(nominal RunSyst RunXSecSyst)
-            ;;
+        nominal|Nominal|"") collections=(nominal) ;;
+        RunSyst|runsyst) collections=(RunSyst) ;;
+        RunXSecSyst|runxsecsyst) collections=(RunXSecSyst) ;;
+        all) collections=(nominal RunSyst RunXSecSyst) ;;
         *)
             echo "[ERROR] Unknown COLLECTION: $collection_selection"
             print_help
@@ -478,10 +520,7 @@ hadd_main() {
             ;;
     esac
 
-    local collection
-    local era
-    local status=0
-
+    local collection era status
     for collection in "${collections[@]}"; do
         for era in "${eras[@]}"; do
             run_one "$era" "$collection"
@@ -493,21 +532,10 @@ hadd_main() {
         done
 
         if (( make_run2_summary )); then
-            merge_period "Run2" "$collection" "${run2_eras[@]}"
-            status=$?
-            if (( status != 0 )); then
-                echo "[ERROR] Run2 period merge failed for collection=$collection"
-                return "$status"
-            fi
+            merge_period "Run2" "$collection" "${run2_eras[@]}" || return $?
         fi
-
         if (( make_run3_summary )); then
-            merge_period "Run3" "$collection" "${run3_eras[@]}"
-            status=$?
-            if (( status != 0 )); then
-                echo "[ERROR] Run3 period merge failed for collection=$collection"
-                return "$status"
-            fi
+            merge_period "Run3" "$collection" "${run3_eras[@]}" || return $?
         fi
     done
 
@@ -516,11 +544,7 @@ hadd_main() {
     return 0
 }
 
-# nullglob makes an unmatched wildcard expand to an empty array, instead of
-# passing the literal '*' string to hadd.
+# Unmatched wildcards should disappear rather than being passed literally to hadd.
 shopt -s nullglob
 
-# Calling a function with `return` is safe both when the file is sourced and
-# when it is executed with bash.  There is intentionally no `exit` here.
 hadd_main "$@"
-

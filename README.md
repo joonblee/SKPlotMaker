@@ -121,12 +121,65 @@ python3 dy_bkg_estimation.py --era 2023 --method tf --blind
 The production central QCD template is derived from same-sign data:
 
 ```bash
-for era in Run2 Run3 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix; do
-    python3 qcd_bkg_estimation.py --mode ss-data --year "${era}"
+for era in Run2 Run3 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix; do  
+  python3 qcd_bkg_estimation.py --mode ss-data --year "$era" --ss-binning adaptive --ss-min-effective-count 10 --ss-max-bin-width 5;   
 done
 ```
 
 `ss-data` fits the SS dimuon-mass distribution and produces the nominal QCD template together with normalisation and analytic-function-envelope shape variations.
+
+SS fits use bin-integrated statistical chi-square over 5--30 GeV, retaining
+negative background-subtracted bins. The default `--ss-binning auto` keeps the
+original fine bins when the total effective count, `(sum y)^2 / sum(error^2)`,
+is at least five events per fine fit bin. Below that threshold it uses 1 GeV
+bins up to 11 GeV, 2 GeV bins from 11 to 21 GeV, and one 21--30 GeV tail bin.
+This stabilises sparse samples such as 2022 without coarsening every era.
+Use `--ss-binning regular` or `--ss-binning legacy` to select either binning
+explicitly; `--rebin` then merges those bins further. Output ROOT template
+binning is unchanged.
+
+For bin edges determined from each sample's statistics, use the explicit
+`--ss-binning adaptive` option (`auto` retains the two-scheme selection above):
+
+```bash
+python3 qcd_bkg_estimation.py --mode ss-data --era 2022 \
+    --ss-binning adaptive --inspect-binning
+python3 qcd_bkg_estimation.py --mode ss-data --era 2022 \
+    --ss-binning adaptive --ss-min-effective-count 25 --ss-max-bin-width 5
+```
+
+Adaptive binning starts at 5 GeV and merges adjacent native ROOT bins (currently
+0.02 GeV over 0--150 GeV). It closes each bin at the first edge satisfying
+`Neff = max(sum y, 0)^2 / sum(error^2) >= --ss-min-effective-count` (default 25,
+equivalent to at most 20% relative statistical error for a positive sum), or
+before the next native bin would exceed `--ss-max-bin-width` (default 5 GeV).
+It stops at 30 GeV. An under-target final remainder merges backwards if the
+width cap allows it. The selected edges are printed and can vary by era;
+combined periods use the histogram summed over their eras before selecting edges.
+
+All original positive **and negative** `Data - Top - Others` bin contents enter
+the signed merged yield, and all variances add. Only a nonpositive **merged**
+yield receives a zero bin-selection score. Clipping individual negative input
+bins to zero would artificially increase the yield. Sparse or negative bins
+that cannot reach the target within the width cap remain in the chi-square
+with their signed contents and original propagated errors. Thus the precision
+target is not guaranteed for every bin. Bins with zero error follow the existing
+chi-square exclusion. The choice of data-dependent edges can still change the
+fit; preserving signed yields does not make adaptive binning unbiased.
+
+The native grid and the exact 5/30 GeV boundaries are respected. Binning outside
+the fit range and output ROOT template binning are unchanged. `--rebin` acts
+after adaptive selection and can exceed its width cap; use the default
+`--rebin 1` to keep the selected bins. `--inspect-binning` prints the final
+fit-bin edges, signed yields, errors, effective counts and under-target bins,
+then exits without fits or output writes.
+
+The SS minimizer fits `log(A)` within a common positive amplitude domain,
+instead of a seed-dependent linear amplitude box. Multi-start seeds transfer
+the ERF/logistic turn-on widths and include the nested `n=0` exponential and
+`k=0` power limits. Stored anchors still contain the physical amplitude `A`.
+The six model families, nominal Power x Exp x Logistic choice, transfer
+normalisation, shape-envelope convention, and QCD-MC objectives are unchanged.
 
 **Do not normally run the commands above in parallel with `&`.**  Each SS fit updates the same `NIsoMuon_SS_fit_anchors.json` catalogue.  Sequential execution avoids concurrent read/modify/write races in that shared file.
 

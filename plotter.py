@@ -458,10 +458,10 @@ def root_file_by_process(cfg: Config) -> Dict[str, str]:
 
 def process_label(cfg: Config) -> Dict[str, str]:
     return {
-        "QCD": "QCD" if use_qcd_mc(cfg) else "QCD (SS data-driven)",
+        "QCD": "QCD" if use_qcd_mc(cfg) else "QCD (SS data)",
         "tt": "t#bar{t}",
         "ST": "single top",
-        "DY": "DY" if use_dy_mc(cfg) else "DY (light-jet data #times aMC NF)",
+        "DY": "DY" if use_dy_mc(cfg) else "DY (light-jet data)",
         "Others": "Others",
     }
 

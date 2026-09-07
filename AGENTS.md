@@ -180,8 +180,8 @@ done
 Run sequentially because of the shared anchor JSON:
 
 ```bash
-for era in Run2 Run3 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix; do
-    python3 qcd_bkg_estimation.py --mode ss-data --year "${era}"
+for era in Run2 Run3 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix; do   
+  python3 qcd_bkg_estimation.py --mode ss-data --year "$era" --ss-binning adaptive --ss-min-effective-count 10 --ss-max-bin-width 5;   
 done
 ```
 

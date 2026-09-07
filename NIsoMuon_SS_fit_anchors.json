@@ -3,151 +3,151 @@
     "2016postVFP": {
       "exp_erf": {
         "accepted": true,
-        "amplitude": 5631.347096620731,
+        "amplitude": 9876.196370656504,
         "covariance_status": 3,
         "objective": "chi2",
         "shape": [
-          0.37542598286843526,
-          7.323920150247495,
-          2.84816190202855
+          0.41262054542151216,
+          8.416500445655037,
+          3.232288346935482
         ],
         "status": 0
       },
       "exp_logistic": {
         "accepted": true,
-        "amplitude": 5532.640490896293,
+        "amplitude": 6532.509794263374,
         "covariance_status": 3,
         "objective": "chi2",
         "shape": [
-          0.3736466457563155,
-          7.29584453845846,
-          1.7363403200704526
+          0.38587899433897677,
+          7.589673012695257,
+          1.7867675973971446
         ],
         "status": 0
       },
       "power_erf": {
         "accepted": true,
-        "amplitude": 322138113.824567,
+        "amplitude": 451461865.38843113,
         "covariance_status": 3,
         "objective": "chi2",
         "shape": [
-          6.163933490969741,
-          9.948225825468866,
-          2.1998758980727415
+          6.2899991120079735,
+          10.080842444309505,
+          2.2089545396318377
         ],
         "status": 0
       },
       "power_exp_erf": {
         "accepted": true,
-        "amplitude": 7335.6228771829465,
-        "covariance_status": 2,
-        "objective": "chi2",
-        "shape": [
-          0.15000000004566622,
-          0.3661076835176409,
-          7.444338009409926,
-          2.8282849854884278
-        ],
-        "status": 1
-      },
-      "power_exp_logistic": {
-        "accepted": true,
-        "amplitude": 7061.584339456935,
+        "amplitude": 9879.323460822387,
         "covariance_status": 3,
         "objective": "chi2",
         "shape": [
-          0.15000323901161344,
-          0.36302005034193974,
-          7.376032728560559,
-          1.7105601543647504
+          8.198903748523993e-08,
+          0.41264339878911244,
+          8.417036653082244,
+          3.2323810034280007
+        ],
+        "status": 0
+      },
+      "power_exp_logistic": {
+        "accepted": true,
+        "amplitude": 6529.769707584151,
+        "covariance_status": 3,
+        "objective": "chi2",
+        "shape": [
+          4.302637303084736e-08,
+          0.38585041557767646,
+          7.5889262879024635,
+          1.786651542423242
         ],
         "status": 0
       },
       "power_logistic": {
         "accepted": true,
-        "amplitude": 29614247.76610768,
-        "covariance_status": 2,
+        "amplitude": 26420729.422815207,
+        "covariance_status": 3,
         "objective": "chi2",
         "shape": [
-          5.301762362421595,
-          8.67852105329714,
-          1.1100939393552565
+          5.259605388616385,
+          8.632695489411269,
+          1.1088335828537055
         ],
-        "status": 1
+        "status": 0
       }
     },
     "2016preVFP": {
       "exp_erf": {
         "accepted": true,
-        "amplitude": 21598814376.618103,
+        "amplitude": 884247508648.8005,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          0.9863332175586225,
-          29.95341785533164,
-          5.357557701751708
+          1.069519190951339,
+          34.352483210018015,
+          5.538585504133688
         ],
         "status": 1
       },
       "exp_logistic": {
         "accepted": true,
-        "amplitude": 157103.03156788592,
-        "covariance_status": 2,
+        "amplitude": 127601.00023368532,
+        "covariance_status": 3,
         "objective": "chi2",
         "shape": [
-          0.5779147151870824,
-          12.622117472834866,
-          2.1840940110960867
+          0.5567867801859571,
+          12.768014051393548,
+          2.2815025107689872
         ],
-        "status": 1
+        "status": 0
       },
       "power_erf": {
         "accepted": true,
-        "amplitude": 162153923700.39462,
+        "amplitude": 76355815608.7263,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          8.395542009621858,
-          12.207049159344491,
-          2.3858929897511767
+          8.088799836172512,
+          12.188062845069691,
+          2.4388080831270185
         ],
         "status": 1
       },
       "power_exp_erf": {
         "accepted": true,
-        "amplitude": 805666809.4013107,
+        "amplitude": 360094585.70563,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          4.55737788270058,
-          0.3188774644376271,
-          13.52100747220943,
-          3.0353406522311572
+          3.5454385057302833,
+          0.42248823267944335,
+          14.89886183595407,
+          3.398904035036318
         ],
         "status": 1
       },
       "power_exp_logistic": {
         "accepted": true,
-        "amplitude": 490923.7119198944,
+        "amplitude": 313601.1870718114,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          1.2207680096164573,
-          0.44514509989562506,
-          11.354100769024644,
-          1.9303530247730183
+          0.9886689733679971,
+          0.4496623385873724,
+          11.590083259663222,
+          2.04839895354116
         ],
         "status": 1
       },
       "power_logistic": {
         "accepted": true,
-        "amplitude": 359969795.84446317,
+        "amplitude": 218689830.45063478,
         "covariance_status": 3,
         "objective": "chi2",
         "shape": [
-          6.209172564420205,
-          9.775999153869835,
-          1.1943895446630735
+          5.995855422822396,
+          9.779419534834929,
+          1.2363919144130275
         ],
         "status": 0
       }
@@ -155,75 +155,75 @@
     "2017": {
       "exp_erf": {
         "accepted": true,
-        "amplitude": 368075.6011395274,
+        "amplitude": 79104.82565795466,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          0.546029440469794,
-          14.916630064353118,
-          4.725531952782232
+          0.46600268573743114,
+          12.390096764798765,
+          4.646809231817418
         ],
         "status": 1
       },
       "exp_logistic": {
         "accepted": true,
-        "amplitude": 45572.60768257462,
+        "amplitude": 26467.034312611864,
         "covariance_status": 3,
         "objective": "chi2",
         "shape": [
-          0.4441208255717194,
-          10.582924551332113,
-          2.4022926086025658
+          0.4091940801083456,
+          9.813095732071114,
+          2.50540924778172
         ],
         "status": 0
       },
       "power_erf": {
         "accepted": true,
-        "amplitude": 23501051329.954617,
-        "covariance_status": 3,
-        "objective": "chi2",
-        "shape": [
-          7.3671187763257375,
-          11.710071494413553,
-          2.4248063722615507
-        ],
-        "status": 0
-      },
-      "power_exp_erf": {
-        "accepted": true,
-        "amplitude": 378338.01314585924,
+        "amplitude": 1636011584.550088,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          0.1842262116224432,
-          0.5218418496879125,
-          14.266567580933986,
-          4.5498373291803915
+          6.3874578511238544,
+          10.961811140773538,
+          2.4861788482611984
+        ],
+        "status": 1
+      },
+      "power_exp_erf": {
+        "accepted": true,
+        "amplitude": 382482.6981088424,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          1.2224918838074237,
+          0.3622750514663322,
+          11.22126773439718,
+          3.781765390960065
         ],
         "status": 1
       },
       "power_exp_logistic": {
         "accepted": true,
-        "amplitude": 55274.28704111028,
-        "covariance_status": 2,
-        "objective": "chi2",
-        "shape": [
-          0.15000957641271123,
-          0.43095496053884574,
-          10.474406992324774,
-          2.3398959900460707
-        ],
-        "status": 1
-      },
-      "power_logistic": {
-        "accepted": true,
-        "amplitude": 263430436.0781128,
+        "amplitude": 26467.785446025282,
         "covariance_status": 3,
         "objective": "chi2",
         "shape": [
-          5.77502533238022,
-          9.641284984543685,
-          1.2071143384216823
+          1.364396471294823e-05,
+          0.40919495772336373,
+          9.813112973449192,
+          2.50540605129933
+        ],
+        "status": 0
+      },
+      "power_logistic": {
+        "accepted": true,
+        "amplitude": 63892073.322895594,
+        "covariance_status": 3,
+        "objective": "chi2",
+        "shape": [
+          5.2285640731401,
+          9.268142294750035,
+          1.282008912890341
         ],
         "status": 0
       }
@@ -231,75 +231,75 @@
     "2018": {
       "exp_erf": {
         "accepted": true,
-        "amplitude": 180656.85570408028,
+        "amplitude": 74266.98932237686,
         "covariance_status": 3,
         "objective": "chi2",
         "shape": [
-          0.499800056519374,
-          11.964437480171672,
-          4.13287428929968
+          0.44594908861772176,
+          10.665271681018922,
+          4.08677226884499
         ],
         "status": 0
       },
       "exp_logistic": {
         "accepted": true,
-        "amplitude": 103059.08242257689,
-        "covariance_status": 2,
-        "objective": "chi2",
-        "shape": [
-          0.47414027599951086,
-          10.539614854143077,
-          2.1860769436405225
-        ],
-        "status": 1
-      },
-      "power_erf": {
-        "accepted": true,
-        "amplitude": 87228636240.36519,
+        "amplitude": 64553.41043389893,
         "covariance_status": 3,
         "objective": "chi2",
         "shape": [
-          7.702935370434377,
-          11.705229074072797,
-          2.342980654050526
+          0.44130767895932216,
+          10.12236363552962,
+          2.2835809585137667
         ],
         "status": 0
       },
-      "power_exp_erf": {
+      "power_erf": {
         "accepted": true,
-        "amplitude": 3813816457.699992,
+        "amplitude": 12337243981.14648,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          5.91143068719548,
-          0.11204025502400294,
-          11.621531681415018,
-          2.542877494551731
+          6.972119219658998,
+          11.289080866654983,
+          2.400205960061365
+        ],
+        "status": 1
+      },
+      "power_exp_erf": {
+        "accepted": true,
+        "amplitude": 12331520212.002893,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          6.971948084094992,
+          1.4546854763515873e-09,
+          11.288950057317424,
+          2.4002136995267342
         ],
         "status": 1
       },
       "power_exp_logistic": {
         "accepted": true,
-        "amplitude": 1285588.2795252274,
-        "covariance_status": 2,
-        "objective": "chi2",
-        "shape": [
-          1.8264003361368144,
-          0.3189794609769826,
-          9.938733083602658,
-          1.7211812282303864
-        ],
-        "status": 1
-      },
-      "power_logistic": {
-        "accepted": true,
-        "amplitude": 596879509.5616938,
+        "amplitude": 2785044.4571835427,
         "covariance_status": 3,
         "objective": "chi2",
         "shape": [
-          5.911955793728828,
-          9.6328898911309,
-          1.1714637115661588
+          2.5469740524152216,
+          0.2400057133497553,
+          9.699224933337916,
+          1.622059286883744
+        ],
+        "status": 0
+      },
+      "power_logistic": {
+        "accepted": true,
+        "amplitude": 265554318.9453124,
+        "covariance_status": 3,
+        "objective": "chi2",
+        "shape": [
+          5.590691727842145,
+          9.52785175896817,
+          1.2221002386081614
         ],
         "status": 0
       }
@@ -307,227 +307,227 @@
     "2022": {
       "exp_erf": {
         "accepted": true,
-        "amplitude": 18773783.84570775,
+        "amplitude": 17743409255.330933,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          0.7487252693368597,
-          30.386357580129157,
-          6.8967440498387695
+          1.0017236857733622,
+          32.59856172598778,
+          5.639457166345546
         ],
         "status": 1
       },
       "exp_logistic": {
         "accepted": true,
-        "amplitude": 139351205714.00986,
-        "covariance_status": 3,
-        "objective": "chi2",
-        "shape": [
-          1.735817585405592,
-          13.526552373757328,
-          0.6537703951545341
-        ],
-        "status": 0
-      },
-      "power_erf": {
-        "accepted": true,
-        "amplitude": 67049580001751.8,
+        "amplitude": 622335.8604652882,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          11.249480012480134,
-          13.881984778947862,
-          2.3237406037207102
+          0.7711447458720201,
+          13.756016282786785,
+          1.6308154433151083
+        ],
+        "status": 1
+      },
+      "power_erf": {
+        "accepted": true,
+        "amplitude": 290665952369876.06,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          11.665863149543297,
+          13.827514888867737,
+          2.2173661582243738
         ],
         "status": 1
       },
       "power_exp_erf": {
         "accepted": true,
-        "amplitude": 17532027224028.887,
+        "amplitude": 290673190324345.0,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          10.374987052050251,
-          0.06345661203694772,
-          14.08341167318294,
-          2.4142353503304643
+          11.66586648115158,
+          9.138575562255035e-07,
+          13.82751795109177,
+          2.217365417380063
         ],
         "status": 1
       },
       "power_exp_logistic": {
         "accepted": true,
-        "amplitude": 2.430011439327004e+18,
-        "covariance_status": 3,
-        "objective": "chi2",
-        "shape": [
-          2.7421087973334264,
-          2.46464233300938,
-          13.243013269503173,
-          0.38308888335060653
-        ],
-        "status": 0
-      },
-      "power_logistic": {
-        "accepted": true,
-        "amplitude": 1322294226.9840565,
+        "amplitude": 20071491.80852759,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          7.387651329143928,
-          10.704393764426616,
-          1.15979166018014
+          4.038185254079047,
+          0.30181324319261366,
+          11.133501727030474,
+          1.3443644541732407
         ],
         "status": 1
+      },
+      "power_logistic": {
+        "accepted": true,
+        "amplitude": 1016966688.5865455,
+        "covariance_status": 3,
+        "objective": "chi2",
+        "shape": [
+          7.183402721597449,
+          10.325661790224542,
+          1.0959909843462163
+        ],
+        "status": 0
       }
     },
     "2022EE": {
       "exp_erf": {
         "accepted": true,
-        "amplitude": 44273644604.05544,
-        "covariance_status": 3,
-        "objective": "chi2",
-        "shape": [
-          1.1915641995770478,
-          24.042375918867275,
-          4.142348965993369
-        ],
-        "status": 0
-      },
-      "exp_logistic": {
-        "accepted": true,
-        "amplitude": 182134.02106950068,
-        "covariance_status": 3,
-        "objective": "chi2",
-        "shape": [
-          0.6455599816356596,
-          10.965010915840438,
-          1.811598156053027
-        ],
-        "status": 0
-      },
-      "power_erf": {
-        "accepted": true,
-        "amplitude": 3688180703936.5605,
+        "amplitude": 2785539133492489.5,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          9.849042267699838,
-          11.677988063584614,
-          2.050473457059068
+          1.5430672181763214,
+          31.62405325773043,
+          4.25582241364704
+        ],
+        "status": 1
+      },
+      "exp_logistic": {
+        "accepted": true,
+        "amplitude": 417645.5531705331,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          0.6968393268018805,
+          11.70987450913168,
+          1.7354938878360198
+        ],
+        "status": 1
+      },
+      "power_erf": {
+        "accepted": true,
+        "amplitude": 4570204570263.639,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          9.90218713642448,
+          11.822649505608023,
+          2.073147399760841
         ],
         "status": 1
       },
       "power_exp_erf": {
         "accepted": true,
-        "amplitude": 65213725977904.84,
+        "amplitude": 1.2409776739679873e+25,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          1.3132069440983085,
-          1.3444757926819915,
-          24.958212665675454,
-          3.668229809291698
+          1.9873107150583846,
+          2.109047639523529,
+          34.8888606458788,
+          3.5504873502859913
         ],
         "status": 1
       },
       "power_exp_logistic": {
         "accepted": true,
-        "amplitude": 201345.74310825134,
+        "amplitude": 417657.9243586956,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          0.1500003215165781,
-          0.6259762065960943,
-          10.808486399800152,
-          1.7893759318202123
+          1.1902775399422888e-08,
+          0.6968414471264484,
+          11.709883910666978,
+          1.7354911683808631
         ],
         "status": 1
       },
       "power_logistic": {
         "accepted": true,
-        "amplitude": 720875091.1196283,
-        "covariance_status": 2,
+        "amplitude": 506345630.3244794,
+        "covariance_status": 3,
         "objective": "chi2",
         "shape": [
-          6.693749173922652,
-          9.00064250804105,
-          1.0134292122534072
+          6.532770191562317,
+          9.017786849689312,
+          1.0435123332085963
         ],
-        "status": 1
+        "status": 0
       }
     },
     "2023": {
       "exp_erf": {
         "accepted": true,
-        "amplitude": 23688348790.68156,
+        "amplitude": 111946411614.3115,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          0.9532203609100164,
-          32.763299022925096,
-          5.829135640678368
+          0.9855934334955375,
+          34.75313142573564,
+          5.912803914856127
         ],
         "status": 1
       },
       "exp_logistic": {
         "accepted": true,
-        "amplitude": 489931.8806462221,
+        "amplitude": 400056.3924990488,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          0.6478532344063673,
-          14.357520197226368,
-          2.062314222200042
+          0.6280020451695585,
+          14.471557711171315,
+          2.1473724027121337
         ],
         "status": 1
       },
       "power_erf": {
         "accepted": true,
-        "amplitude": 221335149043.79913,
+        "amplitude": 67603749462.75422,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          8.5640118975246,
-          12.671719880479342,
-          2.472347535373
+          8.113792894348803,
+          12.437441474120654,
+          2.512818940819288
         ],
         "status": 1
       },
       "power_exp_erf": {
         "accepted": true,
-        "amplitude": 6474948277607.373,
+        "amplitude": 1.762268109185958e+18,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          3.606086650998628,
-          0.8547626404743004,
-          22.92268096039967,
-          3.7286830688496693
+          2.6793494393182193,
+          1.3253926130339702,
+          33.245168381335546,
+          4.175847897284847
         ],
         "status": 1
       },
       "power_exp_logistic": {
         "accepted": true,
-        "amplitude": 456151.90308368934,
+        "amplitude": 399793.18815230415,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          0.15003439253284664,
-          0.620394256968062,
-          14.050051049533542,
-          2.07767722821198
+          1.949541064249615e-07,
+          0.627965804505887,
+          14.47111038015504,
+          2.1474963505700035
         ],
         "status": 1
       },
       "power_logistic": {
         "accepted": true,
-        "amplitude": 264028674.3105525,
+        "amplitude": 124553446.50388633,
         "covariance_status": 3,
         "objective": "chi2",
         "shape": [
-          6.185182349848828,
-          9.926998186999356,
-          1.2390462668626703
+          5.87876827336417,
+          9.771451102592168,
+          1.2865749566298987
         ],
         "status": 0
       }
@@ -535,75 +535,75 @@
     "2023BPix": {
       "exp_erf": {
         "accepted": true,
-        "amplitude": 17880260494.575817,
-        "covariance_status": 3,
-        "objective": "chi2",
-        "shape": [
-          1.0860485401402782,
-          27.049159521783036,
-          4.676748269603485
-        ],
-        "status": 0
-      },
-      "exp_logistic": {
-        "accepted": true,
-        "amplitude": 525729.4657946125,
+        "amplitude": 1729681023735.2388,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          0.7408718649179515,
-          12.811212927586414,
-          1.614541175053766
+          1.2137888767937584,
+          31.151916419426115,
+          4.794929010927486
+        ],
+        "status": 1
+      },
+      "exp_logistic": {
+        "accepted": true,
+        "amplitude": 100842.03537328012,
+        "covariance_status": 2,
+        "objective": "chi2",
+        "shape": [
+          0.6237195989084651,
+          12.094420372455922,
+          1.8954517379647564
         ],
         "status": 1
       },
       "power_erf": {
         "accepted": true,
-        "amplitude": 1096355885948128.6,
-        "covariance_status": 3,
+        "amplitude": 6807049722269.644,
+        "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          11.999991581414369,
-          13.624505796759898,
-          2.1319698842883623
+          10.136012075236973,
+          12.825213953081924,
+          2.2144957445182647
         ],
-        "status": 0
+        "status": 1
       },
       "power_exp_erf": {
         "accepted": true,
-        "amplitude": 2.3891016368943028e+16,
-        "covariance_status": 3,
+        "amplitude": 6807189287648.118,
+        "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          13.130535593843742,
-          6.435061252624014e-07,
-          13.963757588553154,
-          2.0714829417710585
+          10.13602215996794,
+          2.973148691083399e-09,
+          12.82521019354697,
+          2.2144951789571317
         ],
-        "status": 0
+        "status": 1
       },
       "power_exp_logistic": {
         "accepted": true,
-        "amplitude": 212286462.97722498,
-        "covariance_status": 3,
+        "amplitude": 10757581.224316472,
+        "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          5.2033087797760365,
-          0.2210375066320673,
-          10.709366168336453,
-          1.1672127567288926
+          3.726758702083167,
+          0.2769131142226573,
+          10.514293509815124,
+          1.364651508424574
         ],
-        "status": 0
+        "status": 1
       },
       "power_logistic": {
         "accepted": true,
-        "amplitude": 4140367894.4546146,
+        "amplitude": 559429880.7786244,
         "covariance_status": 3,
         "objective": "chi2",
         "shape": [
-          7.525331174972432,
-          10.296283524920606,
-          1.0254948993613713
+          6.728192618413304,
+          9.968141179600682,
+          1.111504853638755
         ],
         "status": 0
       }
@@ -611,75 +611,75 @@
     "Run2": {
       "exp_erf": {
         "accepted": true,
-        "amplitude": 366808.3652758468,
-        "covariance_status": 2,
-        "objective": "chi2",
-        "shape": [
-          0.49229568783507766,
-          12.000034265593696,
-          4.264536521380516
-        ],
-        "status": 1
-      },
-      "exp_logistic": {
-        "accepted": true,
-        "amplitude": 151874.2226131437,
-        "covariance_status": 2,
-        "objective": "chi2",
-        "shape": [
-          0.446336420173249,
-          10.054923564039585,
-          2.2908274621813964
-        ],
-        "status": 1
-      },
-      "power_erf": {
-        "accepted": true,
-        "amplitude": 68289524199.84428,
-        "covariance_status": 2,
-        "objective": "chi2",
-        "shape": [
-          7.320674496530228,
-          11.441686125564503,
-          2.3722939890081545
-        ],
-        "status": 1
-      },
-      "power_exp_erf": {
-        "accepted": true,
-        "amplitude": 22555242.2866177,
-        "covariance_status": 2,
-        "objective": "chi2",
-        "shape": [
-          2.6433450919817822,
-          0.30181396492085344,
-          11.250911151480786,
-          3.132730439123809
-        ],
-        "status": 1
-      },
-      "power_exp_logistic": {
-        "accepted": true,
-        "amplitude": 263550.62560095737,
-        "covariance_status": 2,
-        "objective": "chi2",
-        "shape": [
-          0.39718324902682756,
-          0.41317865641519463,
-          9.898177709157068,
-          2.1454559776903297
-        ],
-        "status": 1
-      },
-      "power_logistic": {
-        "accepted": true,
-        "amplitude": 892408765.3593801,
+        "amplitude": 156905.48528683026,
         "covariance_status": 3,
         "objective": "chi2",
         "shape": [
-          5.767438913883309,
-          9.488479415957391,
-          1.1891638431549292
+          0.44372962174689706,
+          10.543223344999847,
+          4.145118469140345
+        ],
+        "status": 0
+      },
+      "exp_logistic": {
+        "accepted": true,
+        "amplitude": 111431.7499088616,
+        "covariance_status": 3,
+        "objective": "chi2",
+        "shape": [
+          0.4257857028438047,
+          9.686239348479335,
+          2.3450949721603074
+        ],
+        "status": 0
+      },
+      "power_erf": {
+        "accepted": true,
+        "amplitude": 11955757002.240929,
+        "covariance_status": 3,
+        "objective": "chi2",
+        "shape": [
+          6.6764450306235155,
+          10.98452373931538,
+          2.409621277340725
+        ],
+        "status": 0
+      },
+      "power_exp_erf": {
+        "accepted": true,
+        "amplitude": 86493096.708357,
+        "covariance_status": 3,
+        "objective": "chi2",
+        "shape": [
+          3.770122547046979,
+          0.19203607086330385,
+          10.766557135913281,
+          2.8388284638012156
+        ],
+        "status": 0
+      },
+      "power_exp_logistic": {
+        "accepted": true,
+        "amplitude": 543850.8608761319,
+        "covariance_status": 3,
+        "objective": "chi2",
+        "shape": [
+          1.0866300222203713,
+          0.3390900876517584,
+          9.475232220500354,
+          1.967931114393359
+        ],
+        "status": 0
+      },
+      "power_logistic": {
+        "accepted": true,
+        "amplitude": 360963347.3093539,
+        "covariance_status": 3,
+        "objective": "chi2",
+        "shape": [
+          5.415474608092885,
+          9.291559287738657,
+          1.2379851173270358
         ],
         "status": 0
       }
@@ -763,75 +763,75 @@
     "Run3": {
       "exp_erf": {
         "accepted": true,
-        "amplitude": 115092871745.15103,
-        "covariance_status": 3,
-        "objective": "chi2",
-        "shape": [
-          1.0576304871390887,
-          28.929133130663427,
-          5.048912773187394
-        ],
-        "status": 0
-      },
-      "exp_logistic": {
-        "accepted": true,
-        "amplitude": 1607185.918279208,
+        "amplitude": 248224430328622.06,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          0.6840424582517574,
-          13.206334188445872,
-          1.8816945363915265
+          1.2812449554697882,
+          34.917845427899934,
+          5.040814526725018
         ],
         "status": 1
       },
+      "exp_logistic": {
+        "accepted": true,
+        "amplitude": 1005910.0665018667,
+        "covariance_status": 3,
+        "objective": "chi2",
+        "shape": [
+          0.6530730146649121,
+          12.96289852976339,
+          1.9519713076501948
+        ],
+        "status": 0
+      },
       "power_erf": {
         "accepted": true,
-        "amplitude": 6835263485304.865,
+        "amplitude": 1801500169000.1233,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          9.5217837243072,
-          12.528367303623211,
-          2.275655119450135
+          9.03192495802654,
+          12.256102684151386,
+          2.291930000087905
         ],
         "status": 1
       },
       "power_exp_erf": {
         "accepted": true,
-        "amplitude": 2.869489215400819e+16,
+        "amplitude": 1.8430356117370618e+22,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          3.3345093766491085,
-          1.2220468701181997,
-          25.9023591009696,
-          3.5639033858899425
+          2.3850442481114773,
+          1.6968281931735318,
+          34.77070801499087,
+          3.8745335969236105
         ],
         "status": 1
       },
       "power_exp_logistic": {
         "accepted": true,
-        "amplitude": 1618825.231924175,
+        "amplitude": 1005466.3161690548,
         "covariance_status": 2,
         "objective": "chi2",
         "shape": [
-          0.15000010098693473,
-          0.6599313736806931,
-          12.983359148760135,
-          1.8817934656402313
+          7.048394410063153e-08,
+          0.6530453889179498,
+          12.962613844805762,
+          1.9520471228467773
         ],
         "status": 1
       },
       "power_logistic": {
         "accepted": true,
-        "amplitude": 1680446989.656342,
+        "amplitude": 836396586.6564313,
         "covariance_status": 3,
         "objective": "chi2",
         "shape": [
-          6.525808014190149,
-          9.688345150801627,
-          1.1441284864006536
+          6.252152337258963,
+          9.542126794392951,
+          1.168384625941378
         ],
         "status": 0
       }
@@ -889,6 +889,6 @@
       "2023BPix"
     ]
   },
-  "updated_utc": "2026-08-31T04:35:36.315005+00:00",
+  "updated_utc": "2026-09-07T00:50:41.944301+00:00",
   "version": 1
 }

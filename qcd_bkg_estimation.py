@@ -40,6 +40,20 @@ Fit modes and objectives
   --mode ss-data
       Bin-integrated statistical chi-square; produces the central SS-based QCD
       template plus Norm and analytic-function-envelope Shape variations.
+      Auto binning keeps the previous fine bins unless the total SS effective
+      count is below five events per fine fit bin. Sparse samples then use
+      1 GeV bins below 11 GeV, 2 GeV bins from 11 to 21 GeV, and one
+      21--30 GeV tail bin. Negative subtracted bins are retained.
+      The internal normalisation is log(A), with a common positive amplitude
+      domain, and starts include the nested power-only/exponential-only limits.
+      --ss-binning regular/legacy explicitly selects either set of SS edges.
+      --ss-binning adaptive builds new edges from adjacent native ROOT bins
+      within 5--30 GeV (0.02 GeV input bins in the current 0--150 GeV input).
+      It targets (max(sum y, 0))^2 / sum(error^2) >= 25 per merged bin,
+      with a 5 GeV maximum width. Both controls are configurable. Negative
+      contents are summed with their signs and all errors are retained;
+      only the bin-selection score is zero for a nonpositive merged yield.
+      Width-limited bins may miss the target and remain in the chi-square.
   --mode qcd-mc
       Fits the QCD MC shape.  --fit-objective auto selects ROOT weighted
       likelihood; chi2 and log-chi2 are available as cross-checks.  QCD-MC
@@ -58,6 +72,10 @@ Main optional controls
   --fit-objective {auto,chi2,weighted-likelihood,log-chi2}
   --log-relative-error-floor VALUE
   --rebin FACTOR
+  --ss-binning {auto,regular,legacy,adaptive}
+  --ss-min-effective-count VALUE   adaptive target, default: 25
+  --ss-max-bin-width GEV           adaptive width cap, default: 5
+  --inspect-binning               print fit-bin statistics and exit
   --fit-max-attempts N
   --fit-attempt-details
   --initial-values-only
@@ -85,6 +103,10 @@ Examples
   python3 qcd_bkg_estimation.py --mode ss-data --year 2018
   python3 qcd_bkg_estimation.py --mode ss-data --year Run2
   python3 qcd_bkg_estimation.py --mode ss-data --year Run3
+  python3 qcd_bkg_estimation.py --mode ss-data --year 2022 \
+      --ss-binning adaptive --inspect-binning
+  python3 qcd_bkg_estimation.py --mode ss-data --year 2022 \
+      --ss-binning adaptive --ss-min-effective-count 25 --ss-max-bin-width 5
   python3 qcd_bkg_estimation.py --mode qcd-mc --year 2023
   python3 qcd_bkg_estimation.py --mode qcd-mc --year 2023 \
       --fit-objective chi2
@@ -95,8 +117,13 @@ Examples
 
 Build every per-era and full-run anchor:
   for era in Run2 Run3 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix; do
-    python3 qcd_bkg_estimation.py --mode ss-data --year "$era"
+    python3 qcd_bkg_estimation.py --mode ss-data --year "$era" --ss-binning auto
   done
+
+  for era in Run2 Run3 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix; do
+    python3 qcd_bkg_estimation.py --mode ss-data --year "$era" --ss-binning adaptive --ss-min-effective-count 10 --ss-max-bin-width 5
+  done
+
   python3 qcd_bkg_estimation.py --mode ss-data --year Run2
   python3 qcd_bkg_estimation.py --mode ss-data --year Run3
   python3 qcd_bkg_estimation.py --mode ss-data --year 'Run2+3'
@@ -373,7 +400,7 @@ FIT_MODELS: Tuple[FitModelConfig, ...] = (
 )
 
 # Same-sign central prediction and function-choice envelope.
-# The central shape is Power x Exp x ERF.  Every other fitted function enters
+# The central shape is Power x Exp x Logistic.  Every other fitted function enters
 # the per-bin envelope, so all six fits must be usable before the ROOT templates
 # are written.
 SS_NOMINAL_MODEL = "power_exp_logistic"
@@ -404,17 +431,18 @@ MODEL_SHAPE_PARAMETER_NAMES: Dict[str, Tuple[str, ...]] = {
 }
 
 # Broad global hard bounds used when no SS-derived QCD constraint is applied.
+# n=0 and k=0 retain the nested exponential-only and power-only limits.
 BASE_SHAPE_BOUNDS: Dict[str, Tuple[Tuple[str, float, float], ...]] = {
     "power_erf": (("n", 0.5, 15.0), ("m0", 0.0, 35.0), ("w", 0.10, 15.0)),
     "power_logistic": (("n", 0.5, 15.0), ("m0", 0.0, 35.0), ("w", 0.10, 15.0)),
     "power_exp_erf": (
-        ("n", 0.05, 20.0), ("k", 0.0, 5.0), ("m0", 0.0, 35.0), ("w", 0.10, 15.0)
+        ("n", 0.0, 20.0), ("k", 0.0, 5.0), ("m0", 0.0, 35.0), ("w", 0.10, 15.0)
     ),
     "power_exp_logistic": (
-        ("n", 0.05, 20.0), ("k", 0.0, 5.0), ("m0", 0.0, 35.0), ("w", 0.10, 15.0)
+        ("n", 0.0, 20.0), ("k", 0.0, 1.), ("m0", 0.0, 35.0), ("w", 0.10, 15.0)
     ),
     "exp_erf": (("k", 0.0, 5.0), ("m0", 0.0, 35.0), ("w", 0.10, 20.0)),
-    "exp_logistic": (("k", 0.0, 5.0), ("m0", 0.0, 35.0), ("w", 0.10, 20.0)),
+    "exp_logistic": (("k", 0.0, 1.), ("m0", 0.0, 35.0), ("w", 0.10, 20.0)),
 }
 
 # Static multi-start shape seeds.  Partner-fit and same-era SS-anchor seeds are
@@ -594,7 +622,7 @@ namespace BkgFitFnVariationPy {
     const double m0 = par[2];
     const double w  = TMath::Abs(par[3]);
     const double arg = (xx - m0) / (TMath::Sqrt2() * w);
-    const double turnon = 0.5 * (1. + TMath::Erf(arg));
+    const double turnon = 0.5 * TMath::Erfc(-arg);
     return TMath::Max(A * TMath::Power(xx, -n) * turnon, 1e-300);
   }
 
@@ -607,7 +635,7 @@ namespace BkgFitFnVariationPy {
     const double m0 = par[3];
     const double w  = TMath::Abs(par[4]);
     const double arg = (xx - m0) / (TMath::Sqrt2() * w);
-    const double turnon = 0.5 * (1. + TMath::Erf(arg));
+    const double turnon = 0.5 * TMath::Erfc(-arg);
     return TMath::Max(A * TMath::Power(xx, -n) * TMath::Exp(-k * xx) * turnon, 1e-300);
   }
 
@@ -631,7 +659,7 @@ namespace BkgFitFnVariationPy {
     const double m0 = par[2];
     const double w  = TMath::Abs(par[3]);
     const double arg = (xx - m0) / (TMath::Sqrt2() * w);
-    const double turnon = 0.5 * (1. + TMath::Erf(arg));
+    const double turnon = 0.5 * TMath::Erfc(-arg);
     return TMath::Max(A * TMath::Exp(-k * xx) * turnon, 1e-300);
   }
 
@@ -703,6 +731,17 @@ namespace BkgFitFnVariationPy {
     if (model == kPowerExpLogistic) return new TF1(name, PowerExpLogisticTurnOn, xmin, xmax, 5);
     if (model == kExpErf) return new TF1(name, ExpErfTurnOn, xmin, xmax, 4);
     return new TF1(name, ExpLogisticTurnOn, xmin, xmax, 4);
+  }
+
+  TF1 *MakeLogAmplitudeFitFunction(const char *name, int model,
+                                   double xmin, double xmax, int npar) {
+    return new TF1(name,
+      [model, npar](double *x, double *par) {
+        double physical[5];
+        std::copy(par, par + npar, physical);
+        physical[0] = std::exp(par[0]);
+        return EvalDensity(model, x[0], physical);
+      }, xmin, xmax, npar);
   }
 
   TF1 *MakeObjectiveFunction(const char *name, int model, int objective,
@@ -783,6 +822,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.set_defaults(prefer_full_run_anchor=True)
     parser.add_argument("--rebin", "--rebin-factor", dest="rebin", type=positive_integer, default=1)
+    parser.add_argument(
+        "--ss-binning", choices=("auto", "regular", "legacy", "adaptive"), default="auto",
+        help=("SS-data edges before --rebin: auto uses regular 1/2 GeV bins "
+              "when the total effective count is below five events per legacy "
+              "fit bin; otherwise keeps the previous fine bins. "
+              "adaptive merges native bins by signed-yield precision. Default: %(default)s"),
+    )
+    parser.add_argument(
+        "--ss-min-effective-count", type=positive_float, default=25.0,
+        help=("Adaptive SS bin target: max(sum y,0)^2 / sum(error^2). "
+              "25 corresponds to 20%% relative statistical error. Default: %(default)s"),
+    )
+    parser.add_argument(
+        "--ss-max-bin-width", type=positive_float, default=5.0,
+        help=("Maximum adaptive SS bin width in GeV, before --rebin; "
+              "bins at the cap may miss the statistical target. Default: %(default)s"),
+    )
+    parser.add_argument(
+        "--inspect-binning", action="store_true",
+        help="Print final fit-bin edges, signed yields, errors and effective counts; exit before fitting/writing.",
+    )
     parser.add_argument(
         "--fit-objective",
         choices=("auto", "chi2", "weighted-likelihood", "log-chi2"),
@@ -1032,9 +1092,16 @@ def validate_bin_edges(edges: Sequence[float], label: str) -> None:
         raise ValueError(f"{label} is not strictly increasing.")
 
 
-def make_variable_binning(mode: ModeConfig) -> List[float]:
+def make_variable_binning(mode: ModeConfig, ss_binning: str = "legacy") -> List[float]:
+    if mode.key == SS_MODE.key and ss_binning == "adaptive":
+        raise ValueError("Adaptive SS binning requires the input histogram; use make_adaptive_ss_binning.")
     edges: List[float] = []
-    if mode.key == SS_MODE.key:
+    if mode.key == SS_MODE.key and ss_binning == "regular":
+        # Fixed edges shared by all eras: reduce sparse-bin fluctuations in
+        # the subtracted SS spectrum without selecting bins by their sign.
+        segments = ((0.0, 11.0, 1.0), (11.0, 21.0, 2.0))
+        tail_edges = (21.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0)
+    elif mode.key == SS_MODE.key:
         segments = ((0.0, 8.0, 0.1), (8.0, 11.0, 0.2), (11.0, 15.0, 0.5))
         tail_edges = (15.0, 16.0, 17.0, 19.0, 21.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0)
     else:
@@ -1125,8 +1192,143 @@ def yields_agree(a: float, b: float) -> bool:
     return abs(a - b) <= 1e-7 * max(1.0, abs(a), abs(b))
 
 
-def prepare_histograms(ROOT, source_hist, mode: ModeConfig, rebin_factor: int) -> PreparedHistograms:
-    base_edges = make_variable_binning(mode)
+def resolve_ss_binning(source_hist, mode: ModeConfig, requested: str) -> str:
+    """Choose fixed edges from total precision, never from local residuals/signs."""
+    if mode.key != SS_MODE.key or requested != "auto":
+        return requested
+    first = source_hist.FindBin(mode.fit_min + 1e-6)
+    last = source_hist.FindBin(mode.fit_max - 1e-6)
+    total = sum(float(source_hist.GetBinContent(i)) for i in range(first, last + 1))
+    variance = sum(float(source_hist.GetBinError(i)) ** 2 for i in range(first, last + 1))
+    effective_count = max(total, 0.0) ** 2 / variance if variance > 0.0 else 0.0
+    legacy_edges = make_variable_binning(mode, "legacy")
+    n_fine_bins = sum(
+        mode.fit_min <= low and high <= mode.fit_max
+        for low, high in zip(legacy_edges, legacy_edges[1:])
+    )
+    threshold = 5.0 * n_fine_bins
+    choice = "regular" if effective_count < threshold else "legacy"
+    print(
+        f"[SS BINNING] auto -> {choice}: effectiveCount={effective_count:.6g} "
+        f"threshold={threshold:g} ({n_fine_bins} fine fit bins x 5)"
+    )
+    return choice
+
+
+def ss_effective_count(total: float, variance: float) -> float:
+    """Precision score of a signed sum; never clip individual input contents."""
+    return max(total, 0.0) ** 2 / variance if variance > 0.0 else 0.0
+
+
+def make_adaptive_ss_binning(
+    source_hist, mode: ModeConfig, min_effective_count: float = 25.0,
+    max_bin_width: float = 5.0,
+) -> List[float]:
+    """Merge native bins from low to high mass using the signed SS precision.
+
+    Close a bin at the first native edge meeting the precision target, or
+    before adding another native bin would exceed the width cap. Keep bins
+    that miss the target: a negative tail must not consume the entire fit
+    range in a search for positive yield. Merge an under-target final remainder
+    backwards only while the width cap permits it. No contents/errors change.
+    Existing non-fit edges and the exact fit boundaries are retained.
+    """
+    if mode.key != SS_MODE.key:
+        raise ValueError("Adaptive SS binning is only available in ss-data mode.")
+    for label, value in (("--ss-min-effective-count", min_effective_count),
+                         ("--ss-max-bin-width", max_bin_width)):
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(f"{label} must be finite and positive, got {value}.")
+
+    axis = source_hist.GetXaxis()
+    native_edges = [float(axis.GetBinLowEdge(i)) for i in range(1, source_hist.GetNbinsX() + 2)]
+    validate_bin_edges(native_edges, "native SS binning")
+    fixed_edges = make_variable_binning(mode, "legacy")
+    outside_edges = [x for x in fixed_edges if x <= mode.fit_min or x >= mode.fit_max]
+    native_indices = {}
+    for edge in outside_edges:
+        matches = [i for i, x in enumerate(native_edges) if math.isclose(x, edge, abs_tol=1e-9, rel_tol=0.0)]
+        if not matches:
+            raise ValueError(f"SS edge {edge:g} GeV is not an input ROOT bin edge; cannot split native bins.")
+        native_indices[edge] = matches[0]
+    start_index = native_indices[mode.fit_min]
+    stop_index = native_indices[mode.fit_max]
+    if any(native_edges[i + 1] - native_edges[i] > max_bin_width + 1e-9
+           for i in range(start_index, stop_index)):
+        raise ValueError("--ss-max-bin-width is smaller than an input ROOT bin in the fit range.")
+
+    # Each group stores (start edge index, stop edge index, signed yield, variance).
+    groups: List[Tuple[int, int, float, float]] = []
+    start = start_index
+    total = variance = 0.0
+    for i in range(start_index, stop_index):
+        content = float(source_hist.GetBinContent(i + 1))
+        error = float(source_hist.GetBinError(i + 1))
+        if not (math.isfinite(content) and math.isfinite(error)) or error < 0.0:
+            raise ValueError(f"Invalid SS content/error in native bin {i + 1}.")
+        total += content
+        variance += error * error
+        stop = i + 1
+        at_end = stop == stop_index
+        at_cap = not at_end and native_edges[stop + 1] - native_edges[start] > max_bin_width + 1e-9
+        if ss_effective_count(total, variance) >= min_effective_count or at_cap or at_end:
+            groups.append((start, stop, total, variance))
+            start = stop
+            total = variance = 0.0
+
+    # Avoid leaving a small final remainder when its left neighbour has room.
+    # This is not a positivity requirement: a capped negative group is retained.
+    while len(groups) > 1 and ss_effective_count(groups[-1][2], groups[-1][3]) < min_effective_count:
+        left, right = groups[-2:]
+        if native_edges[right[1]] - native_edges[left[0]] > max_bin_width + 1e-9:
+            break
+        groups[-2:] = [(left[0], right[1], left[2] + right[2], left[3] + right[3])]
+
+    fit_edges = [native_edges[start_index], *[native_edges[group[1]] for group in groups]]
+    edges = ([native_edges[native_indices[x]] for x in fixed_edges if x < mode.fit_min]
+             + fit_edges
+             + [native_edges[native_indices[x]] for x in fixed_edges if x > mode.fit_max])
+    validate_bin_edges(edges, "adaptive SS binning")
+    below_target = sum(ss_effective_count(y, var) < min_effective_count for _, _, y, var in groups)
+    negative = sum(y < 0.0 for _, _, y, _ in groups)
+    print(
+        f"[SS BINNING] adaptive: fitBins={len(groups)} targetNeff={min_effective_count:g} "
+        f"maxWidth={max_bin_width:g} GeV belowTarget={below_target} negativeBins={negative}; "
+        "signed yields/errors retained"
+    )
+    print("[SS BINNING] adaptive fit edges [GeV] = " + ", ".join(f"{x:g}" for x in fit_edges))
+    return edges
+
+
+def print_fit_binning(prepared: PreparedHistograms, mode: ModeConfig, target: Optional[float] = None) -> None:
+    print("[FIT BIN] low high width [GeV] | signed yield | stat error | Neff | status")
+    hist = prepared.counts
+    axis = hist.GetXaxis()
+    for i in range(1, hist.GetNbinsX() + 1):
+        low, high = float(axis.GetBinLowEdge(i)), float(axis.GetBinUpEdge(i))
+        if low < mode.fit_min - 1e-9 or high > mode.fit_max + 1e-9 or is_excluded(mode, low, high):
+            continue
+        y, error = float(hist.GetBinContent(i)), float(hist.GetBinError(i))
+        neff = ss_effective_count(y, error * error)
+        status = []
+        if y < 0.0:
+            status.append("negative retained")
+        if target is not None and neff < target:
+            status.append("below target")
+        if error == 0.0:
+            status.append("zero error: excluded from chi2")
+        print(f"[FIT BIN] {low:g} {high:g} {high-low:g} | {y:.9g} | {error:.9g} | {neff:.6g} | {', '.join(status) or 'ok'}")
+
+
+def prepare_histograms(
+    ROOT, source_hist, mode: ModeConfig, rebin_factor: int, ss_binning: str = "auto",
+    ss_min_effective_count: float = 25.0, ss_max_bin_width: float = 5.0,
+) -> PreparedHistograms:
+    ss_binning = resolve_ss_binning(source_hist, mode, ss_binning)
+    if mode.key == SS_MODE.key and ss_binning == "adaptive":
+        base_edges = make_adaptive_ss_binning(source_hist, mode, ss_min_effective_count, ss_max_bin_width)
+    else:
+        base_edges = make_variable_binning(mode, ss_binning)
     if mode.key == QCD_MODE.key:
         protected = (mode.fit_min, 9.0, 11.0, mode.fit_max)
     else:
@@ -1337,17 +1539,17 @@ def build_seed_list(
     if anchor is not None:
         seeds.insert(0, anchor.shape)
 
-    if model.key in {"power_erf", "power_logistic"}:
-        partner = "power_logistic" if model.key == "power_erf" else "power_erf"
+    if model.key in {"power_erf", "power_logistic", "exp_erf", "exp_logistic"}:
+        to_logistic = model.key.endswith("_logistic")
+        partner = model.key.replace("_logistic", "_erf") if to_logistic else model.key.replace("_erf", "_logistic")
         if partner in selected_by_key:
             fn = selected_by_key[partner].function
-            seeds.insert(1, (fn.GetParameter(1), fn.GetParameter(2), fn.GetParameter(3)))
-
-    elif model.key in {"exp_erf", "exp_logistic"}:
-        partner = "exp_logistic" if model.key == "exp_erf" else "exp_erf"
-        if partner in selected_by_key:
-            fn = selected_by_key[partner].function
-            seeds.insert(1, (fn.GetParameter(1), fn.GetParameter(2), fn.GetParameter(3)))
+            width = float(fn.GetParameter(3))
+            factors = (ERF_TO_LOGISTIC_SLOPE_WIDTH, ERF_TO_LOGISTIC_VARIANCE_WIDTH)
+            seeds[0:0] = [
+                (fn.GetParameter(1), fn.GetParameter(2), width * factor if to_logistic else width / factor)
+                for factor in factors
+            ]
 
     elif model.key in {"power_exp_erf", "power_exp_logistic"}:
         partner = "power_exp_logistic" if model.key == "power_exp_erf" else "power_exp_erf"
@@ -1366,7 +1568,15 @@ def build_seed_list(
         simple = "exp_erf" if model.key == "power_exp_erf" else "exp_logistic"
         if simple in selected_by_key:
             fn = selected_by_key[simple].function
-            seeds.insert(0, (0.15, fn.GetParameter(1), fn.GetParameter(2), fn.GetParameter(3)))
+            seeds.insert(0, (0.0, fn.GetParameter(1), fn.GetParameter(2), fn.GetParameter(3)))
+
+        # Both simpler families are nested limits. Start close to each so a
+        # five-parameter fit can recover either tail without crossing a large
+        # n/k/amplitude correlation valley from an arbitrary static seed.
+        power = "power_erf" if model.key == "power_exp_erf" else "power_logistic"
+        if power in selected_by_key:
+            fn = selected_by_key[power].function
+            seeds.insert(0, (fn.GetParameter(1), 0.0, fn.GetParameter(2), fn.GetParameter(3)))
 
     bounds = shape_bounds(model, constraint)
     return deduplicate_seeds(clip_seed(seed, bounds) for seed in seeds)
@@ -1622,7 +1832,14 @@ def configure_parameters(function, model: FitModelConfig, seed: Sequence[float],
         except Exception:
             pass
 
-    if constraint is not None:
+    if getattr(function, "_log_amplitude", False):
+        # The physical amplitude can span tens of orders of magnitude as n,
+        # k and the turn-on move.  A seed-relative linear box traps these
+        # correlated fits; optimise log(A) in one common positive domain.
+        function.SetParLimits(0, math.log(1e-20), math.log(1e30))
+        function.SetParameter(0, math.log(min(max(amplitude, 1e-20), 1e30)))
+        amp_step = 0.1
+    elif constraint is not None:
         low, high = constraint.amplitude_bounds
         function.SetParLimits(0, low, high)
         function.SetParameter(0, min(max(amplitude, low), high))
@@ -1641,7 +1858,8 @@ def configure_parameters(function, model: FitModelConfig, seed: Sequence[float],
 
 def set_refinement_steps(function, model: FitModelConfig, constraint: Optional[FitConstraint], scale: float) -> None:
     try:
-        function.SetParError(0, max(abs(function.GetParameter(0)) * 0.02 * scale, 1e-10))
+        amp_step = 0.05 if getattr(function, "_log_amplitude", False) else abs(function.GetParameter(0)) * 0.02
+        function.SetParError(0, max(amp_step * scale, 1e-10))
     except Exception:
         pass
     for index, (name, low, high) in enumerate(shape_bounds(model, constraint), start=1):
@@ -1655,9 +1873,10 @@ def make_objective_function(ROOT, model: FitModelConfig, mode: ModeConfig, objec
     if mode.key == SS_MODE.key and objective == "chi2":
         # SS data should retain the original TH1::Fit(..., "S R I", ...)
         # behaviour.  In this branch the TF1 is the smooth density itself.
-        function = ROOT.BkgFitFnVariationPy.MakeFitFunction(
-            name, model.cpp_id, mode.fit_min, mode.fit_max
+        function = ROOT.BkgFitFnVariationPy.MakeLogAmplitudeFitFunction(
+            name, model.cpp_id, mode.fit_min, mode.fit_max, model.npar
         )
+        function._log_amplitude = True
     else:
         kind = {"chi2": 0, "weighted-likelihood": 1, "log-chi2": 2}[objective]
         function = ROOT.BkgFitFnVariationPy.MakeObjectiveFunction(
@@ -1674,6 +1893,24 @@ def result_object(fit_result):
         return fit_result.Get()
     except Exception:
         return fit_result
+
+
+def physical_fit_function(ROOT, function, model: FitModelConfig, mode: ModeConfig):
+    """Restore physical A for plots, templates and the existing anchor format.
+
+    The retained ROOT fit result describes the internal log(A) coordinates.
+    Its status/objective are unchanged; public TF1 parameters use physical A.
+    """
+    if not getattr(function, "_log_amplitude", False):
+        return function
+    physical = ROOT.BkgFitFnVariationPy.MakeFitFunction(
+        _NAMES.unique(f"physical_{model.key}"), model.cpp_id, mode.fit_min, mode.fit_max
+    )
+    copy_parameters(function, physical, model.npar)
+    amplitude = math.exp(float(function.GetParameter(0)))
+    physical.SetParameter(0, amplitude)
+    physical.SetParError(0, amplitude * float(function.GetParError(0)))
+    return physical
 
 
 def extract_diagnostics(
@@ -1785,7 +2022,7 @@ def run_fit_attempt(
             diag = extract_diagnostics(result, function, model, fit_data, constraint)
             state = [(float(function.GetParameter(i)), float(function.GetParError(i))) for i in range(model.npar)]
             records.append((result, diag, state))
-            if diag.accepted:
+            if diag.accepted and (mode.key != SS_MODE.key or diag.covariance_status == 3):
                 break
     finally:
         try:
@@ -1801,7 +2038,7 @@ def run_fit_attempt(
         except Exception:
             pass
     function.SetRange(mode.fit_min, mode.fit_max)
-    return FitCandidate(function, result, diag, attempt_index, seed, amplitude)
+    return FitCandidate(physical_fit_function(ROOT, function, model, mode), result, diag, attempt_index, seed, amplitude)
 
 
 def release_parameter(function, model: FitModelConfig, parameter_index: int, constraint: Optional[FitConstraint]) -> None:
@@ -1882,7 +2119,7 @@ def run_erf_to_logistic_transfer(
             function.SetParError(index, error)
         except Exception:
             pass
-    return FitCandidate(function, result, diag, 0, seed, amplitude)
+    return FitCandidate(physical_fit_function(ROOT, function, model, mode), result, diag, 0, seed, amplitude)
 
 
 def copy_parameters(source, target, npar: int) -> None:
@@ -2982,6 +3219,8 @@ def run(args: argparse.Namespace) -> int:
         if args.initial_values_only:
             print("[WARNING] --initial-values-only has no effect in ss-data mode.")
     print(f"[INFO] rebin factor    = {args.rebin}")
+    if mode.key == SS_MODE.key:
+        print(f"[INFO] SS binning      = {args.ss_binning}")
     if objective == "log-chi2":
         print(f"[INFO] log relative-error floor = {args.log_relative_error_floor:g}")
     for model in FIT_MODELS:
@@ -2996,7 +3235,15 @@ def run(args: argparse.Namespace) -> int:
     source, files, handles = build_input_histogram(ROOT, mode, directories)
     keepalive: List[object] = []
     try:
-        prepared = prepare_histograms(ROOT, source, mode, args.rebin)
+        prepared = prepare_histograms(
+            ROOT, source, mode, args.rebin, args.ss_binning,
+            args.ss_min_effective_count, args.ss_max_bin_width,
+        )
+        if args.inspect_binning:
+            target = args.ss_min_effective_count if mode.key == SS_MODE.key and args.ss_binning == "adaptive" else None
+            print_fit_binning(prepared, mode, target)
+            print("[DONE] Binning inspection only; no fits, plots, anchors or ROOT templates written.")
+            return 0
         density = prepared.density
         density.GetXaxis().SetRangeUser(mode.fit_min, mode.fit_max)
         density.GetXaxis().SetMoreLogLabels()
