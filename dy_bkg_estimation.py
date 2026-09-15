@@ -55,8 +55,7 @@ Main optional controls
   --no-variable-binning
   --ratio-min/--ratio-max
   --logx, --linear-y
-  --blind                     blind B-jet mass data for 9 < m < 80 GeV;
-                              fully blind B-jet Dilepton_pT validation data
+  --blind                     blind B-jet data for 9 < m < 80 GeV
   --inject-signal
   --signal-mass MASS
   --signal-scale FACTOR
@@ -317,15 +316,6 @@ def apply_blinding(hist, x_min=9.0, x_max=80.0):
             hist.SetBinError(ibin, 0.0)
 
 
-def apply_full_blinding(hist) -> None:
-    """Hide every visible bin of a one-dimensional data histogram."""
-    if not hist:
-        return
-    for ibin in range(1, hist.GetNbinsX() + 1):
-        hist.SetBinContent(ibin, -9999.0)
-        hist.SetBinError(ibin, 0.0)
-
-
 def zero_hist_range(hist, x_min: float, x_max: float) -> None:
     """Set an analyser-excluded mass interval to zero before rebinning."""
     if not hist:
@@ -498,6 +488,7 @@ def assert_same_2d_binning(reference, candidate, reference_label: str, candidate
                 f"[ERROR] {reference_label} and {candidate_label} have different "
                 f"{axis_name}-axis upper edges: {ref_high} versus {cand_high}."
             )
+
 
 
 def assert_same_1d_binning(reference, candidate, reference_label: str, candidate_label: str) -> None:
@@ -1572,17 +1563,8 @@ def draw_validation_plot(ROOT, args, folder, var_name, tf_bins, out_name, title_
         
     scale_to_yield_per_gev(h_data)
 
-    blind_bjet_mass = args.blind and is_mass and "BJet" in folder
-    blind_bjet_dimuon_pt = (
-        args.blind
-        and not is_mass
-        and "BJet" in folder
-        and args.tf_param == "Dilepton_pT"
-    )
-    if blind_bjet_mass:
+    if args.blind and is_mass and "BJet" in folder:
         apply_blinding(h_data, 9.0, 80.0)
-    elif blind_bjet_dimuon_pt:
-        apply_full_blinding(h_data)
 
     color_DY = ROOT.TColor.GetColor("#FFCC66")   
     color_Top = ROOT.TColor.GetColor("#669966")  
@@ -1691,10 +1673,8 @@ def draw_validation_plot(ROOT, args, folder, var_name, tf_bins, out_name, title_
     val_title = "Dimuon Mass Validation" if is_mass else f"{tf_parameter_display(args.tf_param)} Validation"
     
     extra_val_info = []
-    if blind_bjet_mass:
+    if args.blind and is_mass and "BJet" in folder:
         extra_val_info.append("9 < m(#mu#mu) < 80 GeV Blinded")
-    elif blind_bjet_dimuon_pt:
-        extra_val_info.append("Data fully blinded")
         
     draw_cms_text(ROOT, era=args.era, text_right=val_title, extra_lines=[f"Region: {region_name}"] + extra_val_info)
     upper.SetTickx(); upper.SetTicky(); upper.RedrawAxis()
@@ -1703,10 +1683,8 @@ def draw_validation_plot(ROOT, args, folder, var_name, tf_bins, out_name, title_
     h_ratio = h_data.Clone(f"ratio_val_{folder}_{out_name}")
     h_ratio.Divide(h_total_mc)
     
-    if blind_bjet_mass:
+    if args.blind and is_mass and "BJet" in folder:
         apply_blinding(h_ratio, 9.0, 80.0)
-    elif blind_bjet_dimuon_pt:
-        apply_full_blinding(h_ratio)
         
     h_ratio.GetXaxis().SetRangeUser(xmin, xmax)
     apply_style(h_ratio, is_ratio=True)
@@ -1772,14 +1750,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--logx", action="store_true", help="Use log x axis for Mass plot")
     parser.add_argument("--linear-y", dest="logy", action="store_false", help="Use linear y axis")
     parser.set_defaults(logy=True)
-    parser.add_argument(
-        "--blind",
-        action="store_true",
-        help=(
-            "Blind B-Jet dimuon mass data for 9 < mass < 80 GeV; in TF mode, "
-            "fully blind B-Jet Dilepton_pT validation data"
-        ),
-    )
+    parser.add_argument("--blind", action="store_true", help="Blind Data in B-Jet dimuon mass region (9 < mass < 80)")
     parser.add_argument(
         "--inject-signal",
         action="store_true",
@@ -1859,8 +1830,6 @@ def main(argv=None):
         )
     if args.blind:
         print("[INFO] B-jet Signal Region Blinding is ENABLED (9 < m(mumu) < 80 GeV)")
-        if args.method == "tf" and args.tf_param == "Dilepton_pT":
-            print("[INFO] B-jet Dilepton_pT validation data are fully blinded")
     if args.inject_signal:
         print(
             "[INFO] Signal injection is ENABLED: "
@@ -2431,32 +2400,13 @@ def main(argv=None):
     # --------------------------------------------------------------------------
     # 4. Validation plots.
     #
-    # TF mode keeps the parameter and mass validation plots based on TH2.
-    # NF mode makes only the B-jet and light-jet mass validation plots and
-    # reads the one-dimensional Dilepton_Mass histograms directly.
+    # Both TF and NF modes make only B-jet and light-jet dimuon-mass
+    # validation plots. Dilepton_pT validation is handled separately by
+    # dilepton_pt_validation.py. TF mode uses TH2 mass projections, while
+    # NF mode reads the one-dimensional Dilepton_Mass histograms directly.
     # --------------------------------------------------------------------------
     if args.method == "tf":
-        print("[INFO] Generating TF validation plots from 2D projections...")
-        draw_validation_plot(
-            ROOT,
-            args,
-            reg_b,
-            hist_2d_b,
-            tf_param_bins,
-            f"Validation_{args.era}_{args.tf_param}_BJet",
-            title_x,
-            is_mass=False,
-        )
-        draw_validation_plot(
-            ROOT,
-            args,
-            reg_l,
-            hist_2d_l,
-            tf_param_bins,
-            f"Validation_{args.era}_{args.tf_param}_LightJet",
-            title_x,
-            is_mass=False,
-        )
+        print("[INFO] Generating TF mass validation plots from 2D projections...")
         draw_validation_plot(
             ROOT,
             args,
