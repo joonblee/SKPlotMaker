@@ -1519,8 +1519,13 @@ def draw_styled_plot(ROOT, targets: List[Tuple], preds: List[Tuple], ratios: Lis
 # ==============================================================================
 # Validation Plot Function (Data vs Full MC Stack from 2D Histograms)
 # ==============================================================================
-def draw_validation_plot(ROOT, args, folder, var_name, tf_bins, out_name, title_x, is_mass=False, use_1d_mass=False):
+def draw_validation_plot(
+    ROOT, args, folder, var_name, tf_bins, out_name, title_x,
+    is_mass=False, use_1d_mass=False, dy_file=None, dy_label="DY",
+):
     ROOT.gSystem.mkdir(PLOT_DIR, True)
+    if dy_file is None:
+        dy_file = args.dy_amc_file
 
     if use_1d_mass:
         mass_hist_name = f"Dilepton_Mass___{folder}"
@@ -1575,7 +1580,7 @@ def draw_validation_plot(ROOT, args, folder, var_name, tf_bins, out_name, title_
         ("NIsoMuon_Others.root", color_Others, "Others"),
         ("NIsoMuon_Top.root", color_Top, "Top"),
         ("NIsoMuon_QCD_Inclusive.root", color_QCD, "QCD"),
-        (args.dy_amc_file, color_DY, "DY")
+        (dy_file, color_DY, dy_label)
     ]
 
     stack = ROOT.THStack(f"stack_val_{folder}_{out_name}", "")
@@ -2400,10 +2405,9 @@ def main(argv=None):
     # --------------------------------------------------------------------------
     # 4. Validation plots.
     #
-    # Both TF and NF modes make only B-jet and light-jet dimuon-mass
-    # validation plots. Dilepton_pT validation is handled separately by
-    # dilepton_pt_validation.py. TF mode uses TH2 mass projections, while
-    # NF mode reads the one-dimensional Dilepton_Mass histograms directly.
+    # Both TF and NF modes make B-jet and light-jet dimuon-mass validation
+    # plots for both the aMC@NLO and MG LO DY samples. Dilepton_pT validation
+    # is handled separately by dilepton_pt_validation.py.
     # --------------------------------------------------------------------------
     if args.method == "tf":
         print("[INFO] Generating TF mass validation plots from 2D projections...")
@@ -2426,6 +2430,32 @@ def main(argv=None):
             f"Validation_{args.era}_DimuonMass_LightJet",
             "m(#mu#mu) [GeV]",
             is_mass=True,
+        )
+
+        print("[INFO] Generating MG LO TF mass validation plots from 2D projections...")
+        draw_validation_plot(
+            ROOT,
+            args,
+            reg_b,
+            hist_2d_b,
+            tf_param_bins,
+            f"Validation_{args.era}_DimuonMass_BJet_MG",
+            "m(#mu#mu) [GeV]",
+            is_mass=True,
+            dy_file=args.dy_mg_file,
+            dy_label="DY (MG LO)",
+        )
+        draw_validation_plot(
+            ROOT,
+            args,
+            reg_l,
+            hist_2d_l,
+            tf_param_bins,
+            f"Validation_{args.era}_DimuonMass_LightJet_MG",
+            "m(#mu#mu) [GeV]",
+            is_mass=True,
+            dy_file=args.dy_mg_file,
+            dy_label="DY (MG LO)",
         )
     else:
         print("[INFO] Generating NF mass validation plots from 1D histograms...")
@@ -2450,6 +2480,34 @@ def main(argv=None):
             "m(#mu#mu) [GeV]",
             is_mass=True,
             use_1d_mass=True,
+        )
+
+        print("[INFO] Generating MG LO NF mass validation plots from 1D histograms...")
+        draw_validation_plot(
+            ROOT,
+            args,
+            reg_b,
+            "",
+            tf_param_bins,
+            f"Validation_{args.era}_DimuonMass_BJet_MG",
+            "m(#mu#mu) [GeV]",
+            is_mass=True,
+            use_1d_mass=True,
+            dy_file=args.dy_mg_file,
+            dy_label="DY (MG LO)",
+        )
+        draw_validation_plot(
+            ROOT,
+            args,
+            reg_l,
+            "",
+            tf_param_bins,
+            f"Validation_{args.era}_DimuonMass_LightJet_MG",
+            "m(#mu#mu) [GeV]",
+            is_mass=True,
+            use_1d_mass=True,
+            dy_file=args.dy_mg_file,
+            dy_label="DY (MG LO)",
         )
 
     return 0
