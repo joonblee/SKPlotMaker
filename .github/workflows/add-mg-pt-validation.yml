@@ -1,0 +1,116 @@
+name: Add MG dimuon pT validation option
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/add-mg-pt-validation.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Patch dilepton pT validation script
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("dilepton_pt_validation.py")
+          text = path.read_text()
+
+          replacements = [
+              (
+                  'DY_FILE = "NIsoMuon_DYJets_Inclusive.root"\n',
+                  'DY_FILE = "NIsoMuon_DYJets_Inclusive.root"\nMG_DY_FILE = "NIsoMuon_DYJets_MG_Inclusive.root"\n',
+              ),
+              (
+                  '  python3 dilepton_pt_validation.py --era Run3\n',
+                  '  python3 dilepton_pt_validation.py --era Run3\n  python3 dilepton_pt_validation.py --era 2018 --blind --with-mg\n',
+              ),
+              (
+                  'def draw_validation_plot(ROOT, args, folder: str, region_token: str, region_name: str) -> None:\n',
+                  'def draw_validation_plot(\n    ROOT,\n    args,\n    folder: str,\n    region_token: str,\n    region_name: str,\n    *,\n    dy_file: str,\n    output_suffix: str = "",\n    dy_label: str = "DY",\n) -> None:\n',
+              ),
+              (
+                  '    hist_name = f"Dilepton_pT___{folder}"\n',
+                  '    hist_name = f"Dilepton_pT___{folder}"\n    object_token = f"{region_token}{output_suffix}"\n',
+              ),
+              (
+                  '        f"data_{region_token}",\n',
+                  '        f"data_{object_token}",\n',
+              ),
+              (
+                  '    h_data = rebin_hist(h_data_raw, args.rebin, f"data_rebin_{region_token}")\n',
+                  '    h_data = rebin_hist(h_data_raw, args.rebin, f"data_rebin_{object_token}")\n',
+              ),
+              (
+                  '        (args.dy_file, color_dy, "DY"),\n',
+                  '        (dy_file, color_dy, dy_label),\n',
+              ),
+              (
+                  '    stack = ROOT.THStack(f"stack_{region_token}", "")\n    h_total_mc = h_data.Clone(f"total_mc_{region_token}")\n',
+                  '    stack = ROOT.THStack(f"stack_{object_token}", "")\n    h_total_mc = h_data.Clone(f"total_mc_{object_token}")\n',
+              ),
+              (
+                  '            f"{label}_{region_token}",\n',
+                  '            f"{label}_{object_token}",\n',
+              ),
+              (
+                  '        h_mc = rebin_hist(h_raw, args.rebin, f"{label}_rebin_{region_token}")\n',
+                  '        h_mc = rebin_hist(h_raw, args.rebin, f"{label}_rebin_{object_token}")\n',
+              ),
+              (
+                  '    canvas = ROOT.TCanvas(f"c_{region_token}", "", 900, 900)\n    upper = ROOT.TPad(f"upper_{region_token}", "", 0.0, 0.30, 1.0, 1.0)\n    lower = ROOT.TPad(f"lower_{region_token}", "", 0.0, 0.00, 1.0, 0.30)\n',
+                  '    canvas = ROOT.TCanvas(f"c_{object_token}", "", 900, 900)\n    upper = ROOT.TPad(f"upper_{object_token}", "", 0.0, 0.30, 1.0, 1.0)\n    lower = ROOT.TPad(f"lower_{object_token}", "", 0.0, 0.00, 1.0, 0.30)\n',
+              ),
+              (
+                  '    h_ratio = h_data.Clone(f"ratio_{region_token}")\n',
+                  '    h_ratio = h_data.Clone(f"ratio_{object_token}")\n',
+              ),
+              (
+                  '    line = ROOT.TF1(f"line_one_{region_token}", "1.0", xmin, xmax)\n',
+                  '    line = ROOT.TF1(f"line_one_{object_token}", "1.0", xmin, xmax)\n',
+              ),
+              (
+                  '        PLOT_DIR, f"Validation_{args.era}_Dilepton_pT_{region_token}.pdf"\n',
+                  '        PLOT_DIR, f"Validation_{args.era}_Dilepton_pT_{region_token}{output_suffix}.pdf"\n',
+              ),
+              (
+                  '    parser.add_argument(\n        "--dy-file",\n        default=DY_FILE,\n        help="DY ROOT filename",\n    )\n',
+                  '    parser.add_argument(\n        "--dy-file",\n        default=DY_FILE,\n        help="Nominal aMC@NLO DY ROOT filename",\n    )\n    parser.add_argument(\n        "--with-mg",\n        action="store_true",\n        help="Also draw validation plots using the MG LO DY sample",\n    )\n    parser.add_argument(\n        "--mg-dy-file",\n        default=MG_DY_FILE,\n        help="MG LO DY ROOT filename used with --with-mg",\n    )\n',
+              ),
+              (
+                  '    for folder, region_token, region_name in regions:\n        draw_validation_plot(ROOT, args, folder, region_token, region_name)\n',
+                  '    for folder, region_token, region_name in regions:\n        draw_validation_plot(\n            ROOT, args, folder, region_token, region_name,\n            dy_file=args.dy_file,\n        )\n\n    if args.with_mg:\n        for folder, region_token, region_name in regions:\n            draw_validation_plot(\n                ROOT, args, folder, region_token, region_name,\n                dy_file=args.mg_dy_file,\n                output_suffix="_MG",\n                dy_label="DY (MG LO)",\n            )\n',
+              ),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"Expected exactly one match, found {count}: {old[:100]!r}")
+              text = text.replace(old, new, 1)
+
+          if 'Validation_{args.era}_Dilepton_pT_{region_token}{output_suffix}.pdf' not in text:
+              raise RuntimeError("Output suffix was not wired into the PDF filename")
+          if 'output_suffix="_MG"' not in text:
+              raise RuntimeError("MG output call was not added")
+
+          path.write_text(text)
+          PY
+
+          python3 -m py_compile dilepton_pt_validation.py
+          rm -f .github/workflows/add-mg-pt-validation.yml
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dilepton_pt_validation.py .github/workflows/add-mg-pt-validation.yml
+          git commit -m "Add MG option to dimuon pT validation"
+          git push origin HEAD:master
