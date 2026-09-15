@@ -21,15 +21,16 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           path = Path("dilepton_pt_validation.py")
           text = path.read_text()
 
-          text = text.replace(
-              "import sys\nfrom typing import List, Tuple\n",
-              "import sys\nfrom array import array\nfrom typing import List, Tuple\n",
-              1,
-          )
+          old_import = "import sys\nfrom typing import List, Tuple\n"
+          new_import = "import sys\nfrom array import array\nfrom typing import List, Tuple\n"
+          if text.count(old_import) != 1:
+              raise RuntimeError("Import anchor not found exactly once")
+          text = text.replace(old_import, new_import, 1)
 
           anchor = 'MG_DY_FILE = "NIsoMuon_DYJets_MG_Inclusive.root"\n'
           replacement = anchor + 'DILEPTON_PT_BINS = (50.0, 100.0, 120.0, 150.0, 200.0, 300.0, 600.0, 1000.0)\n'
@@ -37,16 +38,15 @@ jobs:
               raise RuntimeError("MG_DY_FILE anchor not found exactly once")
           text = text.replace(anchor, replacement, 1)
 
-          old_func = '''def rebin_hist(hist, factor: int, name: str):
-              if factor <= 1:
-                  return clone_hist(hist, name)
-              out = hist.Rebin(factor, name)
-              out.SetDirectory(0)
-              out.Sumw2()
-              return out
-          '''
-          # Normalize indentation from source before matching.
-          old_func = old_func.replace("              ", "    ")
+          pattern = re.compile(
+              r'def rebin_hist\(hist, factor: int, name: str\):\n'
+              r'    if factor <= 1:\n'
+              r'        return clone_hist\(hist, name\)\n'
+              r'    out = hist\.Rebin\(factor, name\)\n'
+              r'    out\.SetDirectory\(0\)\n'
+              r'    out\.Sumw2\(\)\n'
+              r'    return out\n'
+          )
           new_func = '''def rebin_dilepton_pt(hist, name: str):
               """Use exactly the Dilepton_pT binning from dy_bkg_estimation.py."""
               edges = array("d", DILEPTON_PT_BINS)
@@ -55,50 +55,53 @@ jobs:
               out.Sumw2()
               return out
           '''.replace("              ", "    ")
-          if text.count(old_func) != 1:
-              raise RuntimeError(f"Expected one rebin_hist definition, found {text.count(old_func)}")
-          text = text.replace(old_func, new_func, 1)
+          text, n = pattern.subn(new_func, text, count=1)
+          if n != 1:
+              raise RuntimeError(f"Expected one rebin_hist definition, replaced {n}")
 
           old_data = '    h_data = rebin_hist(h_data_raw, args.rebin, f"data_rebin_{object_token}")'
           new_data = '    h_data = rebin_dilepton_pt(h_data_raw, f"data_rebin_{object_token}")'
           if text.count(old_data) != 1:
-              raise RuntimeError(f"Expected one data rebin call, found {text.count(old_data)}")
+              raise RuntimeError("Data rebin call not found exactly once")
           text = text.replace(old_data, new_data, 1)
 
           old_mc = '        h_mc = rebin_hist(h_raw, args.rebin, f"{label}_rebin_{object_token}")'
           new_mc = '        h_mc = rebin_dilepton_pt(h_raw, f"{label}_rebin_{object_token}")'
           if text.count(old_mc) != 1:
-              raise RuntimeError(f"Expected one MC rebin call, found {text.count(old_mc)}")
+              raise RuntimeError("MC rebin call not found exactly once")
           text = text.replace(old_mc, new_mc, 1)
 
-          text = text.replace(
-              '        default=0.0,\n        help="Minimum dimuon pT shown",',
-              '        default=DILEPTON_PT_BINS[0],\n        help="Minimum dimuon pT shown",',
-              1,
-          )
-          text = text.replace(
-              '        default=1000.0,\n        help="Maximum dimuon pT shown",',
-              '        default=DILEPTON_PT_BINS[-1],\n        help="Maximum dimuon pT shown",',
-              1,
-          )
+          old_xmin = '        default=0.0,\n        help="Minimum dimuon pT shown",'
+          new_xmin = '        default=DILEPTON_PT_BINS[0],\n        help="Minimum dimuon pT shown",'
+          if text.count(old_xmin) != 1:
+              raise RuntimeError("xmin default not found exactly once")
+          text = text.replace(old_xmin, new_xmin, 1)
 
-          rebin_arg = '''    parser.add_argument(
-              "--rebin",
-              type=int,
-              default=1,
-              help="Integer rebin factor for the 1D pT histogram",
-          )
-          '''.replace("              ", "        ")
-          if text.count(rebin_arg) != 1:
-              raise RuntimeError(f"Expected one --rebin block, found {text.count(rebin_arg)}")
-          text = text.replace(rebin_arg, "", 1)
+          old_xmax = '        default=1000.0,\n        help="Maximum dimuon pT shown",'
+          new_xmax = '        default=DILEPTON_PT_BINS[-1],\n        help="Maximum dimuon pT shown",'
+          if text.count(old_xmax) != 1:
+              raise RuntimeError("xmax default not found exactly once")
+          text = text.replace(old_xmax, new_xmax, 1)
 
-          rebin_check = '''    if args.rebin < 1:
-              raise ValueError("--rebin must be >= 1")
-          '''.replace("              ", "        ")
-          if text.count(rebin_check) != 1:
-              raise RuntimeError(f"Expected one --rebin validation, found {text.count(rebin_check)}")
-          text = text.replace(rebin_check, "", 1)
+          rebin_arg_pattern = re.compile(
+              r'    parser\.add_argument\(\n'
+              r'        "--rebin",\n'
+              r'        type=int,\n'
+              r'        default=1,\n'
+              r'        help="Integer rebin factor for the 1D pT histogram",\n'
+              r'    \)\n'
+          )
+          text, n = rebin_arg_pattern.subn('', text, count=1)
+          if n != 1:
+              raise RuntimeError(f"Expected one --rebin parser block, removed {n}")
+
+          check_pattern = re.compile(
+              r'    if args\.rebin < 1:\n'
+              r'        raise ValueError\("--rebin must be >= 1"\)\n'
+          )
+          text, n = check_pattern.subn('', text, count=1)
+          if n != 1:
+              raise RuntimeError(f"Expected one --rebin validation, removed {n}")
 
           if "rebin_hist(" in text or "args.rebin" in text:
               raise RuntimeError("Old integer rebinning logic still present")
