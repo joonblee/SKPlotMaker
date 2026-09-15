@@ -24,6 +24,7 @@ import argparse
 import math
 import os
 import sys
+from array import array
 from typing import List, Tuple
 
 RUN2_ERAS: Tuple[str, ...] = (
@@ -45,6 +46,7 @@ DEFAULT_BASE_DIR = "/data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon"
 PLOT_DIR = "/data6/Users/joonblee/PlotMaker/plots"
 DY_FILE = "NIsoMuon_DYJets_Inclusive.root"
 MG_DY_FILE = "NIsoMuon_DYJets_MG_Inclusive.root"
+DILEPTON_PT_BINS = (50.0, 100.0, 120.0, 150.0, 200.0, 300.0, 600.0, 1000.0)
 
 LUMI_FB = {
     "2016preVFP": 19.5,
@@ -185,10 +187,10 @@ def load_histogram_across_eras(
     return combined
 
 
-def rebin_hist(hist, factor: int, name: str):
-    if factor <= 1:
-        return clone_hist(hist, name)
-    out = hist.Rebin(factor, name)
+def rebin_dilepton_pt(hist, name: str):
+    """Use exactly the Dilepton_pT binning from dy_bkg_estimation.py."""
+    edges = array("d", DILEPTON_PT_BINS)
+    out = hist.Rebin(len(edges) - 1, name, edges)
     out.SetDirectory(0)
     out.Sumw2()
     return out
@@ -291,7 +293,7 @@ def draw_validation_plot(
         f"data_{object_token}",
         required=True,
     )
-    h_data = rebin_hist(h_data_raw, args.rebin, f"data_rebin_{object_token}")
+    h_data = rebin_dilepton_pt(h_data_raw, f"data_rebin_{object_token}")
     scale_to_yield_per_gev(h_data)
 
     is_blinded = args.blind and region_token == "BJet"
@@ -329,7 +331,7 @@ def draw_validation_plot(
             print(f"[WARNING] Missing optional MC input: {filename}")
             continue
 
-        h_mc = rebin_hist(h_raw, args.rebin, f"{label}_rebin_{object_token}")
+        h_mc = rebin_dilepton_pt(h_raw, f"{label}_rebin_{object_token}")
         scale_to_yield_per_gev(h_mc)
         h_mc.SetFillColor(color)
         h_mc.SetLineColor(ROOT.kBlack)
@@ -474,20 +476,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--xmin",
         type=float,
-        default=0.0,
+        default=DILEPTON_PT_BINS[0],
         help="Minimum dimuon pT shown",
     )
     parser.add_argument(
         "--xmax",
         type=float,
-        default=1000.0,
+        default=DILEPTON_PT_BINS[-1],
         help="Maximum dimuon pT shown",
-    )
-    parser.add_argument(
-        "--rebin",
-        type=int,
-        default=1,
-        help="Integer rebin factor for the 1D pT histogram",
     )
     parser.add_argument(
         "--linear-y",
@@ -501,8 +497,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(sys.argv[1:] if argv is None else argv)
-    if args.rebin < 1:
-        raise ValueError("--rebin must be >= 1")
     if args.xmax <= args.xmin:
         raise ValueError("--xmax must be larger than --xmin")
 
