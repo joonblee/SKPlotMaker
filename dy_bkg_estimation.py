@@ -551,6 +551,23 @@ def load_subtracted_histogram(ROOT, args, folder: str, hist_name: str) -> Any:
             continue
         h_sub.Add(h_bg, -1.0)
 
+    # In sparse high-mass light-jet data, Data-QCD-Top-Others can become
+    # slightly negative when the observed data count is zero but the
+    # subtracted MC prediction is nonzero.  A negative event yield is not a
+    # physical DY template, so clamp only the central bin content to zero.
+    # Keep the propagated Sumw2 bin uncertainty unchanged so LightJetStat still
+    # reflects the statistical precision of the data-minus-background source.
+    n_clamped = 0
+    for ibin in range(0, h_sub.GetNbinsX() + 2):
+        if float(h_sub.GetBinContent(ibin)) < 0.0:
+            h_sub.SetBinContent(ibin, 0.0)
+            n_clamped += 1
+    if n_clamped:
+        print(
+            f"[INFO] Clamped {n_clamped} negative bin(s) to zero in "
+            f"LightJetSource ({folder}/{hist_name}); bin errors are unchanged."
+        )
+
     return h_sub
 
 # ==============================================================================
