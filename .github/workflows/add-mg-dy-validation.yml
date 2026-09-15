@@ -25,201 +25,153 @@ jobs:
           path = Path("dy_bkg_estimation.py")
           text = path.read_text()
 
-          old_def = '''def draw_validation_plot(ROOT, args, folder, var_name, tf_bins, out_name, title_x, is_mass=False, use_1d_mass=False):
-              ROOT.gSystem.mkdir(PLOT_DIR, True)
-          '''.replace("              ", "    ")
-          new_def = '''def draw_validation_plot(
-              ROOT, args, folder, var_name, tf_bins, out_name, title_x,
-              is_mass=False, use_1d_mass=False, dy_file=None, dy_label="DY",
-          ):
-              ROOT.gSystem.mkdir(PLOT_DIR, True)
-              if dy_file is None:
-                  dy_file = args.dy_amc_file
-          '''.replace("              ", "    ")
+          old_def = (
+              'def draw_validation_plot(ROOT, args, folder, var_name, tf_bins, out_name, title_x, '
+              'is_mass=False, use_1d_mass=False):\n'
+              '    ROOT.gSystem.mkdir(PLOT_DIR, True)\n'
+          )
+          new_def = (
+              'def draw_validation_plot(\n'
+              '    ROOT, args, folder, var_name, tf_bins, out_name, title_x,\n'
+              '    is_mass=False, use_1d_mass=False, dy_file=None, dy_label="DY",\n'
+              '):\n'
+              '    ROOT.gSystem.mkdir(PLOT_DIR, True)\n'
+              '    if dy_file is None:\n'
+              '        dy_file = args.dy_amc_file\n'
+          )
           if text.count(old_def) != 1:
               raise RuntimeError(f"Expected one validation function definition, found {text.count(old_def)}")
           text = text.replace(old_def, new_def, 1)
 
           old_dy = '        (args.dy_amc_file, color_DY, "DY")'
-          new_dy = '        (dy_file, color_DY, dy_label)'
           if text.count(old_dy) != 1:
               raise RuntimeError(f"Expected one hard-coded validation DY entry, found {text.count(old_dy)}")
-          text = text.replace(old_dy, new_dy, 1)
+          text = text.replace(old_dy, '        (dy_file, color_DY, dy_label)', 1)
 
-          old_comment = '''    # Both TF and NF modes make only B-jet and light-jet dimuon-mass
-              # validation plots. Dilepton_pT validation is handled separately by
-              # dilepton_pt_validation.py. TF mode uses TH2 mass projections, while
-              # NF mode reads the one-dimensional Dilepton_Mass histograms directly.
-          '''.replace("              ", "    ")
-          new_comment = '''    # Both TF and NF modes make B-jet and light-jet dimuon-mass
-              # validation plots for both the aMC@NLO and MG LO DY samples.
-              # Dilepton_pT validation is handled separately by dilepton_pt_validation.py.
-              # TF mode uses TH2 mass projections, while NF mode reads the
-              # one-dimensional Dilepton_Mass histograms directly.
-          '''.replace("              ", "    ")
-          if text.count(old_comment) != 1:
-              raise RuntimeError(f"Expected one validation comment block, found {text.count(old_comment)}")
-          text = text.replace(old_comment, new_comment, 1)
+          section_marker = (
+              '    # --------------------------------------------------------------------------\n'
+              '    # 4. Validation plots.\n'
+          )
+          start = text.index(section_marker)
+          end = text.index('    return 0\n', start)
 
-          old_block = '''    if args.method == "tf":
-              print("[INFO] Generating TF mass validation plots from 2D projections...")
-              draw_validation_plot(
-                  ROOT,
-                  args,
-                  reg_b,
-                  hist_2d_b,
-                  tf_param_bins,
-                  f"Validation_{args.era}_DimuonMass_BJet",
-                  "m(#mu#mu) [GeV]",
-                  is_mass=True,
-              )
-              draw_validation_plot(
-                  ROOT,
-                  args,
-                  reg_l,
-                  hist_2d_l,
-                  tf_param_bins,
-                  f"Validation_{args.era}_DimuonMass_LightJet",
-                  "m(#mu#mu) [GeV]",
-                  is_mass=True,
-              )
-          else:
-              print("[INFO] Generating NF mass validation plots from 1D histograms...")
-              draw_validation_plot(
-                  ROOT,
-                  args,
-                  reg_b,
-                  "",
-                  tf_param_bins,
-                  f"Validation_{args.era}_DimuonMass_BJet",
-                  "m(#mu#mu) [GeV]",
-                  is_mass=True,
-                  use_1d_mass=True,
-              )
-              draw_validation_plot(
-                  ROOT,
-                  args,
-                  reg_l,
-                  "",
-                  tf_param_bins,
-                  f"Validation_{args.era}_DimuonMass_LightJet",
-                  "m(#mu#mu) [GeV]",
-                  is_mass=True,
-                  use_1d_mass=True,
-              )
-          '''.replace("              ", "        ")
+          new_section = '''    # --------------------------------------------------------------------------
+    # 4. Validation plots.
+    #
+    # Both TF and NF modes make B-jet and light-jet dimuon-mass validation
+    # plots for both the aMC@NLO and MG LO DY samples. Dilepton_pT validation
+    # is handled separately by dilepton_pt_validation.py.
+    # --------------------------------------------------------------------------
+    if args.method == "tf":
+        print("[INFO] Generating TF mass validation plots from 2D projections...")
+        draw_validation_plot(
+            ROOT,
+            args,
+            reg_b,
+            hist_2d_b,
+            tf_param_bins,
+            f"Validation_{args.era}_DimuonMass_BJet",
+            "m(#mu#mu) [GeV]",
+            is_mass=True,
+        )
+        draw_validation_plot(
+            ROOT,
+            args,
+            reg_l,
+            hist_2d_l,
+            tf_param_bins,
+            f"Validation_{args.era}_DimuonMass_LightJet",
+            "m(#mu#mu) [GeV]",
+            is_mass=True,
+        )
 
-          new_block = '''    if args.method == "tf":
-              print("[INFO] Generating TF mass validation plots from 2D projections...")
-              draw_validation_plot(
-                  ROOT,
-                  args,
-                  reg_b,
-                  hist_2d_b,
-                  tf_param_bins,
-                  f"Validation_{args.era}_DimuonMass_BJet",
-                  "m(#mu#mu) [GeV]",
-                  is_mass=True,
-              )
-              draw_validation_plot(
-                  ROOT,
-                  args,
-                  reg_l,
-                  hist_2d_l,
-                  tf_param_bins,
-                  f"Validation_{args.era}_DimuonMass_LightJet",
-                  "m(#mu#mu) [GeV]",
-                  is_mass=True,
-              )
-              print("[INFO] Generating MG LO TF mass validation plots from 2D projections...")
-              draw_validation_plot(
-                  ROOT,
-                  args,
-                  reg_b,
-                  hist_2d_b,
-                  tf_param_bins,
-                  f"Validation_{args.era}_DimuonMass_BJet_MG",
-                  "m(#mu#mu) [GeV]",
-                  is_mass=True,
-                  dy_file=args.dy_mg_file,
-                  dy_label="DY (MG LO)",
-              )
-              draw_validation_plot(
-                  ROOT,
-                  args,
-                  reg_l,
-                  hist_2d_l,
-                  tf_param_bins,
-                  f"Validation_{args.era}_DimuonMass_LightJet_MG",
-                  "m(#mu#mu) [GeV]",
-                  is_mass=True,
-                  dy_file=args.dy_mg_file,
-                  dy_label="DY (MG LO)",
-              )
-          else:
-              print("[INFO] Generating NF mass validation plots from 1D histograms...")
-              draw_validation_plot(
-                  ROOT,
-                  args,
-                  reg_b,
-                  "",
-                  tf_param_bins,
-                  f"Validation_{args.era}_DimuonMass_BJet",
-                  "m(#mu#mu) [GeV]",
-                  is_mass=True,
-                  use_1d_mass=True,
-              )
-              draw_validation_plot(
-                  ROOT,
-                  args,
-                  reg_l,
-                  "",
-                  tf_param_bins,
-                  f"Validation_{args.era}_DimuonMass_LightJet",
-                  "m(#mu#mu) [GeV]",
-                  is_mass=True,
-                  use_1d_mass=True,
-              )
-              print("[INFO] Generating MG LO NF mass validation plots from 1D histograms...")
-              draw_validation_plot(
-                  ROOT,
-                  args,
-                  reg_b,
-                  "",
-                  tf_param_bins,
-                  f"Validation_{args.era}_DimuonMass_BJet_MG",
-                  "m(#mu#mu) [GeV]",
-                  is_mass=True,
-                  use_1d_mass=True,
-                  dy_file=args.dy_mg_file,
-                  dy_label="DY (MG LO)",
-              )
-              draw_validation_plot(
-                  ROOT,
-                  args,
-                  reg_l,
-                  "",
-                  tf_param_bins,
-                  f"Validation_{args.era}_DimuonMass_LightJet_MG",
-                  "m(#mu#mu) [GeV]",
-                  is_mass=True,
-                  use_1d_mass=True,
-                  dy_file=args.dy_mg_file,
-                  dy_label="DY (MG LO)",
-              )
-          '''.replace("              ", "        ")
+        print("[INFO] Generating MG LO TF mass validation plots from 2D projections...")
+        draw_validation_plot(
+            ROOT,
+            args,
+            reg_b,
+            hist_2d_b,
+            tf_param_bins,
+            f"Validation_{args.era}_DimuonMass_BJet_MG",
+            "m(#mu#mu) [GeV]",
+            is_mass=True,
+            dy_file=args.dy_mg_file,
+            dy_label="DY (MG LO)",
+        )
+        draw_validation_plot(
+            ROOT,
+            args,
+            reg_l,
+            hist_2d_l,
+            tf_param_bins,
+            f"Validation_{args.era}_DimuonMass_LightJet_MG",
+            "m(#mu#mu) [GeV]",
+            is_mass=True,
+            dy_file=args.dy_mg_file,
+            dy_label="DY (MG LO)",
+        )
+    else:
+        print("[INFO] Generating NF mass validation plots from 1D histograms...")
+        draw_validation_plot(
+            ROOT,
+            args,
+            reg_b,
+            "",
+            tf_param_bins,
+            f"Validation_{args.era}_DimuonMass_BJet",
+            "m(#mu#mu) [GeV]",
+            is_mass=True,
+            use_1d_mass=True,
+        )
+        draw_validation_plot(
+            ROOT,
+            args,
+            reg_l,
+            "",
+            tf_param_bins,
+            f"Validation_{args.era}_DimuonMass_LightJet",
+            "m(#mu#mu) [GeV]",
+            is_mass=True,
+            use_1d_mass=True,
+        )
 
-          if text.count(old_block) != 1:
-              raise RuntimeError(f"Expected one validation-call block, found {text.count(old_block)}")
-          text = text.replace(old_block, new_block, 1)
+        print("[INFO] Generating MG LO NF mass validation plots from 1D histograms...")
+        draw_validation_plot(
+            ROOT,
+            args,
+            reg_b,
+            "",
+            tf_param_bins,
+            f"Validation_{args.era}_DimuonMass_BJet_MG",
+            "m(#mu#mu) [GeV]",
+            is_mass=True,
+            use_1d_mass=True,
+            dy_file=args.dy_mg_file,
+            dy_label="DY (MG LO)",
+        )
+        draw_validation_plot(
+            ROOT,
+            args,
+            reg_l,
+            "",
+            tf_param_bins,
+            f"Validation_{args.era}_DimuonMass_LightJet_MG",
+            "m(#mu#mu) [GeV]",
+            is_mass=True,
+            use_1d_mass=True,
+            dy_file=args.dy_mg_file,
+            dy_label="DY (MG LO)",
+        )
 
-          for token in [
-              'Validation_{args.era}_DimuonMass_BJet_MG',
-              'Validation_{args.era}_DimuonMass_LightJet_MG',
-              'dy_file=args.dy_mg_file',
-          ]:
-              if token not in text:
-                  raise RuntimeError(f"Missing expected MG validation token: {token}")
+'''
+          text = text[:start] + new_section + text[end:]
+
+          if text.count('Validation_{args.era}_DimuonMass_BJet_MG') != 2:
+              raise RuntimeError("Expected TF and NF BJet MG validation calls")
+          if text.count('Validation_{args.era}_DimuonMass_LightJet_MG') != 2:
+              raise RuntimeError("Expected TF and NF LightJet MG validation calls")
+          if text.count('dy_file=args.dy_mg_file') != 4:
+              raise RuntimeError("Expected four MG validation dy_file overrides")
 
           path.write_text(text)
           PY
