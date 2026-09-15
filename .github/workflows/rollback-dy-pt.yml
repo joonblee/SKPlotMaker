@@ -1,0 +1,85 @@
+name: Roll back DY pT validation
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/rollback-dy-pt.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore DY file and remove pT validation plots
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout f4add864b3182ec6b233c421efeafdfec7e0836e -- dy_bkg_estimation.py
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("dy_bkg_estimation.py")
+          text = path.read_text()
+
+          pt_calls = '''        draw_validation_plot(
+              ROOT,
+              args,
+              reg_b,
+              hist_2d_b,
+              tf_param_bins,
+              f"Validation_{args.era}_{args.tf_param}_BJet",
+              title_x,
+              is_mass=False,
+          )
+          draw_validation_plot(
+              ROOT,
+              args,
+              reg_l,
+              hist_2d_l,
+              tf_param_bins,
+              f"Validation_{args.era}_{args.tf_param}_LightJet",
+              title_x,
+              is_mass=False,
+          )
+          '''
+          if text.count(pt_calls) != 1:
+              raise RuntimeError(f"Expected exactly one pT-validation block, found {text.count(pt_calls)}")
+          text = text.replace(pt_calls, "", 1)
+
+          old_comment = '''    # TF mode keeps the parameter and mass validation plots based on TH2.
+              # NF mode makes only the B-jet and light-jet mass validation plots and
+              # reads the one-dimensional Dilepton_Mass histograms directly.
+          '''
+          new_comment = '''    # Both TF and NF modes make only B-jet and light-jet dimuon-mass
+              # validation plots. Dilepton_pT validation is handled separately by
+              # dilepton_pt_validation.py. TF mode uses TH2 mass projections, while
+              # NF mode reads the one-dimensional Dilepton_Mass histograms directly.
+          '''
+          if text.count(old_comment) != 1:
+              raise RuntimeError(f"Expected exactly one validation comment block, found {text.count(old_comment)}")
+          text = text.replace(old_comment, new_comment, 1)
+
+          old_print = '        print("[INFO] Generating TF validation plots from 2D projections...")'
+          new_print = '        print("[INFO] Generating TF mass validation plots from 2D projections...")'
+          if text.count(old_print) != 1:
+              raise RuntimeError(f"Expected exactly one TF validation print, found {text.count(old_print)}")
+          text = text.replace(old_print, new_print, 1)
+
+          path.write_text(text)
+          PY
+
+          python3 -m py_compile dy_bkg_estimation.py
+          rm -f .github/workflows/rollback-dy-pt.yml
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dy_bkg_estimation.py .github/workflows/rollback-dy-pt.yml
+          git commit -m "Remove dimuon pT validation from DY estimator"
+          git push origin HEAD:master
