@@ -26,42 +26,38 @@ jobs:
           from pathlib import Path
 
           path = Path("dy_bkg_estimation.py")
-          text = path.read_text()
+          lines = path.read_text().splitlines(keepends=True)
 
-          pt_calls = '''        draw_validation_plot(
-              ROOT,
-              args,
-              reg_b,
-              hist_2d_b,
-              tf_param_bins,
-              f"Validation_{args.era}_{args.tf_param}_BJet",
-              title_x,
-              is_mass=False,
-          )
-          draw_validation_plot(
-              ROOT,
-              args,
-              reg_l,
-              hist_2d_l,
-              tf_param_bins,
-              f"Validation_{args.era}_{args.tf_param}_LightJet",
-              title_x,
-              is_mass=False,
-          )
-          '''
-          if text.count(pt_calls) != 1:
-              raise RuntimeError(f"Expected exactly one pT-validation block, found {text.count(pt_calls)}")
-          text = text.replace(pt_calls, "", 1)
+          def remove_draw_call(token: str) -> None:
+              matches = [i for i, line in enumerate(lines) if token in line]
+              if len(matches) != 1:
+                  raise RuntimeError(f"Expected exactly one {token!r}, found {len(matches)}")
+              idx = matches[0]
+              start = idx
+              while start >= 0 and "draw_validation_plot(" not in lines[start]:
+                  start -= 1
+              end = idx
+              while end < len(lines) and lines[end].strip() != ")":
+                  end += 1
+              if start < 0 or end >= len(lines):
+                  raise RuntimeError(f"Could not locate full draw_validation_plot call for {token!r}")
+              del lines[start:end + 1]
 
-          old_comment = '''    # TF mode keeps the parameter and mass validation plots based on TH2.
-              # NF mode makes only the B-jet and light-jet mass validation plots and
-              # reads the one-dimensional Dilepton_Mass histograms directly.
-          '''
-          new_comment = '''    # Both TF and NF modes make only B-jet and light-jet dimuon-mass
-              # validation plots. Dilepton_pT validation is handled separately by
-              # dilepton_pt_validation.py. TF mode uses TH2 mass projections, while
-              # NF mode reads the one-dimensional Dilepton_Mass histograms directly.
-          '''
+          remove_draw_call('f"Validation_{args.era}_{args.tf_param}_BJet"')
+          remove_draw_call('f"Validation_{args.era}_{args.tf_param}_LightJet"')
+
+          text = "".join(lines)
+          old_comment = (
+              "    # TF mode keeps the parameter and mass validation plots based on TH2.\n"
+              "    # NF mode makes only the B-jet and light-jet mass validation plots and\n"
+              "    # reads the one-dimensional Dilepton_Mass histograms directly.\n"
+          )
+          new_comment = (
+              "    # Both TF and NF modes make only B-jet and light-jet dimuon-mass\n"
+              "    # validation plots. Dilepton_pT validation is handled separately by\n"
+              "    # dilepton_pt_validation.py. TF mode uses TH2 mass projections, while\n"
+              "    # NF mode reads the one-dimensional Dilepton_Mass histograms directly.\n"
+          )
           if text.count(old_comment) != 1:
               raise RuntimeError(f"Expected exactly one validation comment block, found {text.count(old_comment)}")
           text = text.replace(old_comment, new_comment, 1)
@@ -71,6 +67,11 @@ jobs:
           if text.count(old_print) != 1:
               raise RuntimeError(f"Expected exactly one TF validation print, found {text.count(old_print)}")
           text = text.replace(old_print, new_print, 1)
+
+          if f'Validation_{{args.era}}_{{args.tf_param}}_BJet' in text:
+              raise RuntimeError("B-jet pT validation call still present")
+          if f'Validation_{{args.era}}_{{args.tf_param}}_LightJet' in text:
+              raise RuntimeError("Light-jet pT validation call still present")
 
           path.write_text(text)
           PY
