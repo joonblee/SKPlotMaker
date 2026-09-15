@@ -1,0 +1,116 @@
+name: Match dimuon pT validation binning
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/patch-pt-binning.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Match dy_bkg_estimation pT binning
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("dilepton_pt_validation.py")
+          text = path.read_text()
+
+          text = text.replace(
+              "import sys\nfrom typing import List, Tuple\n",
+              "import sys\nfrom array import array\nfrom typing import List, Tuple\n",
+              1,
+          )
+
+          anchor = 'MG_DY_FILE = "NIsoMuon_DYJets_MG_Inclusive.root"\n'
+          replacement = anchor + 'DILEPTON_PT_BINS = (50.0, 100.0, 120.0, 150.0, 200.0, 300.0, 600.0, 1000.0)\n'
+          if text.count(anchor) != 1:
+              raise RuntimeError("MG_DY_FILE anchor not found exactly once")
+          text = text.replace(anchor, replacement, 1)
+
+          old_func = '''def rebin_hist(hist, factor: int, name: str):
+              if factor <= 1:
+                  return clone_hist(hist, name)
+              out = hist.Rebin(factor, name)
+              out.SetDirectory(0)
+              out.Sumw2()
+              return out
+          '''
+          # Normalize indentation from source before matching.
+          old_func = old_func.replace("              ", "    ")
+          new_func = '''def rebin_dilepton_pt(hist, name: str):
+              """Use exactly the Dilepton_pT binning from dy_bkg_estimation.py."""
+              edges = array("d", DILEPTON_PT_BINS)
+              out = hist.Rebin(len(edges) - 1, name, edges)
+              out.SetDirectory(0)
+              out.Sumw2()
+              return out
+          '''.replace("              ", "    ")
+          if text.count(old_func) != 1:
+              raise RuntimeError(f"Expected one rebin_hist definition, found {text.count(old_func)}")
+          text = text.replace(old_func, new_func, 1)
+
+          old_data = '    h_data = rebin_hist(h_data_raw, args.rebin, f"data_rebin_{object_token}")'
+          new_data = '    h_data = rebin_dilepton_pt(h_data_raw, f"data_rebin_{object_token}")'
+          if text.count(old_data) != 1:
+              raise RuntimeError(f"Expected one data rebin call, found {text.count(old_data)}")
+          text = text.replace(old_data, new_data, 1)
+
+          old_mc = '        h_mc = rebin_hist(h_raw, args.rebin, f"{label}_rebin_{object_token}")'
+          new_mc = '        h_mc = rebin_dilepton_pt(h_raw, f"{label}_rebin_{object_token}")'
+          if text.count(old_mc) != 1:
+              raise RuntimeError(f"Expected one MC rebin call, found {text.count(old_mc)}")
+          text = text.replace(old_mc, new_mc, 1)
+
+          text = text.replace(
+              '        default=0.0,\n        help="Minimum dimuon pT shown",',
+              '        default=DILEPTON_PT_BINS[0],\n        help="Minimum dimuon pT shown",',
+              1,
+          )
+          text = text.replace(
+              '        default=1000.0,\n        help="Maximum dimuon pT shown",',
+              '        default=DILEPTON_PT_BINS[-1],\n        help="Maximum dimuon pT shown",',
+              1,
+          )
+
+          rebin_arg = '''    parser.add_argument(
+              "--rebin",
+              type=int,
+              default=1,
+              help="Integer rebin factor for the 1D pT histogram",
+          )
+          '''.replace("              ", "        ")
+          if text.count(rebin_arg) != 1:
+              raise RuntimeError(f"Expected one --rebin block, found {text.count(rebin_arg)}")
+          text = text.replace(rebin_arg, "", 1)
+
+          rebin_check = '''    if args.rebin < 1:
+              raise ValueError("--rebin must be >= 1")
+          '''.replace("              ", "        ")
+          if text.count(rebin_check) != 1:
+              raise RuntimeError(f"Expected one --rebin validation, found {text.count(rebin_check)}")
+          text = text.replace(rebin_check, "", 1)
+
+          if "rebin_hist(" in text or "args.rebin" in text:
+              raise RuntimeError("Old integer rebinning logic still present")
+
+          path.write_text(text)
+          PY
+
+          python3 -m py_compile dilepton_pt_validation.py
+          rm -f .github/workflows/patch-pt-binning.yml
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dilepton_pt_validation.py .github/workflows/patch-pt-binning.yml
+          git commit -m "Match dimuon pT validation binning to DY estimator"
+          git push origin HEAD:master
