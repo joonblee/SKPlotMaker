@@ -15,6 +15,7 @@ Examples
   python3 dilepton_pt_validation.py --era 2018 --blind
   python3 dilepton_pt_validation.py --era Run2 --blind
   python3 dilepton_pt_validation.py --era Run3
+  python3 dilepton_pt_validation.py --era 2018 --blind --with-mg
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ VALID_ERAS = list(ERA_GROUPS.keys())
 DEFAULT_BASE_DIR = "/data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon"
 PLOT_DIR = "/data6/Users/joonblee/PlotMaker/plots"
 DY_FILE = "NIsoMuon_DYJets_Inclusive.root"
+MG_DY_FILE = "NIsoMuon_DYJets_MG_Inclusive.root"
 
 LUMI_FB = {
     "2016preVFP": 19.5,
@@ -265,20 +267,31 @@ def draw_cms_text(ROOT, era: str, region_name: str, blinded: bool) -> None:
         latex.DrawLatex(0.16, 0.752, "Data fully blinded")
 
 
-def draw_validation_plot(ROOT, args, folder: str, region_token: str, region_name: str) -> None:
+def draw_validation_plot(
+    ROOT,
+    args,
+    folder: str,
+    region_token: str,
+    region_name: str,
+    *,
+    dy_file: str,
+    output_suffix: str = "",
+    dy_label: str = "DY",
+) -> None:
     os.makedirs(PLOT_DIR, exist_ok=True)
 
     hist_name = f"Dilepton_pT___{folder}"
+    object_token = f"{region_token}{output_suffix}"
     h_data_raw = load_histogram_across_eras(
         ROOT,
         args,
         "data.root",
         folder,
         hist_name,
-        f"data_{region_token}",
+        f"data_{object_token}",
         required=True,
     )
-    h_data = rebin_hist(h_data_raw, args.rebin, f"data_rebin_{region_token}")
+    h_data = rebin_hist(h_data_raw, args.rebin, f"data_rebin_{object_token}")
     scale_to_yield_per_gev(h_data)
 
     is_blinded = args.blind and region_token == "BJet"
@@ -294,11 +307,11 @@ def draw_validation_plot(ROOT, args, folder: str, region_token: str, region_name
         ("NIsoMuon_Others.root", color_others, "Others"),
         ("NIsoMuon_Top.root", color_top, "Top"),
         ("NIsoMuon_QCD_Inclusive.root", color_qcd, "QCD"),
-        (args.dy_file, color_dy, "DY"),
+        (dy_file, color_dy, dy_label),
     )
 
-    stack = ROOT.THStack(f"stack_{region_token}", "")
-    h_total_mc = h_data.Clone(f"total_mc_{region_token}")
+    stack = ROOT.THStack(f"stack_{object_token}", "")
+    h_total_mc = h_data.Clone(f"total_mc_{object_token}")
     h_total_mc.Reset()
     mc_hists = []
 
@@ -309,14 +322,14 @@ def draw_validation_plot(ROOT, args, folder: str, region_token: str, region_name
             filename,
             folder,
             hist_name,
-            f"{label}_{region_token}",
+            f"{label}_{object_token}",
             required=False,
         )
         if h_raw is None:
             print(f"[WARNING] Missing optional MC input: {filename}")
             continue
 
-        h_mc = rebin_hist(h_raw, args.rebin, f"{label}_rebin_{region_token}")
+        h_mc = rebin_hist(h_raw, args.rebin, f"{label}_rebin_{object_token}")
         scale_to_yield_per_gev(h_mc)
         h_mc.SetFillColor(color)
         h_mc.SetLineColor(ROOT.kBlack)
@@ -329,9 +342,9 @@ def draw_validation_plot(ROOT, args, folder: str, region_token: str, region_name
     xmin = args.xmin
     xmax = args.xmax
 
-    canvas = ROOT.TCanvas(f"c_{region_token}", "", 900, 900)
-    upper = ROOT.TPad(f"upper_{region_token}", "", 0.0, 0.30, 1.0, 1.0)
-    lower = ROOT.TPad(f"lower_{region_token}", "", 0.0, 0.00, 1.0, 0.30)
+    canvas = ROOT.TCanvas(f"c_{object_token}", "", 900, 900)
+    upper = ROOT.TPad(f"upper_{object_token}", "", 0.0, 0.30, 1.0, 1.0)
+    lower = ROOT.TPad(f"lower_{object_token}", "", 0.0, 0.00, 1.0, 0.30)
 
     upper.SetLeftMargin(0.120)
     upper.SetRightMargin(0.050)
@@ -389,7 +402,7 @@ def draw_validation_plot(ROOT, args, folder: str, region_token: str, region_name
     upper.RedrawAxis()
 
     lower.cd()
-    h_ratio = h_data.Clone(f"ratio_{region_token}")
+    h_ratio = h_data.Clone(f"ratio_{object_token}")
     h_ratio.Divide(h_total_mc)
     if is_blinded:
         apply_full_blinding(h_ratio)
@@ -401,7 +414,7 @@ def draw_validation_plot(ROOT, args, folder: str, region_token: str, region_name
     h_ratio.GetXaxis().SetTitle("p_{T}(#mu#mu) [GeV]")
     h_ratio.Draw("PE")
 
-    line = ROOT.TF1(f"line_one_{region_token}", "1.0", xmin, xmax)
+    line = ROOT.TF1(f"line_one_{object_token}", "1.0", xmin, xmax)
     line.SetLineColor(ROOT.kBlack)
     line.SetLineStyle(2)
     line.Draw("SAME")
@@ -412,7 +425,7 @@ def draw_validation_plot(ROOT, args, folder: str, region_token: str, region_name
     lower.RedrawAxis()
 
     output_pdf = os.path.join(
-        PLOT_DIR, f"Validation_{args.era}_Dilepton_pT_{region_token}.pdf"
+        PLOT_DIR, f"Validation_{args.era}_Dilepton_pT_{region_token}{output_suffix}.pdf"
     )
     canvas.SaveAs(output_pdf)
     print(f"[SAVED] {output_pdf}")
@@ -446,7 +459,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dy-file",
         default=DY_FILE,
-        help="DY ROOT filename",
+        help="Nominal aMC@NLO DY ROOT filename",
+    )
+    parser.add_argument(
+        "--with-mg",
+        action="store_true",
+        help="Also draw validation plots using the MG LO DY sample",
+    )
+    parser.add_argument(
+        "--mg-dy-file",
+        default=MG_DY_FILE,
+        help="MG LO DY ROOT filename used with --with-mg",
     )
     parser.add_argument(
         "--xmin",
@@ -491,7 +514,19 @@ def main(argv=None) -> int:
     )
 
     for folder, region_token, region_name in regions:
-        draw_validation_plot(ROOT, args, folder, region_token, region_name)
+        draw_validation_plot(
+            ROOT, args, folder, region_token, region_name,
+            dy_file=args.dy_file,
+        )
+
+    if args.with_mg:
+        for folder, region_token, region_name in regions:
+            draw_validation_plot(
+                ROOT, args, folder, region_token, region_name,
+                dy_file=args.mg_dy_file,
+                output_suffix="_MG",
+                dy_label="DY (MG LO)",
+            )
 
     return 0
 
