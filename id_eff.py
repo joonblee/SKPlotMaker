@@ -11,7 +11,7 @@ materialization failure seen with TCanvas/TPad.
 Fixed input layout
 ------------------
   /data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon/
-    MuonIDEfficiency/<era>/DATA/data.root
+    MuonIDEfficiency/<era>/data.root
     MuonIDEfficiency/<era>/NIsoMuon_QCD_Inclusive.root
     MuonIDEfficiency/<era>/NIsoMuon_tt.root
 
@@ -117,7 +117,7 @@ CPP_SOURCE = r"""
 //      closest direct constraint on the continuum under the J/psi peak.
 //   6. Pass and fail fits use a common signal shape extracted from the pass+fail
 //      spectrum in the same sample and pT/eta bin.
-//   7. DATA/data.root, data.root, and DATA/SingleMuon.root are tried automatically.
+//   7. data.root, and SingleMuon.root are tried automatically.
 //   8. Histograms are read from the current DileptonJPsi_Mass output directly.
 //      No automatic Dilepton_Mass fallback is used.
 //   9. Final summary plots are drawn as two-panel efficiency/SF canvases vs pT and vs |eta|.
@@ -2593,7 +2593,7 @@ void id_eff(TString Year = "2018",
   const TString inputDir = (Trigger == "")
                          ? BaseDir + "/" + Analyzer + "/" + Year + "/"
                          : BaseDir + "/" + Analyzer + "/" + Year + "/" + Trigger + "/";
-  const TString dataFile = ResolveFile(inputDir, {"DATA/data.root", "data.root", "DATA/SingleMuon.root"}, "Data");
+  const TString dataFile = ResolveFile(inputDir, {"data.root", "DATA/data.root", "DATA/SingleMuon.root"}, "Data");
   const TString refLabel = ReferenceLabel(ReferenceInput);
   const TString refFile  = ResolveReferenceFile(inputDir, ReferenceInput);
 
@@ -2891,7 +2891,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Fixed inputs:\n"
             "  /data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon/\n"
-            "    MuonIDEfficiency/<era>/DATA/data.root\n"
+            "    MuonIDEfficiency/<era>/data.root\n"
             "    MuonIDEfficiency/<era>/NIsoMuon_QCD_Inclusive.root\n"
             "    MuonIDEfficiency/<era>/NIsoMuon_tt.root\n\n"
             "Fixed outputs:\n"
@@ -3137,7 +3137,7 @@ def validate_inputs(
     allow_missing: bool,
 ) -> Tuple[Path, Path]:
     directory = input_dir(era)
-    data_path = directory / "DATA" / "data.root"
+    data_path = directory / "data.root"
     missing = [path for path in (data_path, reference_path) if not path.is_file()]
 
     print(f"[INPUT] era       : {era}")

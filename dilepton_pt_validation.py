@@ -46,7 +46,7 @@ DEFAULT_BASE_DIR = "/data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon"
 PLOT_DIR = "/data6/Users/joonblee/PlotMaker/plots"
 DY_FILE = "NIsoMuon_DYJets_Inclusive.root"
 MG_DY_FILE = "NIsoMuon_DYJets_MG_Inclusive.root"
-DILEPTON_PT_BINS = (50.0, 100.0, 120.0, 150.0, 200.0, 300.0, 600.0, 1000.0)
+DILEPTON_PT_BINS = (50., 100., 120., 150., 200., 250., 300., 400., 600., 1000.)
 
 LUMI_FB = {
     "2016preVFP": 19.5,
