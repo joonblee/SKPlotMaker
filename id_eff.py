@@ -2339,7 +2339,7 @@ namespace JpsiMuonIDFit {
     effFrame->SetStats(0);
     effFrame->GetXaxis()->SetLabelSize(0.0);
     effFrame->GetXaxis()->SetTitleSize(0.0);
-    effFrame->GetYaxis()->SetTitle("Tight ID efficiency");
+    effFrame->GetYaxis()->SetTitle("Medium ID efficiency");
     effFrame->GetYaxis()->SetTitleSize(0.060);
     effFrame->GetYaxis()->SetLabelSize(0.052);
     effFrame->GetYaxis()->SetTitleOffset(0.82);
