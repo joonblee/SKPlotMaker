@@ -9,7 +9,7 @@ Current inputs
   /data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon/
     TriggerEfficiency/<era>/data.root
     TriggerEfficiency/<era>/NIsoMuon_QCD_Inclusive.root
-    TriggerEfficiency/<era>/NIsoMuon_tt.root
+    TriggerEfficiency/<era>/NIsoMuon_Top.root
 
 Current analyzer histograms
 ---------------------------
@@ -279,7 +279,7 @@ def era_files(era: str) -> Dict[str, Path]:
     return {
         "Data": directory / "data.root",
         "QCD": directory / "NIsoMuon_QCD_Inclusive.root",
-        "Top": directory / "NIsoMuon_tt.root",
+        "Top": directory / "NIsoMuon_Top.root",
     }
 
 
