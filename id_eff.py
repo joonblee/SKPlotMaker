@@ -117,7 +117,7 @@ CPP_SOURCE = r"""
 //      closest direct constraint on the continuum under the J/psi peak.
 //   6. Pass and fail fits use a common signal shape extracted from the pass+fail
 //      spectrum in the same sample and pT/eta bin.
-//   7. data.root, and SingleMuon.root are tried automatically.
+//   7. data.root in the era directory is the current data-input convention.
 //   8. Histograms are read from the current DileptonJPsi_Mass output directly.
 //      No automatic Dilepton_Mass fallback is used.
 //   9. Final summary plots are drawn as two-panel efficiency/SF canvases vs pT and vs |eta|.
@@ -2593,7 +2593,7 @@ void id_eff(TString Year = "2018",
   const TString inputDir = (Trigger == "")
                          ? BaseDir + "/" + Analyzer + "/" + Year + "/"
                          : BaseDir + "/" + Analyzer + "/" + Year + "/" + Trigger + "/";
-  const TString dataFile = ResolveFile(inputDir, {"data.root", "DATA/data.root", "DATA/SingleMuon.root"}, "Data");
+  const TString dataFile = ResolveFile(inputDir, {"data.root"}, "Data");
   const TString refLabel = ReferenceLabel(ReferenceInput);
   const TString refFile  = ResolveReferenceFile(inputDir, ReferenceInput);
 
@@ -3147,7 +3147,10 @@ def validate_inputs(
 
     if missing and not allow_missing:
         rendered = "\n  ".join(str(path) for path in missing)
-        raise FileNotFoundError(f"Missing required ROOT file(s):\n  {rendered}")
+        raise FileNotFoundError(
+            f"Missing required ROOT file(s):\n  {rendered}\n"
+            "Run hadd.sh for the corresponding MuonIDEfficiency era first."
+        )
     for path in missing:
         print(f"[DRY-RUN WARNING] Missing file: {path}", file=sys.stderr)
     return data_path, reference_path
