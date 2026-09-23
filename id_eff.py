@@ -13,7 +13,7 @@ Fixed input layout
   /data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon/
     MuonIDEfficiency/<era>/data.root
     MuonIDEfficiency/<era>/NIsoMuon_QCD_Inclusive.root
-    MuonIDEfficiency/<era>/NIsoMuon_tt.root
+    MuonIDEfficiency/<era>/NIsoMuon_Top.root
 
 Fixed output layout
 -------------------
@@ -3117,8 +3117,7 @@ def resolve_reference(era: str, raw_reference: str) -> Tuple[str, Path]:
     if key in {"qcd", "qcdmc"}:
         return "QCD", directory / "NIsoMuon_QCD_Inclusive.root"
     if key in {"top", "tt", "ttbar", "tops", "tttw"}:
-        # The C++ Top resolver falls back from NIsoMuon_Top.root to NIsoMuon_tt.root.
-        return "Top", directory / "NIsoMuon_tt.root"
+        return "Top", directory / "NIsoMuon_Top.root"
     if key in {"allmc", "mc"}:
         return "AllMC", directory / "NIsoMuon_AllMC.root"
     if key in {"qcdtop", "qcdtops", "qcdtttw"}:
