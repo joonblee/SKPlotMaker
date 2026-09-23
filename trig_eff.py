@@ -7,7 +7,7 @@ current 2D TriggerEfficiency histograms.
 Current inputs
 --------------
   /data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon/
-    TriggerEfficiency/<era>/DATA/data.root
+    TriggerEfficiency/<era>/data.root
     TriggerEfficiency/<era>/NIsoMuon_QCD_Inclusive.root
     TriggerEfficiency/<era>/NIsoMuon_tt.root
 
@@ -277,7 +277,7 @@ def era_input_dir(era: str) -> Path:
 def era_files(era: str) -> Dict[str, Path]:
     directory = era_input_dir(era)
     return {
-        "Data": directory / "DATA" / "data.root",
+        "Data": directory / "data.root",
         "QCD": directory / "NIsoMuon_QCD_Inclusive.root",
         "Top": directory / "NIsoMuon_tt.root",
     }
@@ -305,7 +305,10 @@ def print_resolved_configuration(args: argparse.Namespace, era: str) -> None:
 
 def open_root_file(ROOT, path: Path):
     if not path.is_file():
-        raise FileNotFoundError(f"Missing ROOT file: {path}")
+        raise FileNotFoundError(
+            f"Missing ROOT file: {path}. "
+            "Run hadd.sh for the corresponding TriggerEfficiency era first."
+        )
     root_file = ROOT.TFile.Open(str(path), "READ")
     if not root_file or root_file.IsZombie():
         if root_file:
