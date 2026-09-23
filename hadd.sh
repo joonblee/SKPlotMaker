@@ -32,7 +32,7 @@
 #   * A separate NIsoMuon_tW.root is made so the tW-only normalisation
 #     uncertainty can be propagated without assigning it to all single top.
 #   * pT-binned Z' samples are merged into NIsoMuon_Zp_M-<mass>.root.
-#   * Mixed summary files (AllMC/QCDTop) are made only for nominal production.
+#   * Mixed summary files (AllMC/QCDTop) are made for nominal and efficiency collections.
 
 print_help() {
     echo "NIsoMuon Run-2/Run-3 ROOT-file merger"
@@ -232,11 +232,14 @@ merge_others() {
     local inputs=()
 
     if is_run2 "$era"; then
+        local ttz_file="$dir/Skim_NIsoMuon_TTZToLLNuNu.root"
+        if [[ ! -f "$ttz_file" && -f "$dir/Skim_NIsoMuon_ttZToLLNuNu.root" ]]; then
+            ttz_file="$dir/Skim_NIsoMuon_ttZToLLNuNu.root"
+        fi
         inputs=(
             "$dir/Skim_NIsoMuon_WJets_MG.root"
             "$dir/Skim_NIsoMuon_TTG.root"
-            "$dir/Skim_NIsoMuon_TTZToLLNuNu.root"
-            "$dir/Skim_NIsoMuon_ttZToLLNuNu.root"
+            "$ttz_file"
         )
     else
         inputs=(
