@@ -13,15 +13,19 @@
 #   Run2, Run3, Run2+3, all
 #
 # COLLECTION:
-#   nominal      : <BASE>/<era>
-#   RunSyst      : <BASE>/RunSyst/<era>
-#   RunXSecSyst  : <BASE>/RunXSecSyst/<era>
-#   all          : all three
+#   nominal           : <BASE>/<era>
+#   RunSyst           : <BASE>/RunSyst/<era>
+#   RunXSecSyst       : <BASE>/RunXSecSyst/<era>
+#   MuonIDEfficiency  : <BASE>/MuonIDEfficiency/<era>
+#   TriggerEfficiency : <BASE>/TriggerEfficiency/<era>
+#   all               : all five
 #
 # Current production policy:
-#   nominal      : data + all nominal backgrounds + signal
-#   RunSyst      : tt/ST/Others + signal, OS BJet histograms only
-#   RunXSecSyst  : tt/ST/Others only, OS BJet histograms only
+#   nominal           : data + all nominal backgrounds + signal
+#   RunSyst           : tt/ST/Others + signal, OS BJet histograms only
+#   RunXSecSyst       : tt/ST/Others only, OS BJet histograms only
+#   MuonIDEfficiency  : merge the available efficiency skim files only; no signal
+#   TriggerEfficiency : merge the available efficiency skim files only; no signal
 #
 # Important details:
 #   * Run-3 TTLL_powheg_ext1 is included in tt where it exists.
@@ -46,7 +50,8 @@ print_help() {
     echo "  Run2, Run3, Run2+3, all"
     echo
     echo "COLLECTION (default: nominal):"
-    echo "  nominal, RunSyst, RunXSecSyst, all"
+    echo "  nominal, RunSyst, RunXSecSyst,"
+    echo "  MuonIDEfficiency, TriggerEfficiency, all"
 }
 
 run_hadd() {
@@ -91,6 +96,21 @@ is_run2() {
         2016preVFP|2016postVFP|2017|2018) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+is_efficiency_collection() {
+    case "$1" in
+        MuonIDEfficiency|TriggerEfficiency) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+is_nominal_like_collection() {
+    [[ "$1" == "nominal" ]] || is_efficiency_collection "$1"
+}
+
+collection_has_signal() {
+    [[ "$1" == "nominal" || "$1" == "RunSyst" ]]
 }
 
 get_dir() {
@@ -216,6 +236,7 @@ merge_others() {
             "$dir/Skim_NIsoMuon_WJets_MG.root"
             "$dir/Skim_NIsoMuon_TTG.root"
             "$dir/Skim_NIsoMuon_TTZToLLNuNu.root"
+            "$dir/Skim_NIsoMuon_ttZToLLNuNu.root"
         )
     else
         inputs=(
@@ -319,26 +340,29 @@ run_one() {
         return 0
     fi
 
-    if [[ "$collection" == "nominal" ]]; then
+    if is_nominal_like_collection "$collection"; then
         merge_data "$era" "$dir" || return $?
         merge_qcd "$dir" || return $?
         merge_dy "$dir" || return $?
     fi
 
-    # Both systematic productions contain only the restricted tt/ST/Others set.
+    # Systematic and efficiency productions are merged from whatever restricted
+    # process set is present in the directory.
     merge_st "$era" "$dir" || return $?
     merge_tw "$era" "$dir" || return $?
     merge_ttbar "$era" "$dir" || return $?
     merge_top "$dir" || return $?
     merge_others "$era" "$dir" || return $?
 
-    # Signal is produced for nominal and RunSyst, but not RunXSecSyst.
-    if [[ "$collection" != "RunXSecSyst" ]]; then
+    # Signal is produced only for the nominal and RunSyst productions.
+    # Efficiency collections intentionally contain no signal skim files.
+    if collection_has_signal "$collection"; then
         merge_signals "$dir" || return $?
     fi
 
-    # Mixed summaries are meaningful only for the complete nominal process set.
-    if [[ "$collection" == "nominal" ]]; then
+    # Efficiency collections contain the same background skim families as the
+    # nominal production, so build the standard summary files there as well.
+    if is_nominal_like_collection "$collection"; then
         merge_summary "$dir" || return $?
     fi
 
@@ -430,7 +454,7 @@ merge_period() {
     echo "[output dir]   $PERIOD_DIR"
     echo "################################################################"
 
-    if [[ "$collection" == "nominal" ]]; then
+    if is_nominal_like_collection "$collection"; then
         merge_period_file "$period" "$collection" "data.root" "${eras[@]}" || return $?
         merge_period_file "$period" "$collection" "NIsoMuon_QCD_Inclusive.root" "${eras[@]}" || return $?
         merge_period_file "$period" "$collection" "NIsoMuon_DYJets_Inclusive.root" "${eras[@]}" || return $?
@@ -443,11 +467,11 @@ merge_period() {
     merge_period_file "$period" "$collection" "NIsoMuon_Top.root" "${eras[@]}" || return $?
     merge_period_file "$period" "$collection" "NIsoMuon_Others.root" "${eras[@]}" || return $?
 
-    if [[ "$collection" != "RunXSecSyst" ]]; then
+    if collection_has_signal "$collection"; then
         merge_period_signals "$period" "$collection" "${eras[@]}" || return $?
     fi
 
-    if [[ "$collection" == "nominal" ]]; then
+    if is_nominal_like_collection "$collection"; then
         merge_period_file "$period" "$collection" "NIsoMuon_AllMC.root" "${eras[@]}" || return $?
         merge_period_file "$period" "$collection" "NIsoMuon_QCDTop.root" "${eras[@]}" || return $?
     fi
@@ -512,7 +536,9 @@ hadd_main() {
         nominal|Nominal|"") collections=(nominal) ;;
         RunSyst|runsyst) collections=(RunSyst) ;;
         RunXSecSyst|runxsecsyst) collections=(RunXSecSyst) ;;
-        all) collections=(nominal RunSyst RunXSecSyst) ;;
+        MuonIDEfficiency|muonidefficiency|MuonID|muonid) collections=(MuonIDEfficiency) ;;
+        TriggerEfficiency|triggerefficiency|TriggerEff|triggereff) collections=(TriggerEfficiency) ;;
+        all) collections=(nominal RunSyst RunXSecSyst MuonIDEfficiency TriggerEfficiency) ;;
         *)
             echo "[ERROR] Unknown COLLECTION: $collection_selection"
             print_help
