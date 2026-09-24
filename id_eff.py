@@ -2390,7 +2390,10 @@ namespace JpsiMuonIDFit {
 
     upper->cd();
     double effYMax = std::max(GraphMaxY(grData, 0.0), GraphMaxY(grQCD, 0.0));
-    effYMax = std::min(1.35, std::max(1.05, 1.15 * effYMax));
+    // Do not clip pass-only boundary uncertainties at 1.35.  Validation bins
+    // with efficiency = 1 may legitimately have large symmetric error bars
+    // extending well above unity.
+    effYMax = std::max(1.05, 1.10 * effYMax);
 
     TH1D *effFrame = new TH1D((TString("effFrame_") + name).Data(), "", 1, xMin, xMax);
     effFrame->SetStats(0);
