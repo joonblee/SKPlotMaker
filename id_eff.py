@@ -318,8 +318,10 @@ namespace JpsiMuonIDFit {
 
   struct EffOutput {
     bool ok = false;
+    bool boundary = false;  // true for pass-only bins represented at efficiency = 1
     double eff = 0.;
     double err = 0.;
+    double nEffBoundary = 0.; // effective pass count used for the boundary interval
   };
 
   struct SummaryRow {
@@ -2222,18 +2224,73 @@ namespace JpsiMuonIDFit {
     return out;
   }
 
+  double PassOnlyBoundaryError(const FitOutput &pass, double &nEffUsed) {
+    // For a bin with positive pass yield and no usable fail yield, the MLE is
+    // epsilon = 1.  A naive Gaussian propagation would give zero uncertainty
+    // because F=0, which is not statistically meaningful.
+    //
+    // Use the lower edge of the 68.27% central Clopper-Pearson interval for
+    // n successes out of n trials:
+    //
+    //   epsilon_low = (alpha/2)^(1/n),   alpha = 1 - 0.6827.
+    //
+    // The fitted pass yield is not necessarily an integer count, so extend this
+    // with an effective count n_eff = (P/sigma_P)^2.  To avoid understating the
+    // uncertainty when the fit reports a precision better than the Poisson
+    // counting limit, cap n_eff at P.  Thus the boundary error is never smaller
+    // than the pure-Poisson pass-only interval inferred from the fitted yield.
+    const double p = pass.yield;
+    if(!std::isfinite(p) || p <= 0.) {
+      nEffUsed = 0.;
+      return 0.;
+    }
+
+    double nEff = p;
+    if(std::isfinite(pass.yieldErr) && pass.yieldErr > 0.) {
+      const double fitNEff = (p / pass.yieldErr) * (p / pass.yieldErr);
+      if(std::isfinite(fitNEff) && fitNEff > 0.) nEff = std::min(nEff, fitNEff);
+    }
+
+    // Protect against pathological tiny effective counts while deliberately
+    // keeping the resulting interval very broad rather than dropping the point.
+    nEff = std::max(nEff, 1e-6);
+    nEffUsed = nEff;
+
+    const double confidence = 0.682689492137; // one Gaussian standard deviation
+    const double alphaHalf = 0.5 * (1.0 - confidence);
+    const double lower = std::pow(alphaHalf, 1.0 / nEff);
+    if(!std::isfinite(lower)) return 1.0;
+
+    return std::max(0.0, std::min(1.0, 1.0 - lower));
+  }
+
   EffOutput MakeEfficiency(const FitOutput &pass, const FitOutput &fail) {
     EffOutput out;
     const double p = pass.yield;
     const double f = fail.yield;
-    const double den = p + f;
 
-    // eff = P/(P+F), propagated from disjoint pass/fail fitted signal integrals
-    // in the configured resonance core window [gYieldIntLow,gYieldIntHigh].
-    // In the Poisson counting limit this reduces to the usual binomial variance.
-    if(!pass.ok || !fail.ok || !std::isfinite(p) || !std::isfinite(f) || den <= 0.) return out;
+    if(!pass.ok || !std::isfinite(p) || p <= 0.) return out;
+
+    // Pass-only boundary case.  This includes a completely empty Fail
+    // histogram and a Fail fit whose signal yield is zero/non-positive.
+    // Keep the efficiency point at 1 instead of silently dropping the bin.
+    if(!fail.ok && (!std::isfinite(f) || f <= 0.)) {
+      out.ok = true;
+      out.boundary = true;
+      out.eff = 1.0;
+      out.err = PassOnlyBoundaryError(pass, out.nEffBoundary);
+      return out;
+    }
+
+    if(!fail.ok || !std::isfinite(f)) return out;
+
+    const double den = p + f;
+    if(den <= 0.) return out;
     if(!std::isfinite(pass.yieldErr) || !std::isfinite(fail.yieldErr)) return out;
 
+    // Interior case: eff = P/(P+F), propagated from disjoint pass/fail fitted
+    // signal integrals. In the Poisson counting limit this reduces to the
+    // usual binomial variance.
     out.ok = true;
     out.eff = p / den;
     const double dEdP = f / (den * den);
@@ -2741,10 +2798,20 @@ void id_eff(TString Year = "2018",
 
     cout << "  Data: pass = " << row.dataPass.yield << " +/- " << row.dataPass.yieldErr
          << ", fail = " << row.dataFail.yield << " +/- " << row.dataFail.yieldErr
-         << ", eff = " << row.dataEff.eff << " +/- " << row.dataEff.err << endl;
+         << ", eff = " << row.dataEff.eff << " +/- " << row.dataEff.err;
+    if(row.dataEff.boundary) {
+      cout << "  [pass-only boundary, n_eff=" << row.dataEff.nEffBoundary
+           << ", 68.27% CP-equivalent]";
+    }
+    cout << endl;
     cout << "  " << refLabel << " : pass = " << row.qcdPass.yield << " +/- " << row.qcdPass.yieldErr
          << ", fail = " << row.qcdFail.yield << " +/- " << row.qcdFail.yieldErr
-         << ", eff = " << row.qcdEff.eff << " +/- " << row.qcdEff.err << endl;
+         << ", eff = " << row.qcdEff.eff << " +/- " << row.qcdEff.err;
+    if(row.qcdEff.boundary) {
+      cout << "  [pass-only boundary, n_eff=" << row.qcdEff.nEffBoundary
+           << ", 68.27% CP-equivalent]";
+    }
+    cout << endl;
     cout << "  SF  = " << row.sf << " +/- " << row.sfErr
          << "  (sfOk=" << row.sfOk << ")\n" << endl;
 
