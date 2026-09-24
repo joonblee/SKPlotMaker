@@ -319,8 +319,10 @@ namespace JpsiMuonIDFit {
   struct EffOutput {
     bool ok = false;
     double eff = 0.;
-    double err = 0.;       // symmetric plotting error derived from the Wilson interval
-    double nEff = 0.;      // effective event count used for the interval
+    double err = 0.;       // max(fit-propagated uncertainty, Wilson counting floor)
+    double fitPropErr = 0.;
+    double wilsonErr = 0.;
+    double nCount = 0.;    // fitted total signal yield P+F used for the Wilson interval
     double wilsonLow = 0.;
     double wilsonHigh = 0.;
   };
@@ -2228,20 +2230,29 @@ namespace JpsiMuonIDFit {
   EffOutput MakeEfficiency(const FitOutput &pass, const FitOutput &fail) {
     EffOutput out;
 
-    // Use one continuous prescription in every bin:
-    //   1) central value epsilon = P/(P+F);
-    //   2) convert the fitted-yield precision to an effective event count;
-    //   3) obtain a 68.27% Wilson interval from epsilon and n_eff;
-    //   4) use the larger side of that interval as a symmetric plotting error.
+    // One continuous prescription is used in every bin:
     //
-    // Empty/absent Fail samples naturally correspond to F=0, so the point is
-    // retained at epsilon=1 with a finite boundary uncertainty rather than
-    // being dropped or assigned zero error.
+    //   epsilon = P/(P+F)
+    //
+    // The ordinary uncertainty is propagated from the fitted Pass/Fail signal
+    // yields.  Near the physical boundaries, especially F -> 0, this Gaussian
+    // propagation can collapse to an unrealistically small value.  Therefore a
+    // 68.27% Wilson interval based only on the fitted total signal yield P+F is
+    // used as a counting-statistics floor:
+    //
+    //   sigma_plot = max(sigma_fit-propagation, sigma_Wilson).
+    //
+    // This introduces no Fail-yield/significance threshold.  In well-populated
+    // interior bins the fit propagation is retained, while empty Fail bins
+    // remain visible at epsilon=1 with a finite statistical uncertainty.
     const double p = (std::isfinite(pass.yield) && pass.yield > 0.) ? pass.yield : 0.;
     const double f = (std::isfinite(fail.yield) && fail.yield > 0.) ? fail.yield : 0.;
     const double total = p + f;
 
     if(!pass.ok || p <= 0. || total <= 0.) return out;
+
+    out.eff = p / total;
+    out.nCount = total;
 
     const double sigmaP =
       (std::isfinite(pass.yieldErr) && pass.yieldErr > 0.)
@@ -2250,26 +2261,23 @@ namespace JpsiMuonIDFit {
       (std::isfinite(fail.yieldErr) && fail.yieldErr > 0.)
       ? fail.yieldErr : std::sqrt(f);
 
-    const double varTotal = sigmaP * sigmaP + sigmaF * sigmaF;
+    // Standard propagation from the two fitted, disjoint signal yields.
+    const double dEdP = f / (total * total);
+    const double dEdF = -p / (total * total);
+    const double fitVar =
+      dEdP * dEdP * sigmaP * sigmaP +
+      dEdF * dEdF * sigmaF * sigmaF;
+    out.fitPropErr =
+      (std::isfinite(fitVar) && fitVar >= 0.) ? std::sqrt(fitVar) : 0.;
 
-    // The fitted yields need not be integer counts.  Approximate their
-    // statistical information with n_eff=(P+F)^2/Var(P+F), but never allow
-    // n_eff to exceed the fitted total yield.  This prevents a fit from
-    // claiming better-than-Poisson precision and keeps the estimate
-    // conservative for this validation plot.
-    double nEffFromFit = total;
-    if(std::isfinite(varTotal) && varTotal > 0.) {
-      nEffFromFit = total * total / varTotal;
-    }
-    if(!std::isfinite(nEffFromFit) || nEffFromFit <= 0.) nEffFromFit = total;
-
-    out.nEff = std::max(1e-6, std::min(total, nEffFromFit));
-    out.eff = p / total;
-
-    // Wilson score interval for z=1, corresponding to 68.27% for a Gaussian.
+    // Wilson score interval with z=1 (approximately 68.27%).  The fitted total
+    // signal yield is used directly as the approximate number of trials.  This
+    // keeps the high-statistics behaviour close to the usual binomial error and
+    // gives a finite interval at epsilon=0 or 1.
+    const double n = std::max(1e-6, total);
     const double z = 1.0;
     const double z2 = z * z;
-    const double invN = 1.0 / out.nEff;
+    const double invN = 1.0 / n;
     const double denom = 1.0 + z2 * invN;
     const double centre = (out.eff + 0.5 * z2 * invN) / denom;
     const double half =
@@ -2281,11 +2289,13 @@ namespace JpsiMuonIDFit {
     out.wilsonLow = std::max(0.0, centre - half);
     out.wilsonHigh = std::min(1.0, centre + half);
 
-    const double errLow = std::max(0.0, out.eff - out.wilsonLow);
-    const double errHigh = std::max(0.0, out.wilsonHigh - out.eff);
-    out.err = std::max(errLow, errHigh);
+    const double wilsonErrLow = std::max(0.0, out.eff - out.wilsonLow);
+    const double wilsonErrHigh = std::max(0.0, out.wilsonHigh - out.eff);
+    out.wilsonErr = std::max(wilsonErrLow, wilsonErrHigh);
+
+    out.err = std::max(out.fitPropErr, out.wilsonErr);
     out.ok = std::isfinite(out.eff) && std::isfinite(out.err) &&
-             std::isfinite(out.nEff) && out.nEff > 0.;
+             std::isfinite(out.fitPropErr) && std::isfinite(out.wilsonErr);
     return out;
   }
 
@@ -2789,7 +2799,9 @@ void id_eff(TString Year = "2018",
          << ", fail = " << row.dataFail.yield << " +/- " << row.dataFail.yieldErr
          << ", eff = " << row.dataEff.eff << " +/- " << row.dataEff.err;
     if(row.dataEff.ok) {
-      cout << "  [Wilson 68.27%, n_eff=" << row.dataEff.nEff
+      cout << "  [fit-prop=" << row.dataEff.fitPropErr
+           << ", Wilson floor=" << row.dataEff.wilsonErr
+           << ", N=" << row.dataEff.nCount
            << ", interval=[" << row.dataEff.wilsonLow << "," << row.dataEff.wilsonHigh << "]]";
     }
     cout << endl;
@@ -2797,7 +2809,9 @@ void id_eff(TString Year = "2018",
          << ", fail = " << row.qcdFail.yield << " +/- " << row.qcdFail.yieldErr
          << ", eff = " << row.qcdEff.eff << " +/- " << row.qcdEff.err;
     if(row.qcdEff.ok) {
-      cout << "  [Wilson 68.27%, n_eff=" << row.qcdEff.nEff
+      cout << "  [fit-prop=" << row.qcdEff.fitPropErr
+           << ", Wilson floor=" << row.qcdEff.wilsonErr
+           << ", N=" << row.qcdEff.nCount
            << ", interval=[" << row.qcdEff.wilsonLow << "," << row.qcdEff.wilsonHigh << "]]";
     }
     cout << endl;
