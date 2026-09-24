@@ -318,10 +318,11 @@ namespace JpsiMuonIDFit {
 
   struct EffOutput {
     bool ok = false;
-    bool boundary = false;  // true for pass-only bins represented at efficiency = 1
+    bool boundary = false;       // numerical-zero Fail: point represented at efficiency = 1
+    bool failUnresolved = false; // positive Fail yield compatible with zero within 1 sigma
     double eff = 0.;
     double err = 0.;
-    double nEffBoundary = 0.; // effective pass count used for the boundary interval
+    double nEffBoundary = 0.;    // effective pass count used for the conservative error floor
   };
 
   struct SummaryRow {
@@ -2271,10 +2272,17 @@ namespace JpsiMuonIDFit {
 
     if(!pass.ok || !std::isfinite(p) || p <= 0.) return out;
 
-    // Pass-only boundary case.  This includes a completely empty Fail
-    // histogram and a Fail fit whose signal yield is zero/non-positive.
-    // Keep the efficiency point at 1 instead of silently dropping the bin.
-    if(!fail.ok && (!std::isfinite(f) || f <= 0.)) {
+    // A non-negative fit can return an extremely small positive number instead
+    // of an exact zero when the Fail signal is sitting on the boundary.  Treat
+    // such numerical residues consistently with an empty/zero Fail sample.
+    //
+    // The 1e-6 relative threshold is deliberately only a numerical-zero test,
+    // not a physics significance criterion.
+    const double failZeroScale = std::max(1.0, p);
+    const bool failNumericallyZero =
+      (!std::isfinite(f) || f <= 0. || f <= 1e-6 * failZeroScale);
+
+    if(failNumericallyZero) {
       out.ok = true;
       out.boundary = true;
       out.eff = 1.0;
@@ -2298,6 +2306,25 @@ namespace JpsiMuonIDFit {
     const double var = dEdP * dEdP * pass.yieldErr * pass.yieldErr +
                        dEdF * dEdF * fail.yieldErr * fail.yieldErr;
     out.err = (std::isfinite(var) && var >= 0.) ? std::sqrt(var) : 0.;
+
+    // If the positive Fail yield is not resolved from zero at the 1-sigma
+    // level, the linear Gaussian propagation above can still become
+    // unrealistically small near epsilon=1.  Preserve the fitted central value,
+    // but impose the pass-only Clopper-Pearson-equivalent uncertainty as a
+    // conservative floor.  This avoids silently claiming excessive precision.
+    if(std::isfinite(fail.yieldErr) && fail.yieldErr > 0.) {
+      const double failSignificance = f / fail.yieldErr;
+      if(std::isfinite(failSignificance) && failSignificance < 1.0) {
+        double nEff = 0.;
+        const double boundaryErr = PassOnlyBoundaryError(pass, nEff);
+        if(std::isfinite(boundaryErr) && boundaryErr > out.err) {
+          out.err = boundaryErr;
+          out.failUnresolved = true;
+          out.nEffBoundary = nEff;
+        }
+      }
+    }
+
     return out;
   }
 
@@ -2389,11 +2416,6 @@ namespace JpsiMuonIDFit {
     lower->Draw();
 
     upper->cd();
-    double effYMax = std::max(GraphMaxY(grData, 0.0), GraphMaxY(grQCD, 0.0));
-    // Do not clip pass-only boundary uncertainties at 1.35.  Validation bins
-    // with efficiency = 1 may legitimately have large symmetric error bars
-    // extending well above unity.
-    effYMax = std::max(1.05, 1.10 * effYMax);
 
     TH1D *effFrame = new TH1D((TString("effFrame_") + name).Data(), "", 1, xMin, xMax);
     effFrame->SetStats(0);
@@ -2403,7 +2425,10 @@ namespace JpsiMuonIDFit {
     effFrame->GetYaxis()->SetTitleSize(0.060);
     effFrame->GetYaxis()->SetLabelSize(0.052);
     effFrame->GetYaxis()->SetTitleOffset(0.82);
-    effFrame->GetYaxis()->SetRangeUser(0.0, effYMax);
+    // Efficiency validation plots use a fixed physical-looking range.  Large
+    // symmetric validation uncertainties are intentionally clipped by the pad
+    // at 1.1 rather than expanding the frame to several units.
+    effFrame->GetYaxis()->SetRangeUser(0.0, 1.10);
     effFrame->Draw("AXIS");
 
     if(grData && grData->GetN() > 0) grData->Draw("PE SAME");
@@ -2806,6 +2831,10 @@ void id_eff(TString Year = "2018",
       cout << "  [pass-only boundary, n_eff=" << row.dataEff.nEffBoundary
            << ", 68.27% CP-equivalent]";
     }
+    else if(row.dataEff.failUnresolved) {
+      cout << "  [Fail yield < 1 sigma; conservative CP-equivalent error floor, n_eff="
+           << row.dataEff.nEffBoundary << "]";
+    }
     cout << endl;
     cout << "  " << refLabel << " : pass = " << row.qcdPass.yield << " +/- " << row.qcdPass.yieldErr
          << ", fail = " << row.qcdFail.yield << " +/- " << row.qcdFail.yieldErr
@@ -2813,6 +2842,10 @@ void id_eff(TString Year = "2018",
     if(row.qcdEff.boundary) {
       cout << "  [pass-only boundary, n_eff=" << row.qcdEff.nEffBoundary
            << ", 68.27% CP-equivalent]";
+    }
+    else if(row.qcdEff.failUnresolved) {
+      cout << "  [Fail yield < 1 sigma; conservative CP-equivalent error floor, n_eff="
+           << row.qcdEff.nEffBoundary << "]";
     }
     cout << endl;
     cout << "  SF  = " << row.sf << " +/- " << row.sfErr
