@@ -2378,7 +2378,11 @@ namespace JpsiMuonIDFit {
       bool savePlots) {
 
     SimultaneousOutput out;
-    if(!hPass) return out;
+    // A true simultaneous fit needs both categories.  If a histogram is
+    // genuinely absent (rather than present with zero entries), fall back to
+    // the separate-yield + Wilson treatment below instead of fitting a
+    // degenerate joint model.
+    if(!hPass || !hFail) return out;
 
     gSignalModel = sig;
     gBackgroundModel = bkg;
