@@ -2818,7 +2818,7 @@ namespace JpsiMuonIDFit {
     sfFrame->GetYaxis()->SetLabelSize(0.080);
     sfFrame->GetYaxis()->SetTitleOffset(0.45);
     sfFrame->GetYaxis()->SetNdivisions(505);
-    sfFrame->GetYaxis()->SetRangeUser(0.90, 1.05);
+    sfFrame->GetYaxis()->SetRangeUser(0.8, 1.2);
     sfFrame->Draw("AXIS");
 
     TLine *one = new TLine(xMin, 1.0, xMax, 1.0);
