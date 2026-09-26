@@ -115,8 +115,9 @@ CPP_SOURCE = r"""
 //      Cheb1/2/3/4, MonoCheb1/2/3/4, Bern1...8, and MonoBern1...8.
 //      The 3.3--3.5 GeV sideband is upweighted by default because it is the
 //      closest direct constraint on the continuum under the J/psi peak.
-//   6. Pass and fail fits use a common signal shape extracted from the pass+fail
-//      spectrum in the same sample and pT/eta bin.
+//   6. Final efficiencies come from a simultaneous Pass/Fail fit:
+//        N_pass = efficiency * N_signal and N_fail = (1-efficiency) * N_signal.
+//      Pass and Fail share one signal shape, while their background models remain independent.
 //   7. data.root in the era directory is the current data-input convention.
 //   8. Histograms are read from the current DileptonJPsi_Mass output directly.
 //      No automatic Dilepton_Mass fallback is used.
@@ -268,6 +269,12 @@ namespace JpsiMuonIDFit {
   // For Z it is disabled by ConfigureResonance(...).
   bool gRejectPsiPInFinalFit = false;
 
+  // Pass/Fail simultaneous-fit bookkeeping.  Fail points are placed at a shifted
+  // x coordinate in one TGraphErrors so ROOT can minimise a single joint chi2.
+  // GenericSimultaneousModel maps the shifted Fail coordinate back to dimuon mass.
+  double gSimultaneousOffset = 0.;
+  double gSimultaneousSplit = 0.;
+
   // The second sideband is the nearest sideband to the J/psi peak on the high-mass side.
   // It is short and otherwise gets diluted by the long sidebands, so it is upweighted
   // in the background-only prefit.
@@ -319,12 +326,23 @@ namespace JpsiMuonIDFit {
   struct EffOutput {
     bool ok = false;
     double eff = 0.;
-    double err = 0.;       // max(fit-propagated uncertainty, Wilson counting floor)
-    double fitPropErr = 0.;
+    double err = 0.;       // max(joint-fit uncertainty, Wilson counting floor)
+    double fitErr = 0.;
     double wilsonErr = 0.;
-    double nCount = 0.;    // fitted total signal yield P+F used for the Wilson interval
+    double nCount = 0.;    // fitted total signal normalisation used for the Wilson interval
     double wilsonLow = 0.;
     double wilsonHigh = 0.;
+    int fitStatus = 999;
+    int covStatus = -1;
+    double chi2 = 0.;
+    int ndf = 0;
+  };
+
+  struct SimultaneousOutput {
+    bool ok = false;
+    FitOutput pass;
+    FitOutput fail;
+    EffOutput eff;
   };
 
   struct SummaryRow {
@@ -1567,6 +1585,25 @@ namespace JpsiMuonIDFit {
     return GenericSignal(x, p) + GenericBackground(x, &p[nSig]);
   }
 
+  Double_t GenericSimultaneousModel(Double_t *x, Double_t *p) {
+    const int nSig = NSignalPars(gSignalModel);
+    const int nBkg = NBkgPars(gBackgroundModel);
+    const bool isFail = (x[0] > gSimultaneousSplit);
+    Double_t mass[1] = { isFail ? x[0] - gSimultaneousOffset : x[0] };
+
+    const double eff = std::max(0.0, std::min(1.0, p[0]));
+    const double nTotal = std::max(0.0, p[1]);
+    double sigPars[7] = {0., 0., 0., 0., 0., 0., 0.};
+    sigPars[0] = nTotal * (isFail ? (1.0 - eff) : eff);
+    for(int i = 1; i < nSig; ++i) sigPars[i] = p[i + 1];
+
+    const int passBkgStart = nSig + 1;
+    const int failBkgStart = passBkgStart + nBkg;
+    const int bkgStart = isFail ? failBkgStart : passBkgStart;
+
+    return GenericSignal(mass, sigPars) + GenericBackground(mass, &p[bkgStart]);
+  }
+
   void SetSignalParameterNames(TF1 *f, SignalModel sig) {
     const TString ampName = TString("A_{") + gResonanceLabel + "}";
     const TString massName = TString("m_{") + gResonanceLabel + "}";
@@ -2227,57 +2264,342 @@ namespace JpsiMuonIDFit {
     return out;
   }
 
-  EffOutput MakeEfficiency(const FitOutput &pass, const FitOutput &fail) {
-    EffOutput out;
+  TGraphErrors* BuildSimultaneousGraph(TH1D *hPass, TH1D *hFail,
+                                              const TString &name,
+                                              double fitMin, double fitMax) {
+    if(!hPass && !hFail) return nullptr;
 
-    // One continuous prescription is used in every bin:
-    //
-    //   epsilon = P/(P+F)
-    //
-    // The ordinary uncertainty is propagated from the fitted Pass/Fail signal
-    // yields.  Near the physical boundaries, especially F -> 0, this Gaussian
-    // propagation can collapse to an unrealistically small value.  Therefore a
-    // 68.27% Wilson interval based only on the fitted total signal yield P+F is
-    // used as a counting-statistics floor:
-    //
-    //   sigma_plot = max(sigma_fit-propagation, sigma_Wilson).
-    //
-    // This introduces no Fail-yield/significance threshold.  In well-populated
-    // interior bins the fit propagation is retained, while empty Fail bins
-    // remain visible at epsilon=1 with a finite statistical uncertainty.
-    const double p = (std::isfinite(pass.yield) && pass.yield > 0.) ? pass.yield : 0.;
-    const double f = (std::isfinite(fail.yield) && fail.yield > 0.) ? fail.yield : 0.;
-    const double total = p + f;
+    const double width = std::max(fitMax - fitMin, 1e-6);
+    const double gap = std::max(0.20 * width, (gResonanceMode == kResJpsi) ? 0.25 : 2.0);
+    gSimultaneousOffset = width + gap;
+    const double failMinShifted = fitMin + gSimultaneousOffset;
+    gSimultaneousSplit = 0.5 * (fitMax + failMinShifted);
 
-    if(!pass.ok || p <= 0. || total <= 0.) return out;
+    TGraphErrors *gr = new TGraphErrors();
+    gr->SetName(name);
 
-    out.eff = p / total;
-    out.nCount = total;
+    auto addCategory = [&](TH1D *h, const bool isFail) {
+      if(!h) return;
+      for(int ibin = 1; ibin <= h->GetNbinsX(); ++ibin) {
+        const double mass = h->GetXaxis()->GetBinCenter(ibin);
+        if(mass < fitMin || mass >= fitMax) continue;
+        if(gUseFinalVeto && IsInFinalFitVeto(mass)) continue;
 
-    const double sigmaP =
-      (std::isfinite(pass.yieldErr) && pass.yieldErr > 0.)
-      ? pass.yieldErr : std::sqrt(p);
-    const double sigmaF =
-      (std::isfinite(fail.yieldErr) && fail.yieldErr > 0.)
-      ? fail.yieldErr : std::sqrt(f);
+        const double y = h->GetBinContent(ibin);
+        if(!std::isfinite(y)) continue;
 
-    // Standard propagation from the two fitted, disjoint signal yields.
-    const double dEdP = f / (total * total);
-    const double dEdF = -p / (total * total);
-    const double fitVar =
-      dEdP * dEdP * sigmaP * sigmaP +
-      dEdF * dEdF * sigmaF * sigmaF;
-    out.fitPropErr =
-      (std::isfinite(fitVar) && fitVar >= 0.) ? std::sqrt(fitVar) : 0.;
+        double ey = h->GetBinError(ibin);
+        if(!std::isfinite(ey) || ey <= 0.) {
+          const double bw = std::max(h->GetXaxis()->GetBinWidth(ibin), 1e-9);
+          ey = std::sqrt(std::max(std::fabs(y) * bw, 1.0)) / bw;
+        }
 
-    // Wilson score interval with z=1 (approximately 68.27%).  The fitted total
-    // signal yield is used directly as the approximate number of trials.  This
-    // keeps the high-statistics behaviour close to the usual binomial error and
-    // gives a finite interval at epsilon=0 or 1.
-    const double n = std::max(1e-6, total);
-    const double z = 1.0;
+        const int n = gr->GetN();
+        gr->SetPoint(n, mass + (isFail ? gSimultaneousOffset : 0.0), y);
+        gr->SetPointError(n, 0.0, ey);
+      }
+    };
+
+    addCategory(hPass, false);
+    addCategory(hFail, true);
+    return gr;
+  }
+
+  void CopyBackgroundSetupToSimultaneous(TF1 *simModel, const int dstStart,
+                                         TH1D *h, const FitOutput *shapeSeed,
+                                         const BkgOutput *bkgPrefit,
+                                         SignalModel sig, BackgroundModel bkg,
+                                         double fitMin, double fitMax,
+                                         bool fixBkgShapeFromSidebands,
+                                         const TString &tag) {
+    if(!simModel || !h) return;
+    const int nSig = NSignalPars(sig);
+    const int nBkg = NBkgPars(bkg);
+
+    static int tmpCounter = 0;
+    TF1 tmp((TString("tmpSimBkg_") + tag + "_" + TString::Itoa(tmpCounter++, 10)).Data(),
+            GenericModel, fitMin, fitMax, nSig + nBkg);
+    ConfigureModel(&tmp, h, shapeSeed, false, fitMin, fitMax, sig, bkg);
+    ApplyBkgPrefitToModel(&tmp, bkgPrefit, sig, bkg, fixBkgShapeFromSidebands);
+
+    for(int i = 0; i < nBkg; ++i) {
+      const int src = nSig + i;
+      const int dst = dstStart + i;
+      const double value = tmp.GetParameter(src);
+      double lo = 0.;
+      double hi = 0.;
+      tmp.GetParLimits(src, lo, hi);
+      simModel->SetParName(dst, Form("%s_b%d", tag.Data(), i));
+      simModel->SetParameter(dst, value);
+      if(std::fabs(hi - lo) < 1e-14) simModel->FixParameter(dst, value);
+      else simModel->SetParLimits(dst, lo, hi);
+    }
+  }
+
+  double CategoryChi2(TH1D *h, TF1 *model, double fitMin, double fitMax, int &nPoints) {
+    nPoints = 0;
+    if(!h || !model) return 0.;
+    double chi2 = 0.;
+    for(int ibin = 1; ibin <= h->GetNbinsX(); ++ibin) {
+      const double x = h->GetXaxis()->GetBinCenter(ibin);
+      if(x < fitMin || x >= fitMax) continue;
+      if(gUseFinalVeto && IsInFinalFitVeto(x)) continue;
+      const double y = h->GetBinContent(ibin);
+      double ey = h->GetBinError(ibin);
+      if(!std::isfinite(y)) continue;
+      if(!std::isfinite(ey) || ey <= 0.) {
+        const double bw = std::max(h->GetXaxis()->GetBinWidth(ibin), 1e-9);
+        ey = std::sqrt(std::max(std::fabs(y) * bw, 1.0)) / bw;
+      }
+      const double f = model->Eval(x);
+      if(!std::isfinite(f)) continue;
+      const double pull = (y - f) / ey;
+      chi2 += pull * pull;
+      ++nPoints;
+    }
+    return chi2;
+  }
+
+  SimultaneousOutput FitPassFailSimultaneous(
+      TH1D *hPass, TH1D *hFail,
+      const TString &label, const TString &year,
+      const TString &sample, const TString &outDir,
+      SignalModel sig, BackgroundModel bkg,
+      double fitMin, double fitMax,
+      const FitOutput *allShape,
+      const FitOutput *passSeed,
+      const FitOutput *failSeed,
+      const BkgOutput *passBkg,
+      const BkgOutput *failBkg,
+      bool fixSharedSignalShape,
+      bool fixBkgShapeFromSidebands,
+      bool savePlots) {
+
+    SimultaneousOutput out;
+    if(!hPass) return out;
+
+    gSignalModel = sig;
+    gBackgroundModel = bkg;
+    gFitMin = fitMin;
+    gFitMax = fitMax;
+
+    TGraphErrors *gr = BuildSimultaneousGraph(
+      hPass, hFail, TString("grSim_") + Sanitise(label + sample), fitMin, fitMax);
+    if(!gr || gr->GetN() < 4) {
+      delete gr;
+      return out;
+    }
+
+    const int nSig = NSignalPars(sig);
+    const int nBkg = NBkgPars(bkg);
+    const int passBkgStart = nSig + 1;
+    const int failBkgStart = passBkgStart + nBkg;
+    const int nPar = failBkgStart + nBkg;
+
+    TF1 *model = new TF1(
+      (TString("simModel_") + Sanitise(label + sample)).Data(),
+      GenericSimultaneousModel,
+      fitMin, fitMax + gSimultaneousOffset, nPar);
+    model->SetNpx(1600);
+    model->SetParName(0, "efficiency");
+    model->SetParName(1, "N_{sig,total}");
+
+    const double pSeed =
+      (passSeed && std::isfinite(passSeed->rawNorm) && passSeed->rawNorm > 0.)
+      ? passSeed->rawNorm : 0.;
+    const double fSeed =
+      (failSeed && std::isfinite(failSeed->rawNorm) && failSeed->rawNorm > 0.)
+      ? failSeed->rawNorm : 0.;
+    const double seedSum = pSeed + fSeed;
+    double effGuess = (seedSum > 0.) ? pSeed / seedSum : 0.95;
+    effGuess = std::max(1e-3, std::min(1.0 - 1e-3, effGuess));
+
+    const double eventsFit =
+      std::max(HistIntegralDensity(hPass, fitMin, fitMax, true), 0.0) +
+      (hFail ? std::max(HistIntegralDensity(hFail, fitMin, fitMax, true), 0.0) : 0.0);
+    double totalGuess =
+      (allShape && std::isfinite(allShape->rawNorm) && allShape->rawNorm > 0.)
+      ? allShape->rawNorm : std::max(seedSum, 1.0);
+    totalGuess = std::max(1e-6, std::min(totalGuess, 10.0 * std::max(eventsFit, 1.0) + 100.0));
+
+    model->SetParameter(0, effGuess);
+    model->SetParLimits(0, 0.0, 1.0);
+    model->SetParameter(1, totalGuess);
+    model->SetParLimits(1, 0.0, 10.0 * std::max(eventsFit, 1.0) + 100.0);
+
+    // Shared signal-shape parameters.  The All fit is used as the seed.
+    for(int i = 1; i < nSig; ++i) {
+      const int dst = i + 1;
+      double value = 0.;
+      if(allShape && allShape->ok && (int)allShape->pars.size() > i) {
+        value = allShape->pars[i];
+      }
+      else {
+        if(i == 1) value = gPeakMass;
+        else if(i == 2) value = gSignalSigmaInit;
+        else if(i == 3) value = 1.6;
+        else if(i == 4) value = 5.0;
+        else if(i == 5) value = 2.0;
+        else if(i == 6) value = 5.0;
+      }
+
+      if(i == 1) model->SetParName(dst, "m_{shared}");
+      else if(i == 2) model->SetParName(dst, "#sigma_{shared}");
+      else model->SetParName(dst, Form("sigShape%d", i));
+
+      model->SetParameter(dst, value);
+      if(fixSharedSignalShape && allShape && allShape->ok) {
+        model->FixParameter(dst, value);
+      }
+      else {
+        if(i == 1) model->SetParLimits(dst, gMeanFitLow, gMeanFitHigh);
+        else if(i == 2) model->SetParLimits(dst, gSignalSigmaMin, gSignalSigmaMax);
+        else if(i == 3) model->SetParLimits(dst, 0.4, 6.0);
+        else if(i == 4) model->SetParLimits(dst, 1.05, 60.0);
+        else if(i == 5) model->SetParLimits(dst, 0.4, 6.0);
+        else if(i == 6) model->SetParLimits(dst, 1.05, 60.0);
+      }
+    }
+
+    CopyBackgroundSetupToSimultaneous(
+      model, passBkgStart, hPass, allShape, passBkg,
+      sig, bkg, fitMin, fitMax, fixBkgShapeFromSidebands, "Pass");
+    CopyBackgroundSetupToSimultaneous(
+      model, failBkgStart, hFail ? hFail : hPass, allShape, failBkg,
+      sig, bkg, fitMin, fitMax, fixBkgShapeFromSidebands, "Fail");
+
+    // First reach the minimum, then request the more robust Minos-style errors.
+    TFitResultPtr fitRes = gr->Fit(model, "SRQ0");
+    fitRes = gr->Fit(model, "SERQ0");
+
+    out.eff.fitStatus = int(fitRes);
+    if(fitRes.Get()) out.eff.covStatus = fitRes->CovMatrixStatus();
+    out.eff.chi2 = model->GetChisquare();
+    out.eff.ndf = model->GetNDF();
+    out.eff.eff = std::max(0.0, std::min(1.0, model->GetParameter(0)));
+    out.eff.fitErr = model->GetParError(0);
+    if(!std::isfinite(out.eff.fitErr) || out.eff.fitErr < 0.) out.eff.fitErr = 0.;
+
+    const double nTotal = std::max(0.0, model->GetParameter(1));
+    FillWilsonFloor(out.eff, nTotal);
+    out.eff.err = std::max(out.eff.fitErr, out.eff.wilsonErr);
+    out.eff.ok = std::isfinite(out.eff.eff) && std::isfinite(out.eff.err) && nTotal > 0.;
+
+    // Build category models from the joint-fit parameters for diagnostics and
+    // for the stored Pass/Fail signal yields.
+    auto buildCategory = [&](const bool isFail, const TString &status, TH1D *h,
+                             FitOutput &catOut) -> TF1* {
+      if(!h) return nullptr;
+      TF1 *cat = new TF1(
+        (TString("jointCat_") + Sanitise(label + sample + status)).Data(),
+        GenericModel, fitMin, fitMax, nSig + nBkg);
+      cat->SetNpx(1000);
+
+      const double eff = out.eff.eff;
+      const double rawNorm = nTotal * (isFail ? (1.0 - eff) : eff);
+      cat->SetParameter(0, rawNorm);
+      for(int i = 1; i < nSig; ++i) cat->SetParameter(i, model->GetParameter(i + 1));
+      const int srcBkg = isFail ? failBkgStart : passBkgStart;
+      for(int i = 0; i < nBkg; ++i) cat->SetParameter(nSig + i, model->GetParameter(srcBkg + i));
+
+      catOut.fitStatus = out.eff.fitStatus;
+      catOut.covStatus = out.eff.covStatus;
+      catOut.usedCommonShape = true;
+      catOut.rawNorm = rawNorm;
+
+      double varEff = 0.;
+      double varN = 0.;
+      double covEffN = 0.;
+      if(fitRes.Get()) {
+        varEff = fitRes->CovMatrix(0, 0);
+        varN = fitRes->CovMatrix(1, 1);
+        covEffN = fitRes->CovMatrix(0, 1);
+      }
+      if(isFail) {
+        const double oneMinus = 1.0 - eff;
+        const double varRaw =
+          nTotal * nTotal * varEff +
+          oneMinus * oneMinus * varN -
+          2.0 * nTotal * oneMinus * covEffN;
+        catOut.rawNormErr = (std::isfinite(varRaw) && varRaw > 0.) ? std::sqrt(varRaw) : 0.;
+      }
+      else {
+        const double varRaw =
+          nTotal * nTotal * varEff +
+          eff * eff * varN +
+          2.0 * nTotal * eff * covEffN;
+        catOut.rawNormErr = (std::isfinite(varRaw) && varRaw > 0.) ? std::sqrt(varRaw) : 0.;
+      }
+
+      vector<double> sigPars(nSig, 0.);
+      sigPars[0] = 1.0;
+      for(int i = 1; i < nSig; ++i) sigPars[i] = model->GetParameter(i + 1);
+      const double coreFraction =
+        SignalIntegralFromPars(sigPars, sig, gYieldIntLow, gYieldIntHigh);
+
+      if(UseFitNormYield()) {
+        catOut.yield = rawNorm;
+        catOut.yieldErr = catOut.rawNormErr;
+      }
+      else {
+        catOut.yield = rawNorm * coreFraction;
+        catOut.yieldErr = catOut.rawNormErr * coreFraction;
+      }
+
+      catOut.mean = model->GetParameter(2);
+      catOut.sigma = std::fabs(model->GetParameter(3));
+      catOut.eventsInFitRange = HistIntegralDensity(h, fitMin, fitMax, true);
+      int nPoints = 0;
+      catOut.chi2 = CategoryChi2(h, cat, fitMin, fitMax, nPoints);
+      catOut.ndf = std::max(0, nPoints - 1);
+      catOut.ok = std::isfinite(catOut.yield) && catOut.yield >= 0. &&
+                  std::isfinite(catOut.mean) && std::isfinite(catOut.sigma);
+
+      catOut.pars.resize(nSig + nBkg);
+      catOut.errs.assign(nSig + nBkg, 0.);
+      for(int i = 0; i < nSig + nBkg; ++i) catOut.pars[i] = cat->GetParameter(i);
+      return cat;
+    };
+
+    TF1 *passModel = buildCategory(false, "Pass", hPass, out.pass);
+    TF1 *failModel = buildCategory(true, "Fail", hFail, out.fail);
+
+    out.ok = out.eff.ok && (out.eff.fitStatus == 0);
+    if(!out.ok) {
+      cout << "[WARNING] Simultaneous Pass/Fail fit diagnostic: " << sample << " " << label
+           << ", status=" << out.eff.fitStatus
+           << ", cov=" << out.eff.covStatus
+           << ", eff=" << out.eff.eff << " +/- " << out.eff.err
+           << endl;
+    }
+    else {
+      cout << "[SIMULTANEOUS] " << sample << " " << label
+           << ": eff=" << out.eff.eff << " +/- " << out.eff.err
+           << " (fit=" << out.eff.fitErr << ", Wilson=" << out.eff.wilsonErr << ")"
+           << ", Nsig=" << nTotal
+           << ", chi2/ndf=" << out.eff.chi2 << "/" << out.eff.ndf
+           << ", cov=" << out.eff.covStatus << endl;
+    }
+
+    if(savePlots) {
+      if(passModel && hPass) DrawFitPlot(hPass, passModel, out.pass, label, year, sample, "Pass",
+                                         outDir, fitMin, fitMax, sig, bkg);
+      if(failModel && hFail) DrawFitPlot(hFail, failModel, out.fail, label, year, sample, "Fail",
+                                         outDir, fitMin, fitMax, sig, bkg);
+    }
+
+    delete passModel;
+    delete failModel;
+    delete model;
+    delete gr;
+    return out;
+  }
+
+  void FillWilsonFloor(EffOutput &out, const double nCount) {
+    out.nCount = std::max(1e-6, nCount);
+    const double z = 1.0; // approximately 68.27%
     const double z2 = z * z;
-    const double invN = 1.0 / n;
+    const double invN = 1.0 / out.nCount;
     const double denom = 1.0 + z2 * invN;
     const double centre = (out.eff + 0.5 * z2 * invN) / denom;
     const double half =
@@ -2288,14 +2610,33 @@ namespace JpsiMuonIDFit {
 
     out.wilsonLow = std::max(0.0, centre - half);
     out.wilsonHigh = std::min(1.0, centre + half);
+    const double errLow = std::max(0.0, out.eff - out.wilsonLow);
+    const double errHigh = std::max(0.0, out.wilsonHigh - out.eff);
+    out.wilsonErr = std::max(errLow, errHigh);
+  }
 
-    const double wilsonErrLow = std::max(0.0, out.eff - out.wilsonLow);
-    const double wilsonErrHigh = std::max(0.0, out.wilsonHigh - out.eff);
-    out.wilsonErr = std::max(wilsonErrLow, wilsonErrHigh);
+  EffOutput MakeEfficiency(const FitOutput &pass, const FitOutput &fail) {
+    // Fallback used only if the simultaneous Pass/Fail fit fails.
+    EffOutput out;
+    const double p = (std::isfinite(pass.yield) && pass.yield > 0.) ? pass.yield : 0.;
+    const double f = (std::isfinite(fail.yield) && fail.yield > 0.) ? fail.yield : 0.;
+    const double total = p + f;
+    if(!pass.ok || p <= 0. || total <= 0.) return out;
 
-    out.err = std::max(out.fitPropErr, out.wilsonErr);
-    out.ok = std::isfinite(out.eff) && std::isfinite(out.err) &&
-             std::isfinite(out.fitPropErr) && std::isfinite(out.wilsonErr);
+    out.eff = p / total;
+    const double sigmaP =
+      (std::isfinite(pass.yieldErr) && pass.yieldErr > 0.) ? pass.yieldErr : std::sqrt(p);
+    const double sigmaF =
+      (std::isfinite(fail.yieldErr) && fail.yieldErr > 0.) ? fail.yieldErr : std::sqrt(f);
+    const double dEdP = f / (total * total);
+    const double dEdF = -p / (total * total);
+    const double var =
+      dEdP * dEdP * sigmaP * sigmaP +
+      dEdF * dEdF * sigmaF * sigmaF;
+    out.fitErr = (std::isfinite(var) && var >= 0.) ? std::sqrt(var) : 0.;
+    FillWilsonFloor(out, total);
+    out.err = std::max(out.fitErr, out.wilsonErr);
+    out.ok = std::isfinite(out.eff) && std::isfinite(out.err);
     return out;
   }
 
@@ -2679,14 +3020,16 @@ void id_eff(TString Year = "2018",
   cout << "[INFO] Reference input : " << ReferenceInput << " (label: " << refLabel << ")" << endl;
   if(UseFitNormYield()) {
     cout << "[INFO] Yield definition: N_" << gResonanceLabel << " = fitted signal normalisation parameter" << endl;
-    cout << "[INFO] Uncertainties   : eff = P/(P+F) propagated from fitted pass/fail signal normalisations; SF = data eff / reference eff" << endl;
+    cout << "[INFO] Efficiency fit : simultaneous Pass/Fail fit with Npass=eff*Nsig and Nfail=(1-eff)*Nsig" << endl;
+    cout << "[INFO] Uncertainties  : direct joint-fit efficiency error with a Wilson counting floor; SF = data eff / reference eff" << endl;
   }
   else {
     cout << "[INFO] Yield definition: N_" << gResonanceLabel << " = Integral(signal function, " << gYieldIntLow << ", " << gYieldIntHigh << ") GeV" << endl;
-    cout << "[INFO] Uncertainties   : eff = P/(P+F) propagated from integrated pass/fail signal yields; SF = data eff / reference eff" << endl;
+    cout << "[INFO] Efficiency fit : simultaneous Pass/Fail fit with Npass=eff*Nsig and Nfail=(1-eff)*Nsig" << endl;
+    cout << "[INFO] Uncertainties  : direct joint-fit efficiency error with a Wilson counting floor; SF = data eff / reference eff" << endl;
   }
   if(UseCommonShape) {
-    cout << "[INFO] Uncertainty note: --common-shape fixes pass/fail signal shape from the All fit; shape-parameter uncertainty is not refitted in pass/fail errors." << endl;
+    cout << "[INFO] Signal shape note: Pass/Fail always share one signal shape; --common-shape fixes that shared shape to the All fit instead of floating it jointly." << endl;
   }
   cout << "[INFO] Save bin plots  : " << (SavePerBinPlots ? "true" : "false") << endl;
   cout << "[INFO] Save summaries  : " << (SaveSummaryPlots ? "true" : "false") << endl;
@@ -2762,27 +3105,68 @@ void id_eff(TString Year = "2018",
     row.dataAll = FitOne(hDataAll, bin.tag, Year, "Data", "All", outDir,
                          sigModel, bkgModel, FitMin, FitMax, nullptr, false,
                          dataAllBkgForFit, FixBkgShapeFromSidebands, false);
-    const FitOutput *dataShape = (UseCommonShape && row.dataAll.ok) ? &row.dataAll : nullptr;
-    row.dataPass = FitOne(hDataPass, bin.tag, Year, "Data", "Pass", outDir,
-                          sigModel, bkgModel, FitMin, FitMax, dataShape, dataShape != nullptr,
-                          dataPassBkgForFit, FixBkgShapeFromSidebands, SavePerBinPlots && hDataPass != nullptr);
-    row.dataFail = FitOne(hDataFail, bin.tag, Year, "Data", "Fail", outDir,
-                          sigModel, bkgModel, FitMin, FitMax, dataShape, dataShape != nullptr,
-                          dataFailBkgForFit, FixBkgShapeFromSidebands, SavePerBinPlots && hDataFail != nullptr);
+    const FitOutput *dataShapeSeed = row.dataAll.ok ? &row.dataAll : nullptr;
+    const FitOutput dataPassSeed = FitOne(
+      hDataPass, bin.tag, Year, "Data", "PassSeed", outDir,
+      sigModel, bkgModel, FitMin, FitMax, dataShapeSeed, false,
+      dataPassBkgForFit, FixBkgShapeFromSidebands, false);
+    const FitOutput dataFailSeed = FitOne(
+      hDataFail, bin.tag, Year, "Data", "FailSeed", outDir,
+      sigModel, bkgModel, FitMin, FitMax, dataShapeSeed, false,
+      dataFailBkgForFit, FixBkgShapeFromSidebands, false);
+
+    const SimultaneousOutput dataSim = FitPassFailSimultaneous(
+      hDataPass, hDataFail, bin.tag, Year, "Data", outDir,
+      sigModel, bkgModel, FitMin, FitMax,
+      dataShapeSeed, &dataPassSeed, &dataFailSeed,
+      dataPassBkgForFit, dataFailBkgForFit,
+      UseCommonShape, FixBkgShapeFromSidebands,
+      SavePerBinPlots);
+    if(dataSim.ok) {
+      row.dataPass = dataSim.pass;
+      row.dataFail = dataSim.fail;
+      row.dataEff = dataSim.eff;
+    }
+    else {
+      row.dataPass = dataPassSeed;
+      row.dataFail = dataFailSeed;
+      row.dataEff = MakeEfficiency(row.dataPass, row.dataFail);
+      cout << "[WARNING] Falling back to separate Data Pass/Fail efficiency for "
+           << bin.tag << endl;
+    }
 
     row.qcdAll = FitOne(hQCDAll, bin.tag, Year, refLabel, "All", outDir,
                         sigModel, bkgModel, FitMin, FitMax, nullptr, false,
                         qcdAllBkgForFit, FixBkgShapeFromSidebands, false);
-    const FitOutput *qcdShape = (UseCommonShape && row.qcdAll.ok) ? &row.qcdAll : nullptr;
-    row.qcdPass = FitOne(hQCDPass, bin.tag, Year, refLabel, "Pass", outDir,
-                         sigModel, bkgModel, FitMin, FitMax, qcdShape, qcdShape != nullptr,
-                         qcdPassBkgForFit, FixBkgShapeFromSidebands, SavePerBinPlots && hQCDPass != nullptr);
-    row.qcdFail = FitOne(hQCDFail, bin.tag, Year, refLabel, "Fail", outDir,
-                         sigModel, bkgModel, FitMin, FitMax, qcdShape, qcdShape != nullptr,
-                         qcdFailBkgForFit, FixBkgShapeFromSidebands, SavePerBinPlots && hQCDFail != nullptr);
+    const FitOutput *qcdShapeSeed = row.qcdAll.ok ? &row.qcdAll : nullptr;
+    const FitOutput qcdPassSeed = FitOne(
+      hQCDPass, bin.tag, Year, refLabel, "PassSeed", outDir,
+      sigModel, bkgModel, FitMin, FitMax, qcdShapeSeed, false,
+      qcdPassBkgForFit, FixBkgShapeFromSidebands, false);
+    const FitOutput qcdFailSeed = FitOne(
+      hQCDFail, bin.tag, Year, refLabel, "FailSeed", outDir,
+      sigModel, bkgModel, FitMin, FitMax, qcdShapeSeed, false,
+      qcdFailBkgForFit, FixBkgShapeFromSidebands, false);
 
-    row.dataEff = MakeEfficiency(row.dataPass, row.dataFail);
-    row.qcdEff  = MakeEfficiency(row.qcdPass, row.qcdFail);
+    const SimultaneousOutput qcdSim = FitPassFailSimultaneous(
+      hQCDPass, hQCDFail, bin.tag, Year, refLabel, outDir,
+      sigModel, bkgModel, FitMin, FitMax,
+      qcdShapeSeed, &qcdPassSeed, &qcdFailSeed,
+      qcdPassBkgForFit, qcdFailBkgForFit,
+      UseCommonShape, FixBkgShapeFromSidebands,
+      SavePerBinPlots);
+    if(qcdSim.ok) {
+      row.qcdPass = qcdSim.pass;
+      row.qcdFail = qcdSim.fail;
+      row.qcdEff = qcdSim.eff;
+    }
+    else {
+      row.qcdPass = qcdPassSeed;
+      row.qcdFail = qcdFailSeed;
+      row.qcdEff = MakeEfficiency(row.qcdPass, row.qcdFail);
+      cout << "[WARNING] Falling back to separate " << refLabel
+           << " Pass/Fail efficiency for " << bin.tag << endl;
+    }
 
     if(row.dataEff.ok && row.qcdEff.ok && row.dataEff.eff > 0. && row.qcdEff.eff > 0.) {
       row.sf = row.dataEff.eff / row.qcdEff.eff;
@@ -2799,7 +3183,7 @@ void id_eff(TString Year = "2018",
          << ", fail = " << row.dataFail.yield << " +/- " << row.dataFail.yieldErr
          << ", eff = " << row.dataEff.eff << " +/- " << row.dataEff.err;
     if(row.dataEff.ok) {
-      cout << "  [fit-prop=" << row.dataEff.fitPropErr
+      cout << "  [joint-fit=" << row.dataEff.fitErr
            << ", Wilson floor=" << row.dataEff.wilsonErr
            << ", N=" << row.dataEff.nCount
            << ", interval=[" << row.dataEff.wilsonLow << "," << row.dataEff.wilsonHigh << "]]";
@@ -2809,7 +3193,7 @@ void id_eff(TString Year = "2018",
          << ", fail = " << row.qcdFail.yield << " +/- " << row.qcdFail.yieldErr
          << ", eff = " << row.qcdEff.eff << " +/- " << row.qcdEff.err;
     if(row.qcdEff.ok) {
-      cout << "  [fit-prop=" << row.qcdEff.fitPropErr
+      cout << "  [joint-fit=" << row.qcdEff.fitErr
            << ", Wilson floor=" << row.qcdEff.wilsonErr
            << ", N=" << row.qcdEff.nCount
            << ", interval=[" << row.qcdEff.wilsonLow << "," << row.qcdEff.wilsonHigh << "]]";
@@ -2963,7 +3347,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  /data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon/\n"
             "    MuonIDEfficiency/<era>/data.root\n"
             "    MuonIDEfficiency/<era>/NIsoMuon_QCD_Inclusive.root\n"
-            "    MuonIDEfficiency/<era>/NIsoMuon_tt.root\n\n"
+            "    MuonIDEfficiency/<era>/NIsoMuon_Top.root\n\n"
             "Fixed outputs:\n"
             "  /data6/Users/joonblee/PlotMaker/plots/MuonIDEfficiency/<era>/\n\n"
             "Main examples:\n"
@@ -3064,7 +3448,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--common-shape",
         action="store_true",
-        help="fix pass/fail signal shapes from the pass+fail fit",
+        help="fix the shared Pass/Fail signal shape to the pass+fail (All) fit; otherwise it floats jointly",
     )
     parser.add_argument(
         "--no-fix-bkg-shape",
