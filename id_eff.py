@@ -118,6 +118,8 @@ CPP_SOURCE = r"""
 //   6. Final efficiencies come from a simultaneous Pass/Fail fit:
 //        N_pass = efficiency * N_signal and N_fail = (1-efficiency) * N_signal.
 //      Pass and Fail share one signal shape, while their background models remain independent.
+//      Efficiency uncertainties are taken from Minos; the larger asymmetric side
+//      is used as the symmetric error bar in the validation summary plot.
 //   7. data.root in the era directory is the current data-input convention.
 //   8. Histograms are read from the current DileptonJPsi_Mass output directly.
 //      No automatic Dilepton_Mass fallback is used.
@@ -325,11 +327,14 @@ namespace JpsiMuonIDFit {
 
   struct EffOutput {
     bool ok = false;
+    bool hasMinos = false;
     double eff = 0.;
-    double err = 0.;       // max(joint-fit uncertainty, Wilson counting floor)
-    double fitErr = 0.;
-    double wilsonErr = 0.;
-    double nCount = 0.;    // fitted total signal normalisation used for the Wilson interval
+    double err = 0.;          // symmetric plotting error = max(|Minos low|, |Minos high|)
+    double fitErr = 0.;       // parabolic/Hessian error, kept for diagnostics/fallback
+    double minosLow = 0.;     // signed lower Minos error
+    double minosHigh = 0.;    // signed upper Minos error
+    double wilsonErr = 0.;    // used only by the separate-fit fallback
+    double nCount = 0.;       // fitted total signal normalisation
     double wilsonLow = 0.;
     double wilsonHigh = 0.;
     int fitStatus = 999;
@@ -2486,10 +2491,30 @@ namespace JpsiMuonIDFit {
     out.eff.fitErr = model->GetParError(0);
     if(!std::isfinite(out.eff.fitErr) || out.eff.fitErr < 0.) out.eff.fitErr = 0.;
 
+    // The E fit option requests Minos.  Use its asymmetric efficiency errors
+    // directly when available.  For the validation plot, which still uses a
+    // TGraphErrors, draw the larger absolute side as one symmetric error bar.
+    // This naturally handles the physical 0 <= efficiency <= 1 boundary.
+    if(fitRes.Get() && fitRes->HasMinosError(0)) {
+      out.eff.hasMinos = true;
+      out.eff.minosLow = fitRes->LowerError(0);
+      out.eff.minosHigh = fitRes->UpperError(0);
+      const double lowAbs =
+        std::isfinite(out.eff.minosLow) ? std::fabs(out.eff.minosLow) : 0.;
+      const double highAbs =
+        std::isfinite(out.eff.minosHigh) ? std::fabs(out.eff.minosHigh) : 0.;
+      out.eff.err = std::max(lowAbs, highAbs);
+    }
+    else {
+      // If Minos itself fails, retain the parabolic joint-fit uncertainty
+      // rather than introducing a separate counting prescription.
+      out.eff.err = out.eff.fitErr;
+    }
+
     const double nTotal = std::max(0.0, model->GetParameter(1));
-    FillWilsonFloor(out.eff, nTotal);
-    out.eff.err = std::max(out.eff.fitErr, out.eff.wilsonErr);
-    out.eff.ok = std::isfinite(out.eff.eff) && std::isfinite(out.eff.err) && nTotal > 0.;
+    out.eff.nCount = nTotal;
+    out.eff.ok = std::isfinite(out.eff.eff) && std::isfinite(out.eff.err) &&
+                 out.eff.err >= 0. && nTotal > 0.;
 
     // Build category models from the joint-fit parameters for diagnostics and
     // for the stored Pass/Fail signal yields.
@@ -2580,9 +2605,15 @@ namespace JpsiMuonIDFit {
     }
     else {
       cout << "[SIMULTANEOUS] " << sample << " " << label
-           << ": eff=" << out.eff.eff << " +/- " << out.eff.err
-           << " (fit=" << out.eff.fitErr << ", Wilson=" << out.eff.wilsonErr << ")"
-           << ", Nsig=" << nTotal
+           << ": eff=" << out.eff.eff << " +/- " << out.eff.err;
+      if(out.eff.hasMinos) {
+        cout << " (Minos=" << out.eff.minosLow << "/+" << out.eff.minosHigh
+             << ", parabolic=" << out.eff.fitErr << ")";
+      }
+      else {
+        cout << " (Minos unavailable, parabolic=" << out.eff.fitErr << ")";
+      }
+      cout << ", Nsig=" << nTotal
            << ", chi2/ndf=" << out.eff.chi2 << "/" << out.eff.ndf
            << ", cov=" << out.eff.covStatus << endl;
     }
@@ -3027,12 +3058,12 @@ void id_eff(TString Year = "2018",
   if(UseFitNormYield()) {
     cout << "[INFO] Yield definition: N_" << gResonanceLabel << " = fitted signal normalisation parameter" << endl;
     cout << "[INFO] Efficiency fit : simultaneous Pass/Fail fit with Npass=eff*Nsig and Nfail=(1-eff)*Nsig" << endl;
-    cout << "[INFO] Uncertainties  : direct joint-fit efficiency error with a Wilson counting floor; SF = data eff / reference eff" << endl;
+    cout << "[INFO] Uncertainties  : Minos error of the joint-fit efficiency parameter (larger side used for symmetric plotting); SF = data eff / reference eff" << endl;
   }
   else {
     cout << "[INFO] Yield definition: N_" << gResonanceLabel << " = Integral(signal function, " << gYieldIntLow << ", " << gYieldIntHigh << ") GeV" << endl;
     cout << "[INFO] Efficiency fit : simultaneous Pass/Fail fit with Npass=eff*Nsig and Nfail=(1-eff)*Nsig" << endl;
-    cout << "[INFO] Uncertainties  : direct joint-fit efficiency error with a Wilson counting floor; SF = data eff / reference eff" << endl;
+    cout << "[INFO] Uncertainties  : Minos error of the joint-fit efficiency parameter (larger side used for symmetric plotting); SF = data eff / reference eff" << endl;
   }
   if(UseCommonShape) {
     cout << "[INFO] Signal shape note: Pass/Fail always share one signal shape; --common-shape fixes that shared shape to the All fit instead of floating it jointly." << endl;
@@ -3189,20 +3220,22 @@ void id_eff(TString Year = "2018",
          << ", fail = " << row.dataFail.yield << " +/- " << row.dataFail.yieldErr
          << ", eff = " << row.dataEff.eff << " +/- " << row.dataEff.err;
     if(row.dataEff.ok) {
-      cout << "  [joint-fit=" << row.dataEff.fitErr
-           << ", Wilson floor=" << row.dataEff.wilsonErr
-           << ", N=" << row.dataEff.nCount
-           << ", interval=[" << row.dataEff.wilsonLow << "," << row.dataEff.wilsonHigh << "]]";
+      cout << "  [joint parabolic=" << row.dataEff.fitErr;
+      if(row.dataEff.hasMinos) {
+        cout << ", Minos=" << row.dataEff.minosLow << "/+" << row.dataEff.minosHigh;
+      }
+      cout << ", Nsig=" << row.dataEff.nCount << "]";
     }
     cout << endl;
     cout << "  " << refLabel << " : pass = " << row.qcdPass.yield << " +/- " << row.qcdPass.yieldErr
          << ", fail = " << row.qcdFail.yield << " +/- " << row.qcdFail.yieldErr
          << ", eff = " << row.qcdEff.eff << " +/- " << row.qcdEff.err;
     if(row.qcdEff.ok) {
-      cout << "  [joint-fit=" << row.qcdEff.fitErr
-           << ", Wilson floor=" << row.qcdEff.wilsonErr
-           << ", N=" << row.qcdEff.nCount
-           << ", interval=[" << row.qcdEff.wilsonLow << "," << row.qcdEff.wilsonHigh << "]]";
+      cout << "  [joint parabolic=" << row.qcdEff.fitErr;
+      if(row.qcdEff.hasMinos) {
+        cout << ", Minos=" << row.qcdEff.minosLow << "/+" << row.qcdEff.minosHigh;
+      }
+      cout << ", Nsig=" << row.qcdEff.nCount << "]";
     }
     cout << endl;
     cout << "  SF  = " << row.sf << " +/- " << row.sfErr
