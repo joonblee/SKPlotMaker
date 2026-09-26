@@ -2264,6 +2264,8 @@ namespace JpsiMuonIDFit {
     return out;
   }
 
+  void FillWilsonFloor(EffOutput &out, const double nCount);
+
   TGraphErrors* BuildSimultaneousGraph(TH1D *hPass, TH1D *hFail,
                                               const TString &name,
                                               double fitMin, double fitMax) {
