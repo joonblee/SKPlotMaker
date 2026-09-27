@@ -118,11 +118,11 @@ CPP_SOURCE = r"""
 //   6. Final efficiencies come from a simultaneous Pass/Fail fit:
 //        N_pass = efficiency * N_signal and N_fail = (1-efficiency) * N_signal.
 //      Pass and Fail share one signal shape, while their background models remain independent.
-//      Data uses a Poisson likelihood; weighted MC/reference uses a SumW2 chi2,
-//      which also supports signed weighted bins.  The model is integrated over every
-//      mass bin.  Both samples use the same direct efficiency-profile prescription:
-//      the 68% bounds satisfy Delta(profile objective)=1, and the larger side is used
-//      as the symmetric error bar in the validation summary plot.
+//      Data uses a Poisson likelihood; weighted MC/reference uses a SumW2 chi2.
+//      The model is integrated over every mass bin.  The nominal result uses
+//      rebin=3 (30 MeV).  The fit-statistical uncertainty uses Minos (Hessian only
+//      as a numerical fallback), and rebin=1,2 shifts form a symmetric mass-binning
+//      envelope.  The statistical and binning components are added in quadrature.
 //   7. data.root in the era directory is the current data-input convention.
 //   8. Histograms are read from the current DileptonJPsi_Mass output directly.
 //      No automatic Dilepton_Mass fallback is used.
@@ -335,13 +335,20 @@ namespace JpsiMuonIDFit {
 
   struct EffOutput {
     bool ok = false;
-    bool hasProfile = false;
+    bool hasMinos = false;
+    bool binningOk = false;
     double eff = 0.;
-    double err = 0.;          // symmetric plotting error = max(profile down, profile up)
-    double fitErr = 0.;       // parabolic/Hessian error, diagnostic only
-    double profileDown = 0.;  // positive distance from best fit to lower 68% profile bound
-    double profileUp = 0.;    // positive distance from best fit to upper 68% profile bound
-    double wilsonErr = 0.;    // used only by the separate-fit emergency fallback
+    double err = 0.;          // final symmetric error = sqrt(stat^2 + binning^2)
+    double statErr = 0.;      // nominal-fit statistical uncertainty
+    double binningErr = 0.;   // envelope from rebin=1,2 relative to nominal rebin=3
+    double fitErr = 0.;       // parabolic/Hessian uncertainty, diagnostic/fallback
+    double minosLow = 0.;     // signed lower Minos error
+    double minosHigh = 0.;    // signed upper Minos error
+    double rebin1Eff = 0.;
+    double rebin2Eff = 0.;
+    bool rebin1Ok = false;
+    bool rebin2Ok = false;
+    double wilsonErr = 0.;    // separate-fit emergency fallback only
     double nCount = 0.;       // fitted total signal normalisation
     double wilsonLow = 0.;
     double wilsonHigh = 0.;
@@ -377,6 +384,11 @@ namespace JpsiMuonIDFit {
     bool sfOk = false;
     double sf = 0.;
     double sfErr = 0.;
+    double sfStatErr = 0.;
+    double sfBinningErr = 0.;
+    double sfRebin1 = 0.;
+    double sfRebin2 = 0.;
+    bool sfBinningOk = false;
   };
 
   TString EdgeLabel(double x) {
@@ -2428,115 +2440,6 @@ namespace JpsiMuonIDFit {
     return chi2;
   }
 
-  struct ProfileScanOutput {
-    bool ok = false;
-    double down = 0.;
-    double up = 0.;
-    double lowBound = 0.;
-    double highBound = 1.;
-  };
-
-  double ProfileObjectiveValue(const TFitResultPtr &res, bool useDataLikelihood) {
-    if(!res.Get() || !res->IsValid()) return std::numeric_limits<double>::infinity();
-    const double f = res->MinFcnValue();
-    if(!std::isfinite(f)) return std::numeric_limits<double>::infinity();
-    // ROOT's L fit minimises NLL, so 2*DeltaNLL has the usual one-parameter
-    // profile-likelihood interpretation.  The weighted-MC branch uses chi2
-    // directly, so DeltaChi2 has the same unit threshold.
-    return useDataLikelihood ? 2.0 * f : f;
-  }
-
-  double EvaluateProfileAtEfficiency(TH1D *jointHist, TF1 *nominalModel,
-                                     double efficiency,
-                                     bool useDataLikelihood,
-                                     const TString &tag,
-                                     int iteration) {
-    if(!jointHist || !nominalModel) return std::numeric_limits<double>::infinity();
-
-    TF1 *scanModel = dynamic_cast<TF1*>(nominalModel->Clone(
-      (TString("profileModel_") + tag + "_" + TString::Itoa(iteration, 10)).Data()));
-    if(!scanModel) return std::numeric_limits<double>::infinity();
-
-    scanModel->FixParameter(0, std::max(0.0, std::min(1.0, efficiency)));
-    const TString option = useDataLikelihood ? "SLIRQ0" : "SIRQ0";
-
-    // Start from the global best fit carried by the cloned model.  A second
-    // minimisation is cheap compared with the full scan and improves stability
-    // in bins with shallow nuisance-parameter directions.
-    TFitResultPtr res = jointHist->Fit(scanModel, option.Data());
-    res = jointHist->Fit(scanModel, option.Data());
-
-    const double objective = ProfileObjectiveValue(res, useDataLikelihood);
-    delete scanModel;
-    return objective;
-  }
-
-  bool FindProfileCrossing(TH1D *jointHist, TF1 *nominalModel,
-                           double bestEff, double bestObjective,
-                           bool useDataLikelihood, bool lowerSide,
-                           const TString &tag, double &bound) {
-    const double physicalBoundary = lowerSide ? 0.0 : 1.0;
-    const double boundaryObjective = EvaluateProfileAtEfficiency(
-      jointHist, nominalModel, physicalBoundary, useDataLikelihood,
-      tag + (lowerSide ? "_lowBoundary" : "_highBoundary"), 0);
-
-    if(!std::isfinite(boundaryObjective)) return false;
-
-    const double boundaryDelta = boundaryObjective - bestObjective;
-    // If Delta(profile objective) never reaches one before the physical
-    // boundary, the 68% interval simply terminates at that boundary.
-    if(boundaryDelta <= 1.0) {
-      bound = physicalBoundary;
-      return true;
-    }
-
-    double inside = bestEff;          // Delta < 1
-    double outside = physicalBoundary; // Delta > 1
-
-    // Bisection is deterministic and robust at efficiency=0/1 boundaries.
-    // 14 iterations gives O(1e-4) precision over the full physical interval.
-    for(int iter = 1; iter <= 14; ++iter) {
-      const double mid = 0.5 * (inside + outside);
-      const double objective = EvaluateProfileAtEfficiency(
-        jointHist, nominalModel, mid, useDataLikelihood,
-        tag + (lowerSide ? "_low" : "_high"), iter);
-      if(!std::isfinite(objective)) return false;
-
-      const double delta = objective - bestObjective;
-      if(delta >= 1.0) outside = mid;
-      else inside = mid;
-    }
-
-    bound = 0.5 * (inside + outside);
-    return true;
-  }
-
-  ProfileScanOutput ScanEfficiencyProfile(TH1D *jointHist, TF1 *nominalModel,
-                                          double bestEff, double bestObjective,
-                                          bool useDataLikelihood,
-                                          const TString &tag) {
-    ProfileScanOutput out;
-    if(!jointHist || !nominalModel || !std::isfinite(bestObjective)) return out;
-
-    double low = 0.;
-    double high = 1.;
-    const bool lowOK = FindProfileCrossing(
-      jointHist, nominalModel, bestEff, bestObjective,
-      useDataLikelihood, true, tag, low);
-    const bool highOK = FindProfileCrossing(
-      jointHist, nominalModel, bestEff, bestObjective,
-      useDataLikelihood, false, tag, high);
-
-    if(!lowOK || !highOK) return out;
-
-    out.lowBound = std::max(0.0, std::min(bestEff, low));
-    out.highBound = std::min(1.0, std::max(bestEff, high));
-    out.down = std::max(0.0, bestEff - out.lowBound);
-    out.up = std::max(0.0, out.highBound - bestEff);
-    out.ok = std::isfinite(out.down) && std::isfinite(out.up);
-    return out;
-  }
-
   SimultaneousOutput FitPassFailSimultaneous(
       TH1D *hPass, TH1D *hFail,
       const TString &label, const TString &year,
@@ -2550,7 +2453,8 @@ namespace JpsiMuonIDFit {
       const BkgOutput *failBkg,
       bool fixSharedSignalShape,
       bool fixBkgShapeFromSidebands,
-      bool savePlots) {
+      bool savePlots,
+      bool computeStatError = true) {
 
     SimultaneousOutput out;
     // A true simultaneous fit needs both categories.  If a histogram is
@@ -2649,37 +2553,45 @@ namespace JpsiMuonIDFit {
       model, failBkgStart, hFail ? hFail : hPass, allShape, failBkg,
       sig, bkg, fitMin, fitMax, fixBkgShapeFromSidebands, "Fail");
 
-    // Use one profile-interval prescription for both samples.  In particular,
-    // ROOT cannot compute Minos intervals after the SumW2 correction used by
-    // weighted likelihood fits, so a direct scan avoids boundary-specific
-    // uncertainty rules and keeps the extraction uniform:
-    //   Data       : Poisson binned likelihood (L)
-    //   MC/reference: SumW2 chi2 for weighted/signed-weight histograms.
-    // In both cases "I" integrates the model across each mass bin.
-    // The 68% efficiency interval is obtained below from Delta(profile
-    // objective)=1 after profiling all other fit parameters.
+    // Nominal statistical fit:
+    //   Data        -> Poisson binned likelihood;
+    //   MC/reference -> chi2 with the stored SumW2 bin uncertainties.
+    // "I" integrates the model over each mass bin.  Both objectives support
+    // Minos, so the same statistical-error prescription is used throughout.
     const bool useDataLikelihood = sample.EqualTo("Data", TString::kIgnoreCase);
-    const TString fitOpt = useDataLikelihood ? "SLIRQ0" : "SIRQ0";
-    TFitResultPtr fitRes = jointHist->Fit(model, fitOpt.Data());
-    fitRes = jointHist->Fit(model, fitOpt.Data());
+    const TString firstFitOpt = useDataLikelihood ? "SLIRQ0" : "SIRQ0";
+    const TString errorFitOpt = useDataLikelihood ? "SLIERQ0" : "SIERQ0";
+
+    TFitResultPtr fitRes = jointHist->Fit(model, firstFitOpt.Data());
+    fitRes = jointHist->Fit(model, firstFitOpt.Data());
+    if(computeStatError) fitRes = jointHist->Fit(model, errorFitOpt.Data());
 
     out.eff.fitStatus = int(fitRes);
     if(fitRes.Get()) out.eff.covStatus = fitRes->CovMatrixStatus();
-    const double bestObjective = ProfileObjectiveValue(fitRes, useDataLikelihood);
-    out.eff.chi2 = std::isfinite(bestObjective) ? bestObjective : 0.;
+    if(fitRes.Get()) {
+      const double f = fitRes->MinFcnValue();
+      out.eff.chi2 = std::isfinite(f) ? (useDataLikelihood ? 2.0 * f : f) : 0.;
+    }
     out.eff.ndf = model->GetNDF();
     out.eff.eff = std::max(0.0, std::min(1.0, model->GetParameter(0)));
     out.eff.fitErr = model->GetParError(0);
     if(!std::isfinite(out.eff.fitErr) || out.eff.fitErr < 0.) out.eff.fitErr = 0.;
 
-    const ProfileScanOutput profile = ScanEfficiencyProfile(
-      jointHist, model, out.eff.eff, bestObjective, useDataLikelihood,
-      Sanitise(label + sample));
-    if(profile.ok) {
-      out.eff.hasProfile = true;
-      out.eff.profileDown = profile.down;
-      out.eff.profileUp = profile.up;
-      out.eff.err = std::max(profile.down, profile.up);
+    if(computeStatError) {
+      if(fitRes.Get() && fitRes->HasMinosError(0)) {
+        out.eff.hasMinos = true;
+        out.eff.minosLow = fitRes->LowerError(0);
+        out.eff.minosHigh = fitRes->UpperError(0);
+        const double lowAbs =
+          std::isfinite(out.eff.minosLow) ? std::fabs(out.eff.minosLow) : 0.;
+        const double highAbs =
+          std::isfinite(out.eff.minosHigh) ? std::fabs(out.eff.minosHigh) : 0.;
+        out.eff.statErr = std::max(lowAbs, highAbs);
+      }
+      else {
+        out.eff.statErr = out.eff.fitErr;
+      }
+      out.eff.err = out.eff.statErr;
     }
 
     const double nTotal = std::max(0.0, model->GetParameter(1));
@@ -2768,29 +2680,36 @@ namespace JpsiMuonIDFit {
 
     const bool minimumValid = fitRes.Get() && fitRes->IsValid();
     const bool covarianceUsable = (out.eff.covStatus >= 2);
-    const bool efficiencyErrorUsable =
-      out.eff.hasProfile && std::isfinite(out.eff.err) && out.eff.err >= 0.;
-    out.ok = out.eff.ok && minimumValid && covarianceUsable && efficiencyErrorUsable;
+    const bool statErrorUsable =
+      !computeStatError ||
+      (std::isfinite(out.eff.statErr) && out.eff.statErr > 0.);
+    out.ok = out.eff.ok && minimumValid && covarianceUsable && statErrorUsable;
 
-    if(!out.ok) {
-      cout << "[WARNING] Simultaneous Pass/Fail fit diagnostic: " << sample << " " << label
-           << ", status=" << out.eff.fitStatus
-           << ", validMinimum=" << minimumValid
-           << ", cov=" << out.eff.covStatus
-           << ", hasProfile=" << out.eff.hasProfile
-           << ", eff=" << out.eff.eff << " +/- " << out.eff.err
-           << endl;
-    }
-    else {
-      cout << "[SIMULTANEOUS] " << sample << " " << label
-           << ": eff=" << out.eff.eff << " +/- " << out.eff.err
-           << " (profile=-" << out.eff.profileDown
-           << "/+" << out.eff.profileUp
-           << ", parabolic=" << out.eff.fitErr << ")"
-           << ", Nsig=" << nTotal
-           << ", " << (useDataLikelihood ? "2NLL" : "chi2_{SumW2}")
-           << "/ndf=" << out.eff.chi2 << "/" << out.eff.ndf
-           << ", cov=" << out.eff.covStatus << endl;
+    if(computeStatError) {
+      if(!out.ok) {
+        cout << "[WARNING] Simultaneous Pass/Fail fit diagnostic: " << sample << " " << label
+             << ", status=" << out.eff.fitStatus
+             << ", validMinimum=" << minimumValid
+             << ", cov=" << out.eff.covStatus
+             << ", hasEffMinos=" << out.eff.hasMinos
+             << ", eff=" << out.eff.eff << " +/- " << out.eff.statErr
+             << endl;
+      }
+      else {
+        cout << "[SIMULTANEOUS] " << sample << " " << label
+             << ": eff=" << out.eff.eff << " +/- " << out.eff.statErr;
+        if(out.eff.hasMinos) {
+          cout << " (Minos=" << out.eff.minosLow << "/+" << out.eff.minosHigh
+               << ", parabolic=" << out.eff.fitErr << ")";
+        }
+        else {
+          cout << " (Minos unavailable, Hessian=" << out.eff.fitErr << ")";
+        }
+        cout << ", Nsig=" << nTotal
+             << ", " << (useDataLikelihood ? "2NLL" : "chi2_{SumW2}")
+             << "/ndf=" << out.eff.chi2 << "/" << out.eff.ndf
+             << ", cov=" << out.eff.covStatus << endl;
+      }
     }
 
     if(savePlots) {
@@ -2805,6 +2724,42 @@ namespace JpsiMuonIDFit {
     delete model;
     delete jointHist;
     return out;
+  }
+
+  void ApplyBinningEnvelope(EffOutput &nominal,
+                            const SimultaneousOutput &rebin1,
+                            const SimultaneousOutput &rebin2,
+                            const TString &sample,
+                            const TString &label) {
+    nominal.rebin1Ok = rebin1.ok && rebin1.eff.ok;
+    nominal.rebin2Ok = rebin2.ok && rebin2.eff.ok;
+    if(nominal.rebin1Ok) nominal.rebin1Eff = rebin1.eff.eff;
+    if(nominal.rebin2Ok) nominal.rebin2Eff = rebin2.eff.eff;
+
+    nominal.binningOk = nominal.rebin1Ok && nominal.rebin2Ok;
+    if(nominal.binningOk) {
+      nominal.binningErr = std::max(
+        std::fabs(nominal.rebin1Eff - nominal.eff),
+        std::fabs(nominal.rebin2Eff - nominal.eff));
+      nominal.err = std::sqrt(
+        nominal.statErr * nominal.statErr +
+        nominal.binningErr * nominal.binningErr);
+      cout << "[BINNING] " << sample << " " << label
+           << ": nominal(r3)=" << nominal.eff
+           << ", r1=" << nominal.rebin1Eff
+           << ", r2=" << nominal.rebin2Eff
+           << ", stat=" << nominal.statErr
+           << ", binning=" << nominal.binningErr
+           << ", total=" << nominal.err << endl;
+    }
+    else {
+      nominal.ok = false;
+      cout << "[WARNING] Incomplete mass-binning stability test for "
+           << sample << " " << label
+           << " (rebin1Ok=" << nominal.rebin1Ok
+           << ", rebin2Ok=" << nominal.rebin2Ok
+           << "); efficiency point is marked invalid." << endl;
+    }
   }
 
   void FillWilsonFloor(EffOutput &out, const double nCount) {
@@ -3235,13 +3190,13 @@ void id_eff(TString Year = "2018",
     cout << "[INFO] Yield definition: N_" << gResonanceLabel << " = fitted signal normalisation parameter" << endl;
     cout << "[INFO] Efficiency fit : simultaneous Pass/Fail fit with Npass=eff*Nsig and Nfail=(1-eff)*Nsig" << endl;
     cout << "[INFO] Fit statistic  : Poisson likelihood for Data; SumW2 chi2 for weighted MC/reference; bin-integrated model (I)" << endl;
-    cout << "[INFO] Uncertainties  : direct efficiency profile scan with Delta objective=1; larger side used as symmetric plotting error" << endl;
+    cout << "[INFO] Uncertainties  : nominal Minos/Hessian statistical error plus rebin=1,2 envelope around nominal rebin=3, added in quadrature" << endl;
   }
   else {
     cout << "[INFO] Yield definition: N_" << gResonanceLabel << " = Integral(signal function, " << gYieldIntLow << ", " << gYieldIntHigh << ") GeV" << endl;
     cout << "[INFO] Efficiency fit : simultaneous Pass/Fail fit with Npass=eff*Nsig and Nfail=(1-eff)*Nsig" << endl;
     cout << "[INFO] Fit statistic  : Poisson likelihood for Data; SumW2 chi2 for weighted MC/reference; bin-integrated model (I)" << endl;
-    cout << "[INFO] Uncertainties  : direct efficiency profile scan with Delta objective=1; larger side used as symmetric plotting error" << endl;
+    cout << "[INFO] Uncertainties  : nominal Minos/Hessian statistical error plus rebin=1,2 envelope around nominal rebin=3, added in quadrature" << endl;
   }
   if(UseCommonShape) {
     cout << "[INFO] Signal shape note: Pass/Fail always share one signal shape; --common-shape fixes that shared shape to the All fit instead of floating it jointly." << endl;
@@ -3672,8 +3627,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--rebin-factor",
         dest="rebin_factor",
         type=positive_integer,
-        default=2,
-        help="mass-histogram rebin factor; C++ default: %(default)s",
+        default=3,
+        help="nominal mass-histogram rebin factor; standard result fixes rebin=3 and evaluates automatic rebin=1,2 stability variations; default: %(default)s",
     )
     parser.add_argument(
         "--signal-model",
