@@ -412,7 +412,7 @@ namespace JpsiMuonIDFit {
       return {10., 30., 50., 120.};
     }
     if(NearlyEqual(etaLow, 1.2) && NearlyEqual(etaHigh, 2.1)) {
-      return {10., 120.};
+      return {10., 30., 120.};
     }
     if(NearlyEqual(etaLow, 2.1) && NearlyEqual(etaHigh, 2.4)) {
       return {10., 120.};
@@ -3499,7 +3499,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--rebin-factor",
         dest="rebin_factor",
         type=positive_integer,
-        default=3,
+        default=2,
         help="mass-histogram rebin factor; C++ default: %(default)s",
     )
     parser.add_argument(
