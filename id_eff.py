@@ -1085,18 +1085,15 @@ namespace JpsiMuonIDFit {
       }
     }
 
-    if(out && nMissing == 0) {
+    if(out) {
       cout << "[MERGE] " << filePath << ":" << targetBin.tag << "_" << status
            << " built from " << nUsed << " analyzer pT-bin histogram(s)";
       if(nPartial > 0) cout << ", partial bins=" << nPartial;
+      if(nMissing > 0) {
+        cout << ", missing inputs=" << nMissing
+             << " (treated as zero contribution to the merged bin)";
+      }
       cout << endl;
-    }
-    else if(out && nMissing > 0) {
-      cout << "[WARNING] Incomplete " << targetBin.tag << "_" << status
-           << " in " << filePath << ": missing " << nMissing
-           << " required analyzer pT-bin histogram(s); treat this Pass/Fail input as missing." << endl;
-      delete out;
-      out = nullptr;
     }
     else {
       cout << "[WARNING] Could not build " << targetBin.tag << "_" << status
@@ -3171,7 +3168,7 @@ void id_eff(TString Year = "2018",
   cout << "[INFO] Hist name       : " << HistName << endl;
   cout << "[INFO] Binning mode    : " << BinningModeName(gBinningMode) << endl;
   cout << "[INFO] Output pT bins  : eta-dependent; 0-0.9: 10,20,30,50,120; 0.9-1.2: 10,30,50,120; 1.2-2.1: 10,30,120; 2.1-2.4: 10,120 GeV" << endl;
-  cout << "[INFO] Input merging   : output bins are built from whole analyzer pt/eta input histograms; a missing Pass/Fail histogram leaves that efficiency bin empty" << endl;
+  cout << "[INFO] Input merging   : missing analyzer sub-bin histograms contribute zero when forming a merged pT bin; only a completely missing Pass/Fail input leaves the efficiency bin empty" << endl;
   cout << "[INFO] Include incl.   : " << (gIncludeInclusive ? "true" : "false") << endl;
   cout << "[INFO] Inspect only    : " << (InspectOnly ? "true" : "false") << endl;
   cout << "[INFO] Output dir      : " << outDir << "\n" << endl;
