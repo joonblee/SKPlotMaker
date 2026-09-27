@@ -124,10 +124,8 @@ CPP_SOURCE = r"""
 //   8. Histograms are read from the current DileptonJPsi_Mass output directly.
 //      No automatic Dilepton_Mass fallback is used.
 //   9. Final summary plots are drawn as two-panel efficiency/SF canvases vs pT and vs |eta|.
-//  10. Output binning can be eta-dependent pT bins or pT-only bins:
-//      |eta|=[0.0,0.9]: pT=10,30,50,100,500 GeV;
-//      |eta|=[0.9,1.2] and [1.2,2.1]: pT=10,50,100,500 GeV;
-//      |eta|=[2.1,2.4]: pT=10,500 GeV.
+//  10. Output binning uses pT edges 10,20,40,60,120 GeV in every eta bin.
+//      These edges match analyzer input boundaries, avoiding fractional pT-bin splitting.
 //      If a requested coarse histogram is not present, it is built from the
 //      current analyzer pT-binned histograms using the analyzer ptEdges.
 //  11. In the final signal+background fit, the background normalisation is constrained
@@ -398,30 +396,25 @@ namespace JpsiMuonIDFit {
   }
 
   vector<double> PtEdgesForEta(double etaLow, double etaHigh) {
-    if(NearlyEqual(etaLow, 0.0) && NearlyEqual(etaHigh, 0.9)) {
-      //return {10., 30., 50., 100., 500.};
-      return {10., 20., 30., 50., 100.};
-    }
-    if(NearlyEqual(etaLow, 0.9) && NearlyEqual(etaHigh, 1.2)) {
-      //return {10., 50., 100., 500.};
-      return {10., 30., 50., 100.};
-    }
-    if(NearlyEqual(etaLow, 1.2) && NearlyEqual(etaHigh, 2.1)) {
-      //return {10., 50., 100., 500.};
-      return {10., 100.};
-    }
-    if(NearlyEqual(etaLow, 2.1) && NearlyEqual(etaHigh, 2.4)) {
-      //return {10., 100., 500.};
-      return {10., 100.};
-    }
+    // Use one common pT binning in every eta region.  The upper edge follows
+    // the 120 GeV range used for the reference muon-ID efficiency comparison,
+    // and every edge is also an exact NIsoMuon analyzer input edge.  Therefore
+    // the standard output bins require only whole-bin merging, never fractional
+    // splitting of the 60--120 GeV source bin.
+    const bool supportedEta =
+      (NearlyEqual(etaLow, 0.0) && NearlyEqual(etaHigh, 0.9)) ||
+      (NearlyEqual(etaLow, 0.9) && NearlyEqual(etaHigh, 1.2)) ||
+      (NearlyEqual(etaLow, 1.2) && NearlyEqual(etaHigh, 2.1)) ||
+      (NearlyEqual(etaLow, 2.1) && NearlyEqual(etaHigh, 2.4));
+    if(supportedEta) return {10., 20., 40., 60., 120.};
+
     cout << "[ERROR] Unsupported eta bin for PtEdgesForEta: [" << etaLow << ", " << etaHigh << "]" << endl;
     return {};
   }
 
   vector<double> PtOnlyEdges() {
-    // pT-only output mode integrates all eta input bins and keeps only these pT bins.
-    //return {10., 30., 50., 100., 500.};
-    return {10., 30., 50., 100.};
+    // pT-only output mode uses the same POG-aligned binning.
+    return {10., 20., 40., 60., 120.};
   }
 
   vector<double> DefaultEtaEdges() {
@@ -462,7 +455,7 @@ namespace JpsiMuonIDFit {
 
   vector<BinDef> MakeBins() {
     vector<BinDef> bins;
-    if(gIncludeInclusive) bins.push_back({"Inclusive", 10., 100., 0., 2.4, true});
+    if(gIncludeInclusive) bins.push_back({"Inclusive", 10., 120., 0., 2.4, true});
 
     if(gBinningMode == kBinningPtOnly) {
       const vector<double> ptEdges = PtOnlyEdges();
@@ -1041,6 +1034,9 @@ namespace JpsiMuonIDFit {
         }
 
         double frac = 1.;
+        // With the standard 10,20,40,60,120 GeV output binning this branch
+        // should never be entered.  Keep it only for explicitly non-standard
+        // future bin definitions.
         if(!targetBin.inclusive && !IsFullyInside(ptLow, ptHigh, targetBin.ptLow, targetBin.ptHigh)) {
           ++nPartial;
           frac = FractionFromProbePt(f, baseRegion, subTag, status,
@@ -2595,11 +2591,24 @@ namespace JpsiMuonIDFit {
     TF1 *passModel = buildCategory(false, "Pass", hPass, out.pass);
     TF1 *failModel = buildCategory(true, "Fail", hFail, out.fail);
 
-    out.ok = out.eff.ok && (out.eff.fitStatus == 0);
+    // ROOT's integer fit status is composite:
+    //   migrad + 10*minos + 100*hesse + 1000*improve.
+    // A non-zero composite status can therefore coexist with a valid minimum
+    // and a good efficiency Minos interval.  Do not throw such fits away merely
+    // because Minos/Hesse failed for some unrelated nuisance parameter.
+    const bool minimumValid = fitRes.Get() && fitRes->IsValid();
+    const bool covarianceGood = (out.eff.covStatus == 3);
+    const bool efficiencyErrorUsable =
+      (out.eff.hasMinos && std::isfinite(out.eff.err) && out.eff.err > 0.) ||
+      (!out.eff.hasMinos && std::isfinite(out.eff.fitErr) && out.eff.fitErr > 0.);
+    out.ok = out.eff.ok && minimumValid && covarianceGood && efficiencyErrorUsable;
+
     if(!out.ok) {
       cout << "[WARNING] Simultaneous Pass/Fail fit diagnostic: " << sample << " " << label
            << ", status=" << out.eff.fitStatus
+           << ", validMinimum=" << minimumValid
            << ", cov=" << out.eff.covStatus
+           << ", hasEffMinos=" << out.eff.hasMinos
            << ", eff=" << out.eff.eff << " +/- " << out.eff.err
            << endl;
     }
@@ -3074,7 +3083,8 @@ void id_eff(TString Year = "2018",
   cout << "[INFO] Max bins        : " << MaxBins << endl;
   cout << "[INFO] Hist name       : " << HistName << endl;
   cout << "[INFO] Binning mode    : " << BinningModeName(gBinningMode) << endl;
-  cout << "[INFO] Input merging   : output bins are built from analyzer pt/eta input histograms when direct histograms are absent" << endl;
+  cout << "[INFO] Output pT edges : 10, 20, 40, 60, 120 GeV" << endl;
+  cout << "[INFO] Input merging   : output bins are built from whole analyzer pt/eta input histograms when direct histograms are absent" << endl;
   cout << "[INFO] Include incl.   : " << (gIncludeInclusive ? "true" : "false") << endl;
   cout << "[INFO] Inspect only    : " << (InspectOnly ? "true" : "false") << endl;
   cout << "[INFO] Output dir      : " << outDir << "\n" << endl;
@@ -3403,11 +3413,9 @@ def build_parser() -> argparse.ArgumentParser:
             "Z defaults from the uploaded C++:\n"
             "  HistName=Dilepton_Mass; final fit [70,110] GeV;\n"
             "  yield integral [80,100] GeV; bkg prefit [60,120] GeV.\n\n"
-            "Active eta-dependent pT output bins in the uploaded C++:\n"
-            "  |eta| 0.0-0.9 : 10,20,30,50,100 GeV\n"
-            "  |eta| 0.9-1.2 : 10,30,50,100 GeV\n"
-            "  |eta| 1.2-2.1 : 10,100 GeV\n"
-            "  |eta| 2.1-2.4 : 10,100 GeV\n\n"
+            "Muon-ID efficiency pT output bins:\n"
+            "  all |eta| regions : 10,20,40,60,120 GeV\n"
+            "  these edges coincide with analyzer input-bin boundaries.\n\n"
             "Run with python3; never source this file."
         ),
     )
