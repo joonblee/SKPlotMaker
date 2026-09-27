@@ -124,10 +124,10 @@ CPP_SOURCE = r"""
 //   8. Histograms are read from the current DileptonJPsi_Mass output directly.
 //      No automatic Dilepton_Mass fallback is used.
 //   9. Final summary plots are drawn as two-panel efficiency/SF canvases vs pT and vs |eta|.
-//  10. Output pT binning starts from 10,20,40,60,120 GeV in the barrel and
+//  10. Output pT binning starts from 10,20,30,50,120 GeV in the barrel and
 //      is progressively merged at larger |eta|:
-//        |eta|=[0.0,0.9]: 10,20,40,60,120 GeV;
-//        |eta|=[0.9,1.2]: 10,40,60,120 GeV;
+//        |eta|=[0.0,0.9]: 10,20,30,50,120 GeV;
+//        |eta|=[0.9,1.2]: 10,30,50,120 GeV;
 //        |eta|=[1.2,2.1] and [2.1,2.4]: 10,120 GeV.
 //      All retained edges match analyzer input boundaries, avoiding fractional splitting.
 //      If a requested coarse histogram is not present, it is built from the
@@ -400,16 +400,16 @@ namespace JpsiMuonIDFit {
   }
 
   vector<double> PtEdgesForEta(double etaLow, double etaHigh) {
-    // Start from the 10,20,40,60,120 GeV reference binning in the barrel and
+    // Start from the 10,20,30,50,120 GeV reference binning in the barrel and
     // merge bins progressively at larger |eta| where the tag-and-probe sample
     // is statistically limited.  All retained edges coincide with exact
     // NIsoMuon analyzer input boundaries, so no fractional pT-bin splitting is
     // needed for the standard output bins.
     if(NearlyEqual(etaLow, 0.0) && NearlyEqual(etaHigh, 0.9)) {
-      return {10., 20., 40., 60., 120.};
+      return {10., 20., 30., 50., 120.};
     }
     if(NearlyEqual(etaLow, 0.9) && NearlyEqual(etaHigh, 1.2)) {
-      return {10., 40., 60., 120.};
+      return {10., 30., 50., 120.};
     }
     if(NearlyEqual(etaLow, 1.2) && NearlyEqual(etaHigh, 2.1)) {
       return {10., 120.};
@@ -423,8 +423,8 @@ namespace JpsiMuonIDFit {
   }
 
   vector<double> PtOnlyEdges() {
-    // pT-only output mode uses the same POG-aligned binning.
-    return {10., 20., 40., 60., 120.};
+    // pT-only output mode uses the same barrel-base binning.
+    return {10., 20., 30., 50., 120.};
   }
 
   vector<double> DefaultEtaEdges() {
@@ -3093,8 +3093,8 @@ void id_eff(TString Year = "2018",
   cout << "[INFO] Max bins        : " << MaxBins << endl;
   cout << "[INFO] Hist name       : " << HistName << endl;
   cout << "[INFO] Binning mode    : " << BinningModeName(gBinningMode) << endl;
-  cout << "[INFO] Output pT bins  : eta-dependent; barrel base edges 10, 20, 40, 60, 120 GeV with high-|eta| merging" << endl;
-  cout << "[INFO] Input merging   : output bins are built from whole analyzer pt/eta input histograms when direct histograms are absent" << endl;
+  cout << "[INFO] Output pT bins  : eta-dependent; barrel base edges 10, 20, 30, 50, 120 GeV with high-|eta| merging" << endl;
+  cout << "[INFO] Input merging   : output bins are built from whole analyzer pt/eta input histograms; a missing Pass/Fail histogram leaves that efficiency bin empty" << endl;
   cout << "[INFO] Include incl.   : " << (gIncludeInclusive ? "true" : "false") << endl;
   cout << "[INFO] Inspect only    : " << (InspectOnly ? "true" : "false") << endl;
   cout << "[INFO] Output dir      : " << outDir << "\n" << endl;
@@ -3135,8 +3135,24 @@ void id_eff(TString Year = "2018",
     TH1D *hQCDFailRaw  = LoadForBin(refFile,  BaseRegion, bin, "Fail", bins, TString("hQCDFailRaw_")  + bin.tag, HistName);
     nRawHistsLoaded += (hDataPassRaw ? 1 : 0) + (hDataFailRaw ? 1 : 0) + (hQCDPassRaw ? 1 : 0) + (hQCDFailRaw ? 1 : 0);
 
-    TH1D *hDataAllRaw = AddHists(hDataPassRaw, hDataFailRaw, TString("hDataAllRaw_") + bin.tag);
-    TH1D *hQCDAllRaw  = AddHists(hQCDPassRaw,  hQCDFailRaw,  TString("hQCDAllRaw_")  + bin.tag);
+    const bool dataInputsComplete = (hDataPassRaw != nullptr && hDataFailRaw != nullptr);
+    const bool refInputsComplete  = (hQCDPassRaw  != nullptr && hQCDFailRaw  != nullptr);
+
+    if(!dataInputsComplete) {
+      cout << "[WARNING] Missing Data Pass/Fail histogram for " << bin.tag
+           << "; leave Data efficiency empty for this bin." << endl;
+    }
+    if(!refInputsComplete) {
+      cout << "[WARNING] Missing " << refLabel << " Pass/Fail histogram for " << bin.tag
+           << "; leave reference efficiency/SF empty for this bin." << endl;
+    }
+
+    TH1D *hDataAllRaw = dataInputsComplete
+                      ? AddHists(hDataPassRaw, hDataFailRaw, TString("hDataAllRaw_") + bin.tag)
+                      : nullptr;
+    TH1D *hQCDAllRaw  = refInputsComplete
+                      ? AddHists(hQCDPassRaw, hQCDFailRaw, TString("hQCDAllRaw_") + bin.tag)
+                      : nullptr;
 
     TH1D *hDataAll  = RebinAndMakeDensity(hDataAllRaw,  RebinFactor, TString("hDataAll_")  + bin.tag);
     TH1D *hDataPass = RebinAndMakeDensity(hDataPassRaw, RebinFactor, TString("hDataPass_") + bin.tag);
@@ -3145,12 +3161,16 @@ void id_eff(TString Year = "2018",
     TH1D *hQCDPass  = RebinAndMakeDensity(hQCDPassRaw,  RebinFactor, TString("hQCDPass_")  + bin.tag);
     TH1D *hQCDFail  = RebinAndMakeDensity(hQCDFailRaw,  RebinFactor, TString("hQCDFail_")  + bin.tag);
 
-    row.dataAllBkg  = FitBackgroundSidebands(hDataAll,  bin.tag, Year, "Data", "All",  outDir, bkgModel, false);
-    row.dataPassBkg = FitBackgroundSidebands(hDataPass, bin.tag, Year, "Data", "Pass", outDir, bkgModel, SavePerBinPlots && hDataPass != nullptr);
-    row.dataFailBkg = FitBackgroundSidebands(hDataFail, bin.tag, Year, "Data", "Fail", outDir, bkgModel, SavePerBinPlots && hDataFail != nullptr);
-    row.qcdAllBkg   = FitBackgroundSidebands(hQCDAll,   bin.tag, Year, refLabel, "All",  outDir, bkgModel, false);
-    row.qcdPassBkg  = FitBackgroundSidebands(hQCDPass,  bin.tag, Year, refLabel, "Pass", outDir, bkgModel, SavePerBinPlots && hQCDPass  != nullptr);
-    row.qcdFailBkg  = FitBackgroundSidebands(hQCDFail,  bin.tag, Year, refLabel, "Fail", outDir, bkgModel, SavePerBinPlots && hQCDFail  != nullptr);
+    if(dataInputsComplete) {
+      row.dataAllBkg  = FitBackgroundSidebands(hDataAll,  bin.tag, Year, "Data", "All",  outDir, bkgModel, false);
+      row.dataPassBkg = FitBackgroundSidebands(hDataPass, bin.tag, Year, "Data", "Pass", outDir, bkgModel, SavePerBinPlots && hDataPass != nullptr);
+      row.dataFailBkg = FitBackgroundSidebands(hDataFail, bin.tag, Year, "Data", "Fail", outDir, bkgModel, SavePerBinPlots && hDataFail != nullptr);
+    }
+    if(refInputsComplete) {
+      row.qcdAllBkg   = FitBackgroundSidebands(hQCDAll,   bin.tag, Year, refLabel, "All",  outDir, bkgModel, false);
+      row.qcdPassBkg  = FitBackgroundSidebands(hQCDPass,  bin.tag, Year, refLabel, "Pass", outDir, bkgModel, SavePerBinPlots && hQCDPass  != nullptr);
+      row.qcdFailBkg  = FitBackgroundSidebands(hQCDFail,  bin.tag, Year, refLabel, "Fail", outDir, bkgModel, SavePerBinPlots && hQCDFail  != nullptr);
+    }
 
     const BkgOutput *dataAllBkgForFit  = row.dataAllBkg.ok  ? &row.dataAllBkg  : nullptr;
     const BkgOutput *dataPassBkgForFit = row.dataPassBkg.ok ? &row.dataPassBkg : dataAllBkgForFit;
@@ -3159,71 +3179,77 @@ void id_eff(TString Year = "2018",
     const BkgOutput *qcdPassBkgForFit  = row.qcdPassBkg.ok  ? &row.qcdPassBkg  : qcdAllBkgForFit;
     const BkgOutput *qcdFailBkgForFit  = row.qcdFailBkg.ok  ? &row.qcdFailBkg  : qcdAllBkgForFit;
 
-    row.dataAll = FitOne(hDataAll, bin.tag, Year, "Data", "All", outDir,
-                         sigModel, bkgModel, FitMin, FitMax, nullptr, false,
-                         dataAllBkgForFit, FixBkgShapeFromSidebands, false);
-    const FitOutput *dataShapeSeed = row.dataAll.ok ? &row.dataAll : nullptr;
-    const FitOutput dataPassSeed = FitOne(
-      hDataPass, bin.tag, Year, "Data", "PassSeed", outDir,
-      sigModel, bkgModel, FitMin, FitMax, dataShapeSeed, false,
-      dataPassBkgForFit, FixBkgShapeFromSidebands, false);
-    const FitOutput dataFailSeed = FitOne(
-      hDataFail, bin.tag, Year, "Data", "FailSeed", outDir,
-      sigModel, bkgModel, FitMin, FitMax, dataShapeSeed, false,
-      dataFailBkgForFit, FixBkgShapeFromSidebands, false);
+    if(dataInputsComplete) {
+      row.dataAll = FitOne(hDataAll, bin.tag, Year, "Data", "All", outDir,
+                           sigModel, bkgModel, FitMin, FitMax, nullptr, false,
+                           dataAllBkgForFit, FixBkgShapeFromSidebands, false);
+      const FitOutput *dataShapeSeed = row.dataAll.ok ? &row.dataAll : nullptr;
+      const FitOutput dataPassSeed = FitOne(
+        hDataPass, bin.tag, Year, "Data", "PassSeed", outDir,
+        sigModel, bkgModel, FitMin, FitMax, dataShapeSeed, false,
+        dataPassBkgForFit, FixBkgShapeFromSidebands, false);
+      const FitOutput dataFailSeed = FitOne(
+        hDataFail, bin.tag, Year, "Data", "FailSeed", outDir,
+        sigModel, bkgModel, FitMin, FitMax, dataShapeSeed, false,
+        dataFailBkgForFit, FixBkgShapeFromSidebands, false);
+  
+      const SimultaneousOutput dataSim = FitPassFailSimultaneous(
+        hDataPass, hDataFail, bin.tag, Year, "Data", outDir,
+        sigModel, bkgModel, FitMin, FitMax,
+        dataShapeSeed, &dataPassSeed, &dataFailSeed,
+        dataPassBkgForFit, dataFailBkgForFit,
+        UseCommonShape, FixBkgShapeFromSidebands,
+        SavePerBinPlots);
+      if(dataSim.ok) {
+        row.dataPass = dataSim.pass;
+        row.dataFail = dataSim.fail;
+        row.dataEff = dataSim.eff;
+      }
+      else {
+        row.dataPass = dataPassSeed;
+        row.dataFail = dataFailSeed;
+        row.dataEff = MakeEfficiency(row.dataPass, row.dataFail);
+        cout << "[WARNING] Falling back to separate Data Pass/Fail efficiency for "
+             << bin.tag << endl;
+      }
+  
+      }
 
-    const SimultaneousOutput dataSim = FitPassFailSimultaneous(
-      hDataPass, hDataFail, bin.tag, Year, "Data", outDir,
-      sigModel, bkgModel, FitMin, FitMax,
-      dataShapeSeed, &dataPassSeed, &dataFailSeed,
-      dataPassBkgForFit, dataFailBkgForFit,
-      UseCommonShape, FixBkgShapeFromSidebands,
-      SavePerBinPlots);
-    if(dataSim.ok) {
-      row.dataPass = dataSim.pass;
-      row.dataFail = dataSim.fail;
-      row.dataEff = dataSim.eff;
-    }
-    else {
-      row.dataPass = dataPassSeed;
-      row.dataFail = dataFailSeed;
-      row.dataEff = MakeEfficiency(row.dataPass, row.dataFail);
-      cout << "[WARNING] Falling back to separate Data Pass/Fail efficiency for "
-           << bin.tag << endl;
-    }
-
-    row.qcdAll = FitOne(hQCDAll, bin.tag, Year, refLabel, "All", outDir,
-                        sigModel, bkgModel, FitMin, FitMax, nullptr, false,
-                        qcdAllBkgForFit, FixBkgShapeFromSidebands, false);
-    const FitOutput *qcdShapeSeed = row.qcdAll.ok ? &row.qcdAll : nullptr;
-    const FitOutput qcdPassSeed = FitOne(
-      hQCDPass, bin.tag, Year, refLabel, "PassSeed", outDir,
-      sigModel, bkgModel, FitMin, FitMax, qcdShapeSeed, false,
-      qcdPassBkgForFit, FixBkgShapeFromSidebands, false);
-    const FitOutput qcdFailSeed = FitOne(
-      hQCDFail, bin.tag, Year, refLabel, "FailSeed", outDir,
-      sigModel, bkgModel, FitMin, FitMax, qcdShapeSeed, false,
-      qcdFailBkgForFit, FixBkgShapeFromSidebands, false);
-
-    const SimultaneousOutput qcdSim = FitPassFailSimultaneous(
-      hQCDPass, hQCDFail, bin.tag, Year, refLabel, outDir,
-      sigModel, bkgModel, FitMin, FitMax,
-      qcdShapeSeed, &qcdPassSeed, &qcdFailSeed,
-      qcdPassBkgForFit, qcdFailBkgForFit,
-      UseCommonShape, FixBkgShapeFromSidebands,
-      SavePerBinPlots);
-    if(qcdSim.ok) {
-      row.qcdPass = qcdSim.pass;
-      row.qcdFail = qcdSim.fail;
-      row.qcdEff = qcdSim.eff;
-    }
-    else {
-      row.qcdPass = qcdPassSeed;
-      row.qcdFail = qcdFailSeed;
-      row.qcdEff = MakeEfficiency(row.qcdPass, row.qcdFail);
-      cout << "[WARNING] Falling back to separate " << refLabel
-           << " Pass/Fail efficiency for " << bin.tag << endl;
-    }
+    if(refInputsComplete) {
+      row.qcdAll = FitOne(hQCDAll, bin.tag, Year, refLabel, "All", outDir,
+                          sigModel, bkgModel, FitMin, FitMax, nullptr, false,
+                          qcdAllBkgForFit, FixBkgShapeFromSidebands, false);
+      const FitOutput *qcdShapeSeed = row.qcdAll.ok ? &row.qcdAll : nullptr;
+      const FitOutput qcdPassSeed = FitOne(
+        hQCDPass, bin.tag, Year, refLabel, "PassSeed", outDir,
+        sigModel, bkgModel, FitMin, FitMax, qcdShapeSeed, false,
+        qcdPassBkgForFit, FixBkgShapeFromSidebands, false);
+      const FitOutput qcdFailSeed = FitOne(
+        hQCDFail, bin.tag, Year, refLabel, "FailSeed", outDir,
+        sigModel, bkgModel, FitMin, FitMax, qcdShapeSeed, false,
+        qcdFailBkgForFit, FixBkgShapeFromSidebands, false);
+  
+      const SimultaneousOutput qcdSim = FitPassFailSimultaneous(
+        hQCDPass, hQCDFail, bin.tag, Year, refLabel, outDir,
+        sigModel, bkgModel, FitMin, FitMax,
+        qcdShapeSeed, &qcdPassSeed, &qcdFailSeed,
+        qcdPassBkgForFit, qcdFailBkgForFit,
+        UseCommonShape, FixBkgShapeFromSidebands,
+        SavePerBinPlots);
+      if(qcdSim.ok) {
+        row.qcdPass = qcdSim.pass;
+        row.qcdFail = qcdSim.fail;
+        row.qcdEff = qcdSim.eff;
+      }
+      else {
+        row.qcdPass = qcdPassSeed;
+        row.qcdFail = qcdFailSeed;
+        row.qcdEff = MakeEfficiency(row.qcdPass, row.qcdFail);
+        cout << "[WARNING] Falling back to separate " << refLabel
+             << " Pass/Fail efficiency for " << bin.tag << endl;
+      }
+  
+      }
 
     if(row.dataEff.ok && row.qcdEff.ok && row.dataEff.eff > 0. && row.qcdEff.eff > 0.) {
       row.sf = row.dataEff.eff / row.qcdEff.eff;
@@ -3424,8 +3450,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  HistName=Dilepton_Mass; final fit [70,110] GeV;\n"
             "  yield integral [80,100] GeV; bkg prefit [60,120] GeV.\n\n"
             "Muon-ID efficiency pT output bins:\n"
-            "  |eta| 0.0-0.9 : 10,20,40,60,120 GeV\n"
-            "  |eta| 0.9-1.2 : 10,40,60,120 GeV\n"
+            "  |eta| 0.0-0.9 : 10,20,30,50,120 GeV\n"
+            "  |eta| 0.9-1.2 : 10,30,50,120 GeV\n"
             "  |eta| 1.2-2.1 : 10,120 GeV\n"
             "  |eta| 2.1-2.4 : 10,120 GeV\n"
             "  retained edges coincide with analyzer input-bin boundaries.\n\n"
