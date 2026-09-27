@@ -115,10 +115,12 @@ CPP_SOURCE = r"""
 //      Cheb1/2/3/4, MonoCheb1/2/3/4, Bern1...8, and MonoBern1...8.
 //      The 3.3--3.5 GeV sideband is upweighted by default because it is the
 //      closest direct constraint on the continuum under the J/psi peak.
-//   6. Final efficiencies come from a simultaneous Pass/Fail fit:
+//   6. Final efficiencies come from a simultaneous Pass/Fail binned-likelihood fit:
 //        N_pass = efficiency * N_signal and N_fail = (1-efficiency) * N_signal.
 //      Pass and Fail share one signal shape, while their background models remain independent.
-//      Efficiency uncertainties are taken from Minos; the larger asymmetric side
+//      Data uses Poisson likelihood, weighted MC uses weighted likelihood, and the
+//      model is integrated over every mass bin.  Efficiency uncertainties are taken
+//      from Minos; the larger asymmetric side
 //      is used as the symmetric error bar in the validation summary plot.
 //   7. data.root in the era directory is the current data-input convention.
 //   8. Histograms are read from the current DileptonJPsi_Mass output directly.
@@ -273,11 +275,12 @@ namespace JpsiMuonIDFit {
   // For Z it is disabled by ConfigureResonance(...).
   bool gRejectPsiPInFinalFit = false;
 
-  // Pass/Fail simultaneous-fit bookkeeping.  Fail points are placed at a shifted
-  // x coordinate in one TGraphErrors so ROOT can minimise a single joint chi2.
+  // Pass/Fail simultaneous-fit bookkeeping.  The final fit uses one combined
+  // histogram with the Fail spectrum shifted directly after the Pass spectrum.
   // GenericSimultaneousModel maps the shifted Fail coordinate back to dimuon mass.
   double gSimultaneousOffset = 0.;
   double gSimultaneousSplit = 0.;
+  double gSimultaneousBinWidth = 1.;
 
   // The second sideband is the nearest sideband to the J/psi peak on the high-mass side.
   // It is short and otherwise gets diluted by the long sidebands, so it is upweighted
@@ -287,6 +290,7 @@ namespace JpsiMuonIDFit {
   double gMinBkgRelErr = 0.015;
 
   const double kBkgNormRelConstraint = 0.05;  // final S+B bkg norm is limited to sideband value +/-5%
+  const int kBkgPrefitRebinFactor = 3; // keep sideband-shape extraction independent of final display rebinning
   bool gIncludeInclusive = false;      // Inclusive is optional because the analyzer often does not fill it
 
   struct BinDef {
@@ -1044,7 +1048,7 @@ namespace JpsiMuonIDFit {
         }
 
         double frac = 1.;
-        // With the standard 10,20,40,60,120 GeV output binning this branch
+        // With the standard configured output binning this branch
         // should never be entered.  Keep it only for explicitly non-standard
         // future bin definitions.
         if(!targetBin.inclusive && !IsFullyInside(ptLow, ptHigh, targetBin.ptLow, targetBin.ptHigh)) {
@@ -1080,12 +1084,18 @@ namespace JpsiMuonIDFit {
       }
     }
 
-    if(out) {
+    if(out && nMissing == 0) {
       cout << "[MERGE] " << filePath << ":" << targetBin.tag << "_" << status
            << " built from " << nUsed << " analyzer pT-bin histogram(s)";
       if(nPartial > 0) cout << ", partial bins=" << nPartial;
-      if(nMissing > 0) cout << ", missing inputs=" << nMissing;
       cout << endl;
+    }
+    else if(out && nMissing > 0) {
+      cout << "[WARNING] Incomplete " << targetBin.tag << "_" << status
+           << " in " << filePath << ": missing " << nMissing
+           << " required analyzer pT-bin histogram(s); treat this Pass/Fail input as missing." << endl;
+      delete out;
+      out = nullptr;
     }
     else {
       cout << "[WARNING] Could not build " << targetBin.tag << "_" << status
@@ -1132,7 +1142,8 @@ namespace JpsiMuonIDFit {
     return std::max(1, factor);
   }
 
-  TH1D* RebinAndMakeDensity(TH1D *hIn, int rebinFactor, const TString &name) {
+  TH1D* RebinAndMakeDensity(TH1D *hIn, int rebinFactor, const TString &name,
+                            bool verbose = true) {
     if(!hIn) return nullptr;
     TH1D *h = CloneAsTH1D(hIn, name + "_rawClone");
 
@@ -1151,12 +1162,14 @@ namespace JpsiMuonIDFit {
 
     const int nBinsAfter = h->GetNbinsX();
     const double widthAfter = h->GetXaxis()->GetBinWidth(1);
-    cout << "[REBIN] " << name
-         << ": requested=" << rebinFactor
-         << ", applied=" << factor
-         << ", nbins " << nBinsBefore << " -> " << nBinsAfter
-         << ", first-bin width " << widthBefore << " -> " << widthAfter
-         << " GeV" << endl;
+    if(verbose) {
+      cout << "[REBIN] " << name
+           << ": requested=" << rebinFactor
+           << ", applied=" << factor
+           << ", nbins " << nBinsBefore << " -> " << nBinsAfter
+           << ", first-bin width " << widthBefore << " -> " << widthAfter
+           << " GeV" << endl;
+    }
 
     TH1D *density = CloneAsTH1D(h, name + "_density");
     for(int ibin = 1; ibin <= density->GetNbinsX(); ++ibin) {
@@ -1599,7 +1612,7 @@ namespace JpsiMuonIDFit {
   Double_t GenericSimultaneousModel(Double_t *x, Double_t *p) {
     const int nSig = NSignalPars(gSignalModel);
     const int nBkg = NBkgPars(gBackgroundModel);
-    const bool isFail = (x[0] > gSimultaneousSplit);
+    const bool isFail = (x[0] >= gSimultaneousSplit);
     Double_t mass[1] = { isFail ? x[0] - gSimultaneousOffset : x[0] };
 
     const double eff = std::max(0.0, std::min(1.0, p[0]));
@@ -1613,6 +1626,15 @@ namespace JpsiMuonIDFit {
     const int bkgStart = isFail ? failBkgStart : passBkgStart;
 
     return GenericSignal(mass, sigPars) + GenericBackground(mass, &p[bkgStart]);
+  }
+
+  Double_t GenericSimultaneousCountModel(Double_t *x, Double_t *p) {
+    // The likelihood histogram stores counts (or sum of weights), while the
+    // physics model is a density in Events/GeV.  TH1::Fit option "I" replaces
+    // the bin-centre value by the bin average of this function.  Multiplying
+    // by the common mass-bin width therefore makes that average equal to the
+    // expected integral of the density in the bin.
+    return gSimultaneousBinWidth * GenericSimultaneousModel(x, p);
   }
 
   void SetSignalParameterNames(TF1 *f, SignalModel sig) {
@@ -2139,7 +2161,7 @@ namespace JpsiMuonIDFit {
     }
     latex.DrawLatex(0.15, 0.74, Form("m = %.4f GeV, #sigma = %.4f GeV", out.mean, out.sigma));
     if(out.ndf > 0) latex.DrawLatex(0.15, 0.69, Form("weighted #chi^{2}/ndf = %.1f/%d = %.2f", out.chi2, out.ndf, out.chi2/out.ndf));
-    latex.DrawLatex(0.15, 0.64, Form("fit status = %d, cov = %d%s", out.fitStatus, out.covStatus, out.usedCommonShape ? ", common shape" : ""));
+    latex.DrawLatex(0.15, 0.64, Form("fit status = %d, cov = %d%s", out.fitStatus, out.covStatus, out.usedCommonShape ? ", shared P/F shape" : ""));
 
     lower->cd();
     TH1D *ratioFrame = new TH1D((TString("ratioFrame_") + Sanitise(label + sample + status)).Data(), "", 1, fitMin, fitMax);
@@ -2277,45 +2299,84 @@ namespace JpsiMuonIDFit {
 
   void FillWilsonFloor(EffOutput &out, const double nCount);
 
-  TGraphErrors* BuildSimultaneousGraph(TH1D *hPass, TH1D *hFail,
-                                              const TString &name,
-                                              double fitMin, double fitMax) {
-    if(!hPass && !hFail) return nullptr;
+  TH1D* BuildSimultaneousLikelihoodHist(TH1D *hPass, TH1D *hFail,
+                                             const TString &name,
+                                             double fitMin, double fitMax) {
+    if(!hPass || !hFail) return nullptr;
+    if(hPass->GetNbinsX() != hFail->GetNbinsX()) {
+      cout << "[WARNING] Pass/Fail mass histograms have different bin counts in "
+           << name << endl;
+      return nullptr;
+    }
 
-    const double width = std::max(fitMax - fitMin, 1e-6);
-    const double gap = std::max(0.20 * width, (gResonanceMode == kResJpsi) ? 0.25 : 2.0);
-    gSimultaneousOffset = width + gap;
-    const double failMinShifted = fitMin + gSimultaneousOffset;
-    gSimultaneousSplit = 0.5 * (fitMax + failMinShifted);
+    int firstBin = -1;
+    int lastBin = -1;
+    for(int ibin = 1; ibin <= hPass->GetNbinsX(); ++ibin) {
+      const double mass = hPass->GetXaxis()->GetBinCenter(ibin);
+      if(mass < fitMin || mass >= fitMax) continue;
+      if(gUseFinalVeto && IsInFinalFitVeto(mass)) continue;
+      if(firstBin < 0) firstBin = ibin;
+      lastBin = ibin;
+    }
+    if(firstBin < 0 || lastBin < firstBin) return nullptr;
 
-    TGraphErrors *gr = new TGraphErrors();
-    gr->SetName(name);
+    // The current resonance configurations have no internal veto inside the
+    // final fit range.  Require contiguous, equal-width mass bins so the two
+    // categories can be concatenated without artificial likelihood bins.
+    const double binWidth = hPass->GetXaxis()->GetBinWidth(firstBin);
+    if(!(binWidth > 0.) || !std::isfinite(binWidth)) return nullptr;
 
-    auto addCategory = [&](TH1D *h, const bool isFail) {
-      if(!h) return;
-      for(int ibin = 1; ibin <= h->GetNbinsX(); ++ibin) {
-        const double mass = h->GetXaxis()->GetBinCenter(ibin);
-        if(mass < fitMin || mass >= fitMax) continue;
-        if(gUseFinalVeto && IsInFinalFitVeto(mass)) continue;
-
-        const double y = h->GetBinContent(ibin);
-        if(!std::isfinite(y)) continue;
-
-        double ey = h->GetBinError(ibin);
-        if(!std::isfinite(ey) || ey <= 0.) {
-          const double bw = std::max(h->GetXaxis()->GetBinWidth(ibin), 1e-9);
-          ey = std::sqrt(std::max(std::fabs(y) * bw, 1.0)) / bw;
-        }
-
-        const int n = gr->GetN();
-        gr->SetPoint(n, mass + (isFail ? gSimultaneousOffset : 0.0), y);
-        gr->SetPointError(n, 0.0, ey);
+    int nMassBins = 0;
+    for(int ibin = firstBin; ibin <= lastBin; ++ibin) {
+      const double mass = hPass->GetXaxis()->GetBinCenter(ibin);
+      if(gUseFinalVeto && IsInFinalFitVeto(mass)) {
+        cout << "[WARNING] Internal final-fit veto is not supported by the combined likelihood histogram." << endl;
+        return nullptr;
       }
-    };
+      const double bwP = hPass->GetXaxis()->GetBinWidth(ibin);
+      const double bwF = hFail->GetXaxis()->GetBinWidth(ibin);
+      if(std::fabs(bwP - binWidth) > 1e-9 || std::fabs(bwF - binWidth) > 1e-9) {
+        cout << "[WARNING] Non-uniform Pass/Fail mass binning in " << name << endl;
+        return nullptr;
+      }
+      ++nMassBins;
+    }
 
-    addCategory(hPass, false);
-    addCategory(hFail, true);
-    return gr;
+    const double xMin = hPass->GetXaxis()->GetBinLowEdge(firstBin);
+    const double span = nMassBins * binWidth;
+    gSimultaneousOffset = span;
+    gSimultaneousSplit = xMin + span;
+    gSimultaneousBinWidth = binWidth;
+
+    TH1D *joint = new TH1D(name.Data(), "", 2 * nMassBins, xMin, xMin + 2.0 * span);
+    joint->SetDirectory(0);
+    joint->Sumw2();
+
+    for(int j = 0; j < nMassBins; ++j) {
+      const int src = firstBin + j;
+      const double bw = hPass->GetXaxis()->GetBinWidth(src);
+
+      // RebinAndMakeDensity(...) divided both content and error by bw.
+      // Restore sum(w) and sqrt(sum(w^2)) here for L/WL likelihood fits.
+      const double passY = hPass->GetBinContent(src) * bw;
+      const double passE = hPass->GetBinError(src) * bw;
+      const double failY = hFail->GetBinContent(src) * bw;
+      const double failE = hFail->GetBinError(src) * bw;
+
+      if(passY < 0. || failY < 0.) {
+        cout << "[WARNING] Negative weighted bin content prevents L/WL likelihood fit in "
+             << name << endl;
+        delete joint;
+        return nullptr;
+      }
+
+      joint->SetBinContent(j + 1, passY);
+      joint->SetBinError(j + 1, std::max(0.0, passE));
+      joint->SetBinContent(nMassBins + j + 1, failY);
+      joint->SetBinError(nMassBins + j + 1, std::max(0.0, failE));
+    }
+
+    return joint;
   }
 
   void CopyBackgroundSetupToSimultaneous(TF1 *simModel, const int dstStart,
@@ -2400,10 +2461,10 @@ namespace JpsiMuonIDFit {
     gFitMin = fitMin;
     gFitMax = fitMax;
 
-    TGraphErrors *gr = BuildSimultaneousGraph(
-      hPass, hFail, TString("grSim_") + Sanitise(label + sample), fitMin, fitMax);
-    if(!gr || gr->GetN() < 4) {
-      delete gr;
+    TH1D *jointHist = BuildSimultaneousLikelihoodHist(
+      hPass, hFail, TString("hSimLike_") + Sanitise(label + sample), fitMin, fitMax);
+    if(!jointHist || jointHist->GetNbinsX() < 4) {
+      delete jointHist;
       return out;
     }
 
@@ -2415,8 +2476,8 @@ namespace JpsiMuonIDFit {
 
     TF1 *model = new TF1(
       (TString("simModel_") + Sanitise(label + sample)).Data(),
-      GenericSimultaneousModel,
-      fitMin, fitMax + gSimultaneousOffset, nPar);
+      GenericSimultaneousCountModel,
+      jointHist->GetXaxis()->GetXmin(), jointHist->GetXaxis()->GetXmax(), nPar);
     model->SetNpx(1600);
     model->SetParName(0, "efficiency");
     model->SetParName(1, "N_{sig,total}");
@@ -2485,13 +2546,20 @@ namespace JpsiMuonIDFit {
       model, failBkgStart, hFail ? hFail : hPass, allShape, failBkg,
       sig, bkg, fitMin, fitMax, fixBkgShapeFromSidebands, "Fail");
 
-    // First reach the minimum, then request the more robust Minos-style errors.
-    TFitResultPtr fitRes = gr->Fit(model, "SRQ0");
-    fitRes = gr->Fit(model, "SERQ0");
+    // Fit the actual bin counts, not density points.  Data uses a Poisson
+    // likelihood; weighted MC/reference histograms use ROOT's weighted
+    // likelihood, which uses the stored sum-of-weights-squared information.
+    // "I" integrates the model across every mass bin, reducing dependence on
+    // the chosen display/rebin size.  "E" requests Minos errors.
+    const bool useWeightedLikelihood = !sample.EqualTo("Data", TString::kIgnoreCase);
+    const TString firstFitOpt = useWeightedLikelihood ? "SWLIRQ0" : "SLIRQ0";
+    const TString minosFitOpt = useWeightedLikelihood ? "SWLIERQ0" : "SLIERQ0";
+    TFitResultPtr fitRes = jointHist->Fit(model, firstFitOpt.Data());
+    fitRes = jointHist->Fit(model, minosFitOpt.Data());
 
     out.eff.fitStatus = int(fitRes);
     if(fitRes.Get()) out.eff.covStatus = fitRes->CovMatrixStatus();
-    out.eff.chi2 = model->GetChisquare();
+    out.eff.chi2 = fitRes.Get() ? 2.0 * fitRes->MinFcnValue() : 0.;
     out.eff.ndf = model->GetNDF();
     out.eff.eff = std::max(0.0, std::min(1.0, model->GetParameter(0)));
     out.eff.fitErr = model->GetParError(0);
@@ -2608,9 +2676,12 @@ namespace JpsiMuonIDFit {
     // because Minos/Hesse failed for some unrelated nuisance parameter.
     const bool minimumValid = fitRes.Get() && fitRes->IsValid();
     const bool covarianceGood = (out.eff.covStatus == 3);
+    const bool atEfficiencyBoundary =
+      (out.eff.eff <= 1e-6 || out.eff.eff >= 1.0 - 1e-6);
     const bool efficiencyErrorUsable =
       (out.eff.hasMinos && std::isfinite(out.eff.err) && out.eff.err > 0.) ||
-      (!out.eff.hasMinos && std::isfinite(out.eff.fitErr) && out.eff.fitErr > 0.);
+      (!atEfficiencyBoundary && !out.eff.hasMinos &&
+       std::isfinite(out.eff.fitErr) && out.eff.fitErr > 0.);
     out.ok = out.eff.ok && minimumValid && covarianceGood && efficiencyErrorUsable;
 
     if(!out.ok) {
@@ -2619,6 +2690,7 @@ namespace JpsiMuonIDFit {
            << ", validMinimum=" << minimumValid
            << ", cov=" << out.eff.covStatus
            << ", hasEffMinos=" << out.eff.hasMinos
+           << ", boundary=" << atEfficiencyBoundary
            << ", eff=" << out.eff.eff << " +/- " << out.eff.err
            << endl;
     }
@@ -2633,7 +2705,8 @@ namespace JpsiMuonIDFit {
         cout << " (Minos unavailable, parabolic=" << out.eff.fitErr << ")";
       }
       cout << ", Nsig=" << nTotal
-           << ", chi2/ndf=" << out.eff.chi2 << "/" << out.eff.ndf
+           << ", " << (useWeightedLikelihood ? "2NLL_{weighted}" : "2NLL")
+           << "/ndf=" << out.eff.chi2 << "/" << out.eff.ndf
            << ", cov=" << out.eff.covStatus << endl;
     }
 
@@ -2647,7 +2720,7 @@ namespace JpsiMuonIDFit {
     delete passModel;
     delete failModel;
     delete model;
-    delete gr;
+    delete jointHist;
     return out;
   }
 
@@ -3067,7 +3140,8 @@ void id_eff(TString Year = "2018",
   cout << "[INFO] Final " << gResonanceLabel << " fit : [" << FitMin << ", " << FitMax << "] GeV" << endl;
   cout << "[INFO] Final veto     : " << (gUseFinalVeto ? Form("[%.1f,%.1f] GeV if it overlaps", gFinalVetoLow, gFinalVetoHigh) : TString("none")) << endl;
   cout << "[INFO] Bkg prefit     : [" << gBkgFitMin << "," << gBkgFitMax << "] GeV; sidebands " << SidebandRangesText() << " GeV" << endl;
-  cout << "[INFO] Bkg fit metric  : " << (gUseLogBkgFit ? "log-density chi2" : "density chi2") << endl;
+  cout << "[INFO] Bkg fit metric  : " << (gUseLogBkgFit ? "log-density chi2" : "density chi2")
+       << " with fixed rebin=" << kBkgPrefitRebinFactor << endl;
   cout << "[INFO] Common shape    : " << (UseCommonShape ? "true" : "false") << endl;
   cout << "[INFO] Fix bkg shape   : " << (FixBkgShapeFromSidebands ? "true" : "false") << endl;
   cout << "[INFO] Bkg norm range  : sideband prefit +/- " << 100.0 * kBkgNormRelConstraint << "% in final S+B fit" << endl;
@@ -3076,12 +3150,14 @@ void id_eff(TString Year = "2018",
   cout << "[INFO] Reference input : " << ReferenceInput << " (label: " << refLabel << ")" << endl;
   if(UseFitNormYield()) {
     cout << "[INFO] Yield definition: N_" << gResonanceLabel << " = fitted signal normalisation parameter" << endl;
-    cout << "[INFO] Efficiency fit : simultaneous Pass/Fail fit with Npass=eff*Nsig and Nfail=(1-eff)*Nsig" << endl;
+    cout << "[INFO] Efficiency fit : simultaneous Pass/Fail binned likelihood with Npass=eff*Nsig and Nfail=(1-eff)*Nsig" << endl;
+    cout << "[INFO] Fit statistic  : Poisson L for Data, weighted WL for MC/reference, with bin-integrated model (I)" << endl;
     cout << "[INFO] Uncertainties  : Minos error of the joint-fit efficiency parameter (larger side used for symmetric plotting); SF = data eff / reference eff" << endl;
   }
   else {
     cout << "[INFO] Yield definition: N_" << gResonanceLabel << " = Integral(signal function, " << gYieldIntLow << ", " << gYieldIntHigh << ") GeV" << endl;
-    cout << "[INFO] Efficiency fit : simultaneous Pass/Fail fit with Npass=eff*Nsig and Nfail=(1-eff)*Nsig" << endl;
+    cout << "[INFO] Efficiency fit : simultaneous Pass/Fail binned likelihood with Npass=eff*Nsig and Nfail=(1-eff)*Nsig" << endl;
+    cout << "[INFO] Fit statistic  : Poisson L for Data, weighted WL for MC/reference, with bin-integrated model (I)" << endl;
     cout << "[INFO] Uncertainties  : Minos error of the joint-fit efficiency parameter (larger side used for symmetric plotting); SF = data eff / reference eff" << endl;
   }
   if(UseCommonShape) {
@@ -3161,15 +3237,25 @@ void id_eff(TString Year = "2018",
     TH1D *hQCDPass  = RebinAndMakeDensity(hQCDPassRaw,  RebinFactor, TString("hQCDPass_")  + bin.tag);
     TH1D *hQCDFail  = RebinAndMakeDensity(hQCDFailRaw,  RebinFactor, TString("hQCDFail_")  + bin.tag);
 
+    // Sideband background shapes are always extracted with one fixed mass
+    // binning so changing --rebin only changes the final likelihood/display
+    // binning, not the sideband-shape prior fed into that fit.
+    TH1D *hDataAllBkgFit  = RebinAndMakeDensity(hDataAllRaw,  kBkgPrefitRebinFactor, TString("hDataAllBkgFit_")  + bin.tag, false);
+    TH1D *hDataPassBkgFit = RebinAndMakeDensity(hDataPassRaw, kBkgPrefitRebinFactor, TString("hDataPassBkgFit_") + bin.tag, false);
+    TH1D *hDataFailBkgFit = RebinAndMakeDensity(hDataFailRaw, kBkgPrefitRebinFactor, TString("hDataFailBkgFit_") + bin.tag, false);
+    TH1D *hQCDAllBkgFit   = RebinAndMakeDensity(hQCDAllRaw,   kBkgPrefitRebinFactor, TString("hQCDAllBkgFit_")   + bin.tag, false);
+    TH1D *hQCDPassBkgFit  = RebinAndMakeDensity(hQCDPassRaw,  kBkgPrefitRebinFactor, TString("hQCDPassBkgFit_")  + bin.tag, false);
+    TH1D *hQCDFailBkgFit  = RebinAndMakeDensity(hQCDFailRaw,  kBkgPrefitRebinFactor, TString("hQCDFailBkgFit_")  + bin.tag, false);
+
     if(dataInputsComplete) {
-      row.dataAllBkg  = FitBackgroundSidebands(hDataAll,  bin.tag, Year, "Data", "All",  outDir, bkgModel, false);
-      row.dataPassBkg = FitBackgroundSidebands(hDataPass, bin.tag, Year, "Data", "Pass", outDir, bkgModel, SavePerBinPlots && hDataPass != nullptr);
-      row.dataFailBkg = FitBackgroundSidebands(hDataFail, bin.tag, Year, "Data", "Fail", outDir, bkgModel, SavePerBinPlots && hDataFail != nullptr);
+      row.dataAllBkg  = FitBackgroundSidebands(hDataAllBkgFit,  bin.tag, Year, "Data", "All",  outDir, bkgModel, false);
+      row.dataPassBkg = FitBackgroundSidebands(hDataPassBkgFit, bin.tag, Year, "Data", "Pass", outDir, bkgModel, SavePerBinPlots && hDataPassBkgFit != nullptr);
+      row.dataFailBkg = FitBackgroundSidebands(hDataFailBkgFit, bin.tag, Year, "Data", "Fail", outDir, bkgModel, SavePerBinPlots && hDataFailBkgFit != nullptr);
     }
     if(refInputsComplete) {
-      row.qcdAllBkg   = FitBackgroundSidebands(hQCDAll,   bin.tag, Year, refLabel, "All",  outDir, bkgModel, false);
-      row.qcdPassBkg  = FitBackgroundSidebands(hQCDPass,  bin.tag, Year, refLabel, "Pass", outDir, bkgModel, SavePerBinPlots && hQCDPass  != nullptr);
-      row.qcdFailBkg  = FitBackgroundSidebands(hQCDFail,  bin.tag, Year, refLabel, "Fail", outDir, bkgModel, SavePerBinPlots && hQCDFail  != nullptr);
+      row.qcdAllBkg   = FitBackgroundSidebands(hQCDAllBkgFit,   bin.tag, Year, refLabel, "All",  outDir, bkgModel, false);
+      row.qcdPassBkg  = FitBackgroundSidebands(hQCDPassBkgFit,  bin.tag, Year, refLabel, "Pass", outDir, bkgModel, SavePerBinPlots && hQCDPassBkgFit  != nullptr);
+      row.qcdFailBkg  = FitBackgroundSidebands(hQCDFailBkgFit,  bin.tag, Year, refLabel, "Fail", outDir, bkgModel, SavePerBinPlots && hQCDFailBkgFit  != nullptr);
     }
 
     const BkgOutput *dataAllBkgForFit  = row.dataAllBkg.ok  ? &row.dataAllBkg  : nullptr;
