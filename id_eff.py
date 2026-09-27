@@ -124,8 +124,12 @@ CPP_SOURCE = r"""
 //   8. Histograms are read from the current DileptonJPsi_Mass output directly.
 //      No automatic Dilepton_Mass fallback is used.
 //   9. Final summary plots are drawn as two-panel efficiency/SF canvases vs pT and vs |eta|.
-//  10. Output binning uses pT edges 10,20,40,60,120 GeV in every eta bin.
-//      These edges match analyzer input boundaries, avoiding fractional pT-bin splitting.
+//  10. Output pT binning starts from 10,20,40,60,120 GeV in the barrel and
+//      is progressively merged at larger |eta|:
+//        |eta|=[0.0,0.9]: 10,20,40,60,120 GeV;
+//        |eta|=[0.9,1.2]: 10,40,60,120 GeV;
+//        |eta|=[1.2,2.1] and [2.1,2.4]: 10,120 GeV.
+//      All retained edges match analyzer input boundaries, avoiding fractional splitting.
 //      If a requested coarse histogram is not present, it is built from the
 //      current analyzer pT-binned histograms using the analyzer ptEdges.
 //  11. In the final signal+background fit, the background normalisation is constrained
@@ -396,17 +400,23 @@ namespace JpsiMuonIDFit {
   }
 
   vector<double> PtEdgesForEta(double etaLow, double etaHigh) {
-    // Use one common pT binning in every eta region.  The upper edge follows
-    // the 120 GeV range used for the reference muon-ID efficiency comparison,
-    // and every edge is also an exact NIsoMuon analyzer input edge.  Therefore
-    // the standard output bins require only whole-bin merging, never fractional
-    // splitting of the 60--120 GeV source bin.
-    const bool supportedEta =
-      (NearlyEqual(etaLow, 0.0) && NearlyEqual(etaHigh, 0.9)) ||
-      (NearlyEqual(etaLow, 0.9) && NearlyEqual(etaHigh, 1.2)) ||
-      (NearlyEqual(etaLow, 1.2) && NearlyEqual(etaHigh, 2.1)) ||
-      (NearlyEqual(etaLow, 2.1) && NearlyEqual(etaHigh, 2.4));
-    if(supportedEta) return {10., 20., 40., 60., 120.};
+    // Start from the 10,20,40,60,120 GeV reference binning in the barrel and
+    // merge bins progressively at larger |eta| where the tag-and-probe sample
+    // is statistically limited.  All retained edges coincide with exact
+    // NIsoMuon analyzer input boundaries, so no fractional pT-bin splitting is
+    // needed for the standard output bins.
+    if(NearlyEqual(etaLow, 0.0) && NearlyEqual(etaHigh, 0.9)) {
+      return {10., 20., 40., 60., 120.};
+    }
+    if(NearlyEqual(etaLow, 0.9) && NearlyEqual(etaHigh, 1.2)) {
+      return {10., 40., 60., 120.};
+    }
+    if(NearlyEqual(etaLow, 1.2) && NearlyEqual(etaHigh, 2.1)) {
+      return {10., 120.};
+    }
+    if(NearlyEqual(etaLow, 2.1) && NearlyEqual(etaHigh, 2.4)) {
+      return {10., 120.};
+    }
 
     cout << "[ERROR] Unsupported eta bin for PtEdgesForEta: [" << etaLow << ", " << etaHigh << "]" << endl;
     return {};
@@ -3083,7 +3093,7 @@ void id_eff(TString Year = "2018",
   cout << "[INFO] Max bins        : " << MaxBins << endl;
   cout << "[INFO] Hist name       : " << HistName << endl;
   cout << "[INFO] Binning mode    : " << BinningModeName(gBinningMode) << endl;
-  cout << "[INFO] Output pT edges : 10, 20, 40, 60, 120 GeV" << endl;
+  cout << "[INFO] Output pT bins  : eta-dependent; barrel base edges 10, 20, 40, 60, 120 GeV with high-|eta| merging" << endl;
   cout << "[INFO] Input merging   : output bins are built from whole analyzer pt/eta input histograms when direct histograms are absent" << endl;
   cout << "[INFO] Include incl.   : " << (gIncludeInclusive ? "true" : "false") << endl;
   cout << "[INFO] Inspect only    : " << (InspectOnly ? "true" : "false") << endl;
@@ -3414,8 +3424,11 @@ def build_parser() -> argparse.ArgumentParser:
             "  HistName=Dilepton_Mass; final fit [70,110] GeV;\n"
             "  yield integral [80,100] GeV; bkg prefit [60,120] GeV.\n\n"
             "Muon-ID efficiency pT output bins:\n"
-            "  all |eta| regions : 10,20,40,60,120 GeV\n"
-            "  these edges coincide with analyzer input-bin boundaries.\n\n"
+            "  |eta| 0.0-0.9 : 10,20,40,60,120 GeV\n"
+            "  |eta| 0.9-1.2 : 10,40,60,120 GeV\n"
+            "  |eta| 1.2-2.1 : 10,120 GeV\n"
+            "  |eta| 2.1-2.4 : 10,120 GeV\n"
+            "  retained edges coincide with analyzer input-bin boundaries.\n\n"
             "Run with python3; never source this file."
         ),
     )
