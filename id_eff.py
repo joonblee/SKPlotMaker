@@ -2356,18 +2356,13 @@ namespace JpsiMuonIDFit {
       const double bw = hPass->GetXaxis()->GetBinWidth(src);
 
       // RebinAndMakeDensity(...) divided both content and error by bw.
-      // Restore sum(w) and sqrt(sum(w^2)) here for L/WL likelihood fits.
+      // Restore sum(w) and sqrt(sum(w^2)) here.  Data uses these as event
+      // counts for the Poisson likelihood; MC uses the content and SumW2 error
+      // in the profiled chi2, which also permits signed weighted bins.
       const double passY = hPass->GetBinContent(src) * bw;
       const double passE = hPass->GetBinError(src) * bw;
       const double failY = hFail->GetBinContent(src) * bw;
       const double failE = hFail->GetBinError(src) * bw;
-
-      if(passY < 0. || failY < 0.) {
-        cout << "[WARNING] Negative weighted bin content prevents L/WL likelihood fit in "
-             << name << endl;
-        delete joint;
-        return nullptr;
-      }
 
       joint->SetBinContent(j + 1, passY);
       joint->SetBinError(j + 1, std::max(0.0, passE));
@@ -2654,7 +2649,10 @@ namespace JpsiMuonIDFit {
       model, failBkgStart, hFail ? hFail : hPass, allShape, failBkg,
       sig, bkg, fitMin, fitMax, fixBkgShapeFromSidebands, "Fail");
 
-    // Use one profile-interval prescription for both samples:
+    // Use one profile-interval prescription for both samples.  In particular,
+    // ROOT cannot compute Minos intervals after the SumW2 correction used by
+    // weighted likelihood fits, so a direct scan avoids boundary-specific
+    // uncertainty rules and keeps the extraction uniform:
     //   Data       : Poisson binned likelihood (L)
     //   MC/reference: SumW2 chi2 for weighted/signed-weight histograms.
     // In both cases "I" integrates the model across each mass bin.
