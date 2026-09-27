@@ -2370,7 +2370,7 @@ namespace JpsiMuonIDFit {
       // RebinAndMakeDensity(...) divided both content and error by bw.
       // Restore sum(w) and sqrt(sum(w^2)) here.  Data uses these as event
       // counts for the Poisson likelihood; MC uses the content and SumW2 error
-      // in the profiled chi2, which also permits signed weighted bins.
+      // in the SumW2 chi2, which also permits signed weighted bins.
       const double passY = hPass->GetBinContent(src) * bw;
       const double passE = hPass->GetBinError(src) * bw;
       const double failY = hFail->GetBinContent(src) * bw;
@@ -3167,7 +3167,7 @@ void id_eff(TString Year = "2018",
 
   cout << "\n[INFO] Input directory : " << inputDir << endl;
   cout << "[INFO] Base region     : " << BaseRegion << endl;
-  cout << "[INFO] Rebin factor    : " << RebinFactor << endl;
+  cout << "[INFO] Mass binning    : nominal rebin=3 (30 MeV); stability variations rebin=1,2 (10,20 MeV)" << endl;
   cout << "[INFO] Signal model    : " << SignalModelName(sigModel) << endl;
   cout << "[INFO] Background model: " << BackgroundModelName(bkgModel) << endl;
   cout << "[INFO] Available bkg models: " << AvailableBackgroundModelsText() << endl;
