@@ -130,7 +130,8 @@ CPP_SOURCE = r"""
 //      is progressively merged at larger |eta|:
 //        |eta|=[0.0,0.9]: 10,20,30,50,120 GeV;
 //        |eta|=[0.9,1.2]: 10,30,50,120 GeV;
-//        |eta|=[1.2,2.1] and [2.1,2.4]: 10,120 GeV.
+//        |eta|=[1.2,2.1]: 10,30,120 GeV;
+//        |eta|=[2.1,2.4]: 10,120 GeV.
 //      All retained edges match analyzer input boundaries, avoiding fractional splitting.
 //      If a requested coarse histogram is not present, it is built from the
 //      current analyzer pT-binned histograms using the analyzer ptEdges.
@@ -3169,7 +3170,7 @@ void id_eff(TString Year = "2018",
   cout << "[INFO] Max bins        : " << MaxBins << endl;
   cout << "[INFO] Hist name       : " << HistName << endl;
   cout << "[INFO] Binning mode    : " << BinningModeName(gBinningMode) << endl;
-  cout << "[INFO] Output pT bins  : eta-dependent; barrel base edges 10, 20, 30, 50, 120 GeV with high-|eta| merging" << endl;
+  cout << "[INFO] Output pT bins  : eta-dependent; 0-0.9: 10,20,30,50,120; 0.9-1.2: 10,30,50,120; 1.2-2.1: 10,30,120; 2.1-2.4: 10,120 GeV" << endl;
   cout << "[INFO] Input merging   : output bins are built from whole analyzer pt/eta input histograms; a missing Pass/Fail histogram leaves that efficiency bin empty" << endl;
   cout << "[INFO] Include incl.   : " << (gIncludeInclusive ? "true" : "false") << endl;
   cout << "[INFO] Inspect only    : " << (InspectOnly ? "true" : "false") << endl;
@@ -3402,6 +3403,12 @@ void id_eff(TString Year = "2018",
     delete hQCDAll;
     delete hQCDPass;
     delete hQCDFail;
+    delete hDataAllBkgFit;
+    delete hDataPassBkgFit;
+    delete hDataFailBkgFit;
+    delete hQCDAllBkgFit;
+    delete hQCDPassBkgFit;
+    delete hQCDFailBkgFit;
   }
 
   csv.close();
@@ -3538,7 +3545,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Muon-ID efficiency pT output bins:\n"
             "  |eta| 0.0-0.9 : 10,20,30,50,120 GeV\n"
             "  |eta| 0.9-1.2 : 10,30,50,120 GeV\n"
-            "  |eta| 1.2-2.1 : 10,120 GeV\n"
+            "  |eta| 1.2-2.1 : 10,30,120 GeV\n"
             "  |eta| 2.1-2.4 : 10,120 GeV\n"
             "  retained edges coincide with analyzer input-bin boundaries.\n\n"
             "Run with python3; never source this file."
