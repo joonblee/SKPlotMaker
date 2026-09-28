@@ -92,11 +92,11 @@ CPP_SOURCE = r"""
 //   root -l -b -q 'id_eff.C("2018","HighPtMuon","/data6/Users/joonblee/SKFlatOutput/Run2UltraLegacy_v3","NIsoMuon","OS_POGMedium_tight_BJet_MuonIDEfficiency",5)'
 //
 //   // alternative positive-definite backgrounds
-//   root -l -b -q 'id_eff.C("2018","HighPtMuon","/data6/Users/joonblee/SKFlatOutput/Run2UltraLegacy_v3","NIsoMuon","OS_POGMedium_tight_BJet_MuonIDEfficiency",3,"CB","Bern7")'
+//   root -l -b -q 'id_eff.C("2018","HighPtMuon","/data6/Users/joonblee/SKFlatOutput/Run2UltraLegacy_v3","NIsoMuon","OS_POGMedium_tight_BJet_MuonIDEfficiency",3,"CB","Bern5",2.00,5.00)'
 //   root -l -b -q 'id_eff.C("2018","HighPtMuon","/data6/Users/joonblee/SKFlatOutput/Run2UltraLegacy_v3","NIsoMuon","OS_POGMedium_tight_BJet_MuonIDEfficiency",3,"CB","Exp3")'
 //
 //   // stronger constraint on the [3.3,3.5] GeV sideband
-//   root -l -b -q 'id_eff.C("2018","HighPtMuon","/data6/Users/joonblee/SKFlatOutput/Run2UltraLegacy_v3","NIsoMuon","OS_POGMedium_tight_BJet_MuonIDEfficiency",2,"CB","Bern7",2.70,3.50,true,true,6.0)' 
+//   root -l -b -q 'id_eff.C("2018","HighPtMuon","/data6/Users/joonblee/SKFlatOutput/Run2UltraLegacy_v3","NIsoMuon","OS_POGMedium_tight_BJet_MuonIDEfficiency",3,"CB","Bern5",2.00,5.00,true,true,6.0)' 
 //
 //   // old-style signal-shape cross-check
 //   root -l -b -q 'id_eff.C("2018","HighPtMuon","/data6/Users/joonblee/SKFlatOutput/Run2UltraLegacy_v3","NIsoMuon","OS_POGMedium_tight_BJet_MuonIDEfficiency",3,"DSCB","Exp1")'
@@ -3745,9 +3745,10 @@ def build_parser() -> argparse.ArgumentParser:
             "  python3 id_eff.py --year 2023 --binning pt-only\n"
             "  python3 id_eff.py --year 2023 --yield-mode fitnorm\n"
             "  python3 id_eff.py --year all\n\n"
-            "J/psi defaults from the uploaded C++:\n"
+            "J/psi nominal defaults aligned to the AN:\n"
+            "  Crystal Ball signal + positive Bernstein-5 background;\n"
             "  HistName=DileptonJPsi_Mass; final fit [2.00,5.00] GeV with the psi(2S) region vetoed;\n"
-            "  core-yield integral [3.00,3.20] GeV; bkg prefit [2,5] GeV.\n\n"
+            "  fitted signal normalization is the J/psi yield; bkg prefit [2,5] GeV.\n\n"
             "Z defaults from the uploaded C++:\n"
             "  HistName=Dilepton_Mass; final fit [70,110] GeV;\n"
             "  yield integral [80,100] GeV; bkg prefit [60,120] GeV.\n\n"
