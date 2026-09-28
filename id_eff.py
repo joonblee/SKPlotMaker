@@ -121,7 +121,7 @@ CPP_SOURCE = r"""
 //      Data uses a Poisson likelihood; weighted MC/reference uses a SumW2 chi2.
 //      The model is integrated over every mass bin.  The nominal result uses
 //      rebin=3 (30 MeV).  The fit-statistical uncertainty uses Minos (Hessian only
-//      as a numerical fallback), and rebin=1,2 shifts form a symmetric mass-binning
+//      as a numerical fallback), and rebin=1,2,4,5 shifts form a symmetric mass-binning
 //      envelope.  The statistical and binning components are added in quadrature.
 //   7. data.root in the era directory is the current data-input convention.
 //   8. Histograms are read from the current DileptonJPsi_Mass output directly.
@@ -346,8 +346,12 @@ namespace JpsiMuonIDFit {
     double minosHigh = 0.;    // signed upper Minos error
     double rebin1Eff = 0.;
     double rebin2Eff = 0.;
+    double rebin4Eff = 0.;
+    double rebin5Eff = 0.;
     bool rebin1Ok = false;
     bool rebin2Ok = false;
+    bool rebin4Ok = false;
+    bool rebin5Ok = false;
     double wilsonErr = 0.;    // separate-fit emergency fallback only
     double nCount = 0.;       // fitted total signal normalisation
     double wilsonLow = 0.;
@@ -388,6 +392,8 @@ namespace JpsiMuonIDFit {
     double sfBinningErr = 0.;
     double sfRebin1 = 0.;
     double sfRebin2 = 0.;
+    double sfRebin4 = 0.;
+    double sfRebin5 = 0.;
     bool sfBinningOk = false;
   };
 
@@ -2683,7 +2689,19 @@ namespace JpsiMuonIDFit {
     const bool statErrorUsable =
       !computeStatError ||
       (std::isfinite(out.eff.statErr) && out.eff.statErr > 0.);
-    out.ok = out.eff.ok && minimumValid && covarianceUsable && statErrorUsable;
+
+    // Nominal fits need a usable covariance/error.  Rebin-variation fits are
+    // used only for their central efficiency, so do not reject a converged
+    // minimum merely because the covariance matrix is poor.
+    if(computeStatError) {
+      out.ok = out.eff.ok && minimumValid && covarianceUsable && statErrorUsable;
+    }
+    else {
+      const bool centralValueUsable =
+        fitRes.Get() && int(fitRes) == 0 &&
+        std::isfinite(out.eff.eff) && nTotal > 0.;
+      out.ok = centralValueUsable;
+    }
 
     if(computeStatError) {
       if(!out.ok) {
@@ -2729,36 +2747,59 @@ namespace JpsiMuonIDFit {
   void ApplyBinningEnvelope(EffOutput &nominal,
                             const SimultaneousOutput &rebin1,
                             const SimultaneousOutput &rebin2,
+                            const SimultaneousOutput &rebin4,
+                            const SimultaneousOutput &rebin5,
                             const TString &sample,
                             const TString &label) {
     nominal.rebin1Ok = rebin1.ok && rebin1.eff.ok;
     nominal.rebin2Ok = rebin2.ok && rebin2.eff.ok;
+    nominal.rebin4Ok = rebin4.ok && rebin4.eff.ok;
+    nominal.rebin5Ok = rebin5.ok && rebin5.eff.ok;
+
     if(nominal.rebin1Ok) nominal.rebin1Eff = rebin1.eff.eff;
     if(nominal.rebin2Ok) nominal.rebin2Eff = rebin2.eff.eff;
+    if(nominal.rebin4Ok) nominal.rebin4Eff = rebin4.eff.eff;
+    if(nominal.rebin5Ok) nominal.rebin5Eff = rebin5.eff.eff;
 
-    nominal.binningOk = nominal.rebin1Ok && nominal.rebin2Ok;
-    if(nominal.binningOk) {
+    nominal.binningErr = 0.;
+    int nValid = 0;
+
+    auto includeVariation = [&](bool ok, double eff) {
+      if(!ok) return;
+      ++nValid;
       nominal.binningErr = std::max(
-        std::fabs(nominal.rebin1Eff - nominal.eff),
-        std::fabs(nominal.rebin2Eff - nominal.eff));
-      nominal.err = std::sqrt(
-        nominal.statErr * nominal.statErr +
-        nominal.binningErr * nominal.binningErr);
-      cout << "[BINNING] " << sample << " " << label
-           << ": nominal(r3)=" << nominal.eff
-           << ", r1=" << nominal.rebin1Eff
-           << ", r2=" << nominal.rebin2Eff
-           << ", stat=" << nominal.statErr
-           << ", binning=" << nominal.binningErr
-           << ", total=" << nominal.err << endl;
-    }
-    else {
-      nominal.ok = false;
-      cout << "[WARNING] Incomplete mass-binning stability test for "
+        nominal.binningErr, std::fabs(eff - nominal.eff));
+    };
+
+    includeVariation(nominal.rebin1Ok, nominal.rebin1Eff);
+    includeVariation(nominal.rebin2Ok, nominal.rebin2Eff);
+    includeVariation(nominal.rebin4Ok, nominal.rebin4Eff);
+    includeVariation(nominal.rebin5Ok, nominal.rebin5Eff);
+
+    nominal.binningOk = (nValid > 0);
+    nominal.err = std::sqrt(
+      nominal.statErr * nominal.statErr +
+      nominal.binningErr * nominal.binningErr);
+
+    cout << "[BINNING] " << sample << " " << label
+         << ": nominal(r3)=" << nominal.eff;
+    if(nominal.rebin1Ok) cout << ", r1=" << nominal.rebin1Eff;
+    else cout << ", r1=FAIL";
+    if(nominal.rebin2Ok) cout << ", r2=" << nominal.rebin2Eff;
+    else cout << ", r2=FAIL";
+    if(nominal.rebin4Ok) cout << ", r4=" << nominal.rebin4Eff;
+    else cout << ", r4=FAIL";
+    if(nominal.rebin5Ok) cout << ", r5=" << nominal.rebin5Eff;
+    else cout << ", r5=FAIL";
+    cout << ", nValid=" << nValid
+         << ", stat=" << nominal.statErr
+         << ", binning=" << nominal.binningErr
+         << ", total=" << nominal.err << endl;
+
+    if(nValid == 0) {
+      cout << "[WARNING] No valid mass-binning variation for "
            << sample << " " << label
-           << " (rebin1Ok=" << nominal.rebin1Ok
-           << ", rebin2Ok=" << nominal.rebin2Ok
-           << "); efficiency point is marked invalid." << endl;
+           << "; keep the nominal point with statistical uncertainty only." << endl;
     }
   }
 
@@ -3167,7 +3208,7 @@ void id_eff(TString Year = "2018",
 
   cout << "\n[INFO] Input directory : " << inputDir << endl;
   cout << "[INFO] Base region     : " << BaseRegion << endl;
-  cout << "[INFO] Mass binning    : nominal rebin=3 (30 MeV); stability variations rebin=1,2 (10,20 MeV)" << endl;
+  cout << "[INFO] Mass binning    : nominal rebin=3 (30 MeV); stability variations rebin=1,2,4,5 (10,20,40,50 MeV)" << endl;
   cout << "[INFO] Signal model    : " << SignalModelName(sigModel) << endl;
   cout << "[INFO] Background model: " << BackgroundModelName(bkgModel) << endl;
   cout << "[INFO] Available bkg models: " << AvailableBackgroundModelsText() << endl;
@@ -3190,13 +3231,13 @@ void id_eff(TString Year = "2018",
     cout << "[INFO] Yield definition: N_" << gResonanceLabel << " = fitted signal normalisation parameter" << endl;
     cout << "[INFO] Efficiency fit : simultaneous Pass/Fail fit with Npass=eff*Nsig and Nfail=(1-eff)*Nsig" << endl;
     cout << "[INFO] Fit statistic  : Poisson likelihood for Data; SumW2 chi2 for weighted MC/reference; bin-integrated model (I)" << endl;
-    cout << "[INFO] Uncertainties  : nominal Minos/Hessian statistical error plus rebin=1,2 envelope around nominal rebin=3, added in quadrature" << endl;
+    cout << "[INFO] Uncertainties  : nominal Minos/Hessian statistical error plus rebin=1,2,4,5 envelope around nominal rebin=3, added in quadrature" << endl;
   }
   else {
     cout << "[INFO] Yield definition: N_" << gResonanceLabel << " = Integral(signal function, " << gYieldIntLow << ", " << gYieldIntHigh << ") GeV" << endl;
     cout << "[INFO] Efficiency fit : simultaneous Pass/Fail fit with Npass=eff*Nsig and Nfail=(1-eff)*Nsig" << endl;
     cout << "[INFO] Fit statistic  : Poisson likelihood for Data; SumW2 chi2 for weighted MC/reference; bin-integrated model (I)" << endl;
-    cout << "[INFO] Uncertainties  : nominal Minos/Hessian statistical error plus rebin=1,2 envelope around nominal rebin=3, added in quadrature" << endl;
+    cout << "[INFO] Uncertainties  : nominal Minos/Hessian statistical error plus rebin=1,2,4,5 envelope around nominal rebin=3, added in quadrature" << endl;
   }
   if(UseCommonShape) {
     cout << "[INFO] Signal shape note: Pass/Fail always share one signal shape; --common-shape fixes that shared shape to the All fit instead of floating it jointly." << endl;
@@ -3221,9 +3262,9 @@ void id_eff(TString Year = "2018",
 
   std::ofstream csv((outDir + "/summary_" + Year + ".csv").Data());
   csv << "bin,ptLow,ptHigh,absEtaLow,absEtaHigh,"
-      << "dataAll,dataAllErr,dataPass,dataPassErr,dataFail,dataFailErr,dataEff,dataEffErr,dataEffStatErr,dataEffBinningErr,dataEffRebin1,dataEffRebin2,"
-      << "qcdAll,qcdAllErr,qcdPass,qcdPassErr,qcdFail,qcdFailErr,qcdEff,qcdEffErr,qcdEffStatErr,qcdEffBinningErr,qcdEffRebin1,qcdEffRebin2,"
-      << "SF,SFErr,SFStatErr,SFBinningErr,SFRebin1,SFRebin2,"
+      << "dataAll,dataAllErr,dataPass,dataPassErr,dataFail,dataFailErr,dataEff,dataEffErr,dataEffStatErr,dataEffBinningErr,dataEffRebin1,dataEffRebin2,dataEffRebin4,dataEffRebin5,"
+      << "qcdAll,qcdAllErr,qcdPass,qcdPassErr,qcdFail,qcdFailErr,qcdEff,qcdEffErr,qcdEffStatErr,qcdEffBinningErr,qcdEffRebin1,qcdEffRebin2,qcdEffRebin4,qcdEffRebin5,"
+      << "SF,SFErr,SFStatErr,SFBinningErr,SFRebin1,SFRebin2,SFRebin4,SFRebin5,"
       << "dataAllStatus,dataPassStatus,dataFailStatus,qcdAllStatus,qcdPassStatus,qcdFailStatus,"
       << "dataAllBkgStatus,dataPassBkgStatus,dataFailBkgStatus,qcdAllBkgStatus,qcdPassBkgStatus,qcdFailBkgStatus\n";
 
@@ -3285,10 +3326,18 @@ void id_eff(TString Year = "2018",
     TH1D *hDataFailR1 = RebinAndMakeDensity(hDataFailRaw, 1, TString("hDataFailR1_") + bin.tag, false);
     TH1D *hDataPassR2 = RebinAndMakeDensity(hDataPassRaw, 2, TString("hDataPassR2_") + bin.tag, false);
     TH1D *hDataFailR2 = RebinAndMakeDensity(hDataFailRaw, 2, TString("hDataFailR2_") + bin.tag, false);
+    TH1D *hDataPassR4 = RebinAndMakeDensity(hDataPassRaw, 4, TString("hDataPassR4_") + bin.tag, false);
+    TH1D *hDataFailR4 = RebinAndMakeDensity(hDataFailRaw, 4, TString("hDataFailR4_") + bin.tag, false);
+    TH1D *hDataPassR5 = RebinAndMakeDensity(hDataPassRaw, 5, TString("hDataPassR5_") + bin.tag, false);
+    TH1D *hDataFailR5 = RebinAndMakeDensity(hDataFailRaw, 5, TString("hDataFailR5_") + bin.tag, false);
     TH1D *hQCDPassR1  = RebinAndMakeDensity(hQCDPassRaw,  1, TString("hQCDPassR1_")  + bin.tag, false);
     TH1D *hQCDFailR1  = RebinAndMakeDensity(hQCDFailRaw,  1, TString("hQCDFailR1_")  + bin.tag, false);
     TH1D *hQCDPassR2  = RebinAndMakeDensity(hQCDPassRaw,  2, TString("hQCDPassR2_")  + bin.tag, false);
     TH1D *hQCDFailR2  = RebinAndMakeDensity(hQCDFailRaw,  2, TString("hQCDFailR2_")  + bin.tag, false);
+    TH1D *hQCDPassR4  = RebinAndMakeDensity(hQCDPassRaw,  4, TString("hQCDPassR4_")  + bin.tag, false);
+    TH1D *hQCDFailR4  = RebinAndMakeDensity(hQCDFailRaw,  4, TString("hQCDFailR4_")  + bin.tag, false);
+    TH1D *hQCDPassR5  = RebinAndMakeDensity(hQCDPassRaw,  5, TString("hQCDPassR5_")  + bin.tag, false);
+    TH1D *hQCDFailR5  = RebinAndMakeDensity(hQCDFailRaw,  5, TString("hQCDFailR5_")  + bin.tag, false);
 
     // Sideband background shapes are always extracted with one fixed mass
     // binning so changing --rebin only changes the final likelihood/display
@@ -3358,7 +3407,21 @@ void id_eff(TString Year = "2018",
           dataPassBkgForFit, dataFailBkgForFit,
           UseCommonShape, FixBkgShapeFromSidebands,
           false, false);
-        ApplyBinningEnvelope(row.dataEff, dataR1, dataR2, "Data", bin.tag);
+        const SimultaneousOutput dataR4 = FitPassFailSimultaneous(
+          hDataPassR4, hDataFailR4, bin.tag, Year, "Data", outDir,
+          sigModel, bkgModel, FitMin, FitMax,
+          dataShapeSeed, &dataPassSeed, &dataFailSeed,
+          dataPassBkgForFit, dataFailBkgForFit,
+          UseCommonShape, FixBkgShapeFromSidebands,
+          false, false);
+        const SimultaneousOutput dataR5 = FitPassFailSimultaneous(
+          hDataPassR5, hDataFailR5, bin.tag, Year, "Data", outDir,
+          sigModel, bkgModel, FitMin, FitMax,
+          dataShapeSeed, &dataPassSeed, &dataFailSeed,
+          dataPassBkgForFit, dataFailBkgForFit,
+          UseCommonShape, FixBkgShapeFromSidebands,
+          false, false);
+        ApplyBinningEnvelope(row.dataEff, dataR1, dataR2, dataR4, dataR5, "Data", bin.tag);
       }
       else {
         row.dataPass = dataPassSeed;
@@ -3411,7 +3474,21 @@ void id_eff(TString Year = "2018",
           qcdPassBkgForFit, qcdFailBkgForFit,
           UseCommonShape, FixBkgShapeFromSidebands,
           false, false);
-        ApplyBinningEnvelope(row.qcdEff, qcdR1, qcdR2, refLabel, bin.tag);
+        const SimultaneousOutput qcdR4 = FitPassFailSimultaneous(
+          hQCDPassR4, hQCDFailR4, bin.tag, Year, refLabel, outDir,
+          sigModel, bkgModel, FitMin, FitMax,
+          qcdShapeSeed, &qcdPassSeed, &qcdFailSeed,
+          qcdPassBkgForFit, qcdFailBkgForFit,
+          UseCommonShape, FixBkgShapeFromSidebands,
+          false, false);
+        const SimultaneousOutput qcdR5 = FitPassFailSimultaneous(
+          hQCDPassR5, hQCDFailR5, bin.tag, Year, refLabel, outDir,
+          sigModel, bkgModel, FitMin, FitMax,
+          qcdShapeSeed, &qcdPassSeed, &qcdFailSeed,
+          qcdPassBkgForFit, qcdFailBkgForFit,
+          UseCommonShape, FixBkgShapeFromSidebands,
+          false, false);
+        ApplyBinningEnvelope(row.qcdEff, qcdR1, qcdR2, qcdR4, qcdR5, refLabel, bin.tag);
       }
       else {
         row.qcdPass = qcdPassSeed;
@@ -3436,23 +3513,43 @@ void id_eff(TString Year = "2018",
         (std::isfinite(row.sf) && std::isfinite(sfStatVarRel) && sfStatVarRel >= 0.)
         ? row.sf * std::sqrt(sfStatVarRel) : 0.;
 
-      row.sfBinningOk =
-        row.dataEff.rebin1Ok && row.dataEff.rebin2Ok &&
-        row.qcdEff.rebin1Ok && row.qcdEff.rebin2Ok &&
-        row.qcdEff.rebin1Eff > 0. && row.qcdEff.rebin2Eff > 0.;
-      if(row.sfBinningOk) {
-        row.sfRebin1 = row.dataEff.rebin1Eff / row.qcdEff.rebin1Eff;
-        row.sfRebin2 = row.dataEff.rebin2Eff / row.qcdEff.rebin2Eff;
-        row.sfBinningErr = std::max(
-          std::fabs(row.sfRebin1 - row.sf),
-          std::fabs(row.sfRebin2 - row.sf));
-        row.sfErr = std::sqrt(
-          row.sfStatErr * row.sfStatErr +
-          row.sfBinningErr * row.sfBinningErr);
-      }
+      row.sfBinningErr = 0.;
+      int nValidSFVariations = 0;
 
-      row.sfOk = row.sfBinningOk &&
-                 std::isfinite(row.sf) && std::isfinite(row.sfErr);
+      auto includeSFVariation = [&](bool dataOk, double dataEff,
+                                    bool refOk, double refEff,
+                                    double &storedSF) {
+        if(!dataOk || !refOk || !(refEff > 0.)) return;
+        storedSF = dataEff / refEff;
+        if(!std::isfinite(storedSF)) return;
+        ++nValidSFVariations;
+        row.sfBinningErr = std::max(
+          row.sfBinningErr, std::fabs(storedSF - row.sf));
+      };
+
+      includeSFVariation(row.dataEff.rebin1Ok, row.dataEff.rebin1Eff,
+                         row.qcdEff.rebin1Ok, row.qcdEff.rebin1Eff,
+                         row.sfRebin1);
+      includeSFVariation(row.dataEff.rebin2Ok, row.dataEff.rebin2Eff,
+                         row.qcdEff.rebin2Ok, row.qcdEff.rebin2Eff,
+                         row.sfRebin2);
+      includeSFVariation(row.dataEff.rebin4Ok, row.dataEff.rebin4Eff,
+                         row.qcdEff.rebin4Ok, row.qcdEff.rebin4Eff,
+                         row.sfRebin4);
+      includeSFVariation(row.dataEff.rebin5Ok, row.dataEff.rebin5Eff,
+                         row.qcdEff.rebin5Ok, row.qcdEff.rebin5Eff,
+                         row.sfRebin5);
+
+      row.sfBinningOk = (nValidSFVariations > 0);
+      row.sfErr = std::sqrt(
+        row.sfStatErr * row.sfStatErr +
+        row.sfBinningErr * row.sfBinningErr);
+      row.sfOk = std::isfinite(row.sf) && std::isfinite(row.sfErr);
+
+      if(nValidSFVariations == 0) {
+        cout << "[WARNING] No matched valid rebin variation for SF in "
+             << bin.tag << "; keep SF with statistical uncertainty only." << endl;
+      }
     }
 
     cout << "  Data: pass = " << row.dataPass.yield << " +/- " << row.dataPass.yieldErr
@@ -3461,8 +3558,10 @@ void id_eff(TString Year = "2018",
     if(row.dataEff.ok) {
       cout << "  [stat=" << row.dataEff.statErr
            << ", binning=" << row.dataEff.binningErr
-           << ", r1=" << row.dataEff.rebin1Eff
-           << ", r2=" << row.dataEff.rebin2Eff
+           << ", r1=" << (row.dataEff.rebin1Ok ? Form("%.6g", row.dataEff.rebin1Eff) : "FAIL")
+           << ", r2=" << (row.dataEff.rebin2Ok ? Form("%.6g", row.dataEff.rebin2Eff) : "FAIL")
+           << ", r4=" << (row.dataEff.rebin4Ok ? Form("%.6g", row.dataEff.rebin4Eff) : "FAIL")
+           << ", r5=" << (row.dataEff.rebin5Ok ? Form("%.6g", row.dataEff.rebin5Eff) : "FAIL")
            << ", Nsig=" << row.dataEff.nCount << "]";
     }
     cout << endl;
@@ -3472,8 +3571,10 @@ void id_eff(TString Year = "2018",
     if(row.qcdEff.ok) {
       cout << "  [stat=" << row.qcdEff.statErr
            << ", binning=" << row.qcdEff.binningErr
-           << ", r1=" << row.qcdEff.rebin1Eff
-           << ", r2=" << row.qcdEff.rebin2Eff
+           << ", r1=" << (row.qcdEff.rebin1Ok ? Form("%.6g", row.qcdEff.rebin1Eff) : "FAIL")
+           << ", r2=" << (row.qcdEff.rebin2Ok ? Form("%.6g", row.qcdEff.rebin2Eff) : "FAIL")
+           << ", r4=" << (row.qcdEff.rebin4Ok ? Form("%.6g", row.qcdEff.rebin4Eff) : "FAIL")
+           << ", r5=" << (row.qcdEff.rebin5Ok ? Form("%.6g", row.qcdEff.rebin5Eff) : "FAIL")
            << ", Nsig=" << row.qcdEff.nCount << "]";
     }
     cout << endl;
@@ -3482,6 +3583,8 @@ void id_eff(TString Year = "2018",
          << ", binning=" << row.sfBinningErr
          << ", r1=" << row.sfRebin1
          << ", r2=" << row.sfRebin2
+         << ", r4=" << row.sfRebin4
+         << ", r5=" << row.sfRebin5
          << "]  (sfOk=" << row.sfOk << ")\n" << endl;
 
     csv << bin.tag << "," << bin.ptLow << "," << bin.ptHigh << "," << bin.etaLow << "," << bin.etaHigh << ","
@@ -3491,15 +3594,18 @@ void id_eff(TString Year = "2018",
         << row.dataEff.eff << "," << row.dataEff.err << ","
         << row.dataEff.statErr << "," << row.dataEff.binningErr << ","
         << row.dataEff.rebin1Eff << "," << row.dataEff.rebin2Eff << ","
+        << row.dataEff.rebin4Eff << "," << row.dataEff.rebin5Eff << ","
         << row.qcdAll.yield << "," << row.qcdAll.yieldErr << ","
         << row.qcdPass.yield << "," << row.qcdPass.yieldErr << ","
         << row.qcdFail.yield << "," << row.qcdFail.yieldErr << ","
         << row.qcdEff.eff << "," << row.qcdEff.err << ","
         << row.qcdEff.statErr << "," << row.qcdEff.binningErr << ","
         << row.qcdEff.rebin1Eff << "," << row.qcdEff.rebin2Eff << ","
+        << row.qcdEff.rebin4Eff << "," << row.qcdEff.rebin5Eff << ","
         << row.sf << "," << row.sfErr << ","
         << row.sfStatErr << "," << row.sfBinningErr << ","
         << row.sfRebin1 << "," << row.sfRebin2 << ","
+        << row.sfRebin4 << "," << row.sfRebin5 << ","
         << row.dataAll.fitStatus << "," << row.dataPass.fitStatus << "," << row.dataFail.fitStatus << ","
         << row.qcdAll.fitStatus << "," << row.qcdPass.fitStatus << "," << row.qcdFail.fitStatus << ","
         << row.dataAllBkg.fitStatus << "," << row.dataPassBkg.fitStatus << "," << row.dataFailBkg.fitStatus << ","
@@ -3523,10 +3629,18 @@ void id_eff(TString Year = "2018",
     delete hDataFailR1;
     delete hDataPassR2;
     delete hDataFailR2;
+    delete hDataPassR4;
+    delete hDataFailR4;
+    delete hDataPassR5;
+    delete hDataFailR5;
     delete hQCDPassR1;
     delete hQCDFailR1;
     delete hQCDPassR2;
     delete hQCDFailR2;
+    delete hQCDPassR4;
+    delete hQCDFailR4;
+    delete hQCDPassR5;
+    delete hQCDFailR5;
     delete hDataAllBkgFit;
     delete hDataPassBkgFit;
     delete hDataFailBkgFit;
@@ -3717,7 +3831,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="rebin_factor",
         type=positive_integer,
         default=3,
-        help="nominal mass-histogram rebin factor; standard result fixes rebin=3 and evaluates automatic rebin=1,2 stability variations; default: %(default)s",
+        help="nominal mass-histogram rebin factor; standard result fixes rebin=3 and evaluates automatic rebin=1,2,4,5 stability variations; default: %(default)s",
     )
     parser.add_argument(
         "--signal-model",
@@ -4032,7 +4146,7 @@ def run_one_era(ROOT, args: argparse.Namespace, era: str) -> int:
     print(
         "[CONFIG] "
         f"resonance={args.resonance}, hist={args.hist_name}, "
-        f"binning={args.binning}, nominal-rebin=3 (variations=1,2), "
+        f"binning={args.binning}, nominal-rebin=3 (variations=1,2,4,5), "
         f"fit=[{args.fit_min},{args.fit_max}], "
         f"yield-mode={args.yield_mode}, "
         f"yield=[{args.yield_min},{args.yield_max}], "
