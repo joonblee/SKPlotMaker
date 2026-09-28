@@ -127,9 +127,10 @@ Y_MAX = 1.05
 RATIO_MIN = 0.8
 RATIO_MAX = 1.2
 MC_BAND_FILL_STYLE = 3004
+DATA_INTERVAL_CL = 0.683
 ETA_EDGE_TOL = 1.0e-5
 PT_EDGE_TOL = 1.0e-4
-SELECTION_LABEL = "OS, POGMedium, tight jet, DeepJet medium b tag"
+SELECTION_LABEL = "Isolated tight tag; POGMedium probe, #DeltaR(probe, jet) < 0.3"
 
 
 class NameFactory:
@@ -165,7 +166,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  default/all = Barrel, Overlap, Endcap, Forward\n"
             "  LeptonAll   = one inclusive |eta| < 2.4 projection\n\n"
             "Reference pT binning:\n"
-            "  0,10,20,30,35,40,42,44,46,48,50,52,55,60,70,80,120,200,500 GeV\n"
+            "  40,42,44,46,48,50,52,55,60,70,80,120,200,500 GeV\n"
             "  displayed range: 40--500 GeV\n\n"
             "Main examples:\n"
             "  python3 trig_eff.py\n"
@@ -508,17 +509,16 @@ def efficiency(num, den, name: str):
 
 
 def data_over_mc_ratio(data_eff, mc_eff, name: str):
-    """Data/MC ratio points with data uncertainty only; MC error is a band."""
+    """Central Data/MC scale-factor histogram; invalid MC bins are NaN."""
     out = clone_hist(data_eff, name)
     for ibin in range(1, out.GetNbinsX() + 1):
         d = float(data_eff.GetBinContent(ibin))
-        ed = float(data_eff.GetBinError(ibin))
         m = float(mc_eff.GetBinContent(ibin))
-        if m > 0.0:
+        if m > 0.0 and math.isfinite(m):
             out.SetBinContent(ibin, d / m)
-            out.SetBinError(ibin, ed / m)
+            out.SetBinError(ibin, 0.0)
         else:
-            out.SetBinContent(ibin, 0.0)
+            out.SetBinContent(ibin, float("nan"))
             out.SetBinError(ibin, 0.0)
     return out
 
@@ -543,6 +543,174 @@ def weighted_efficiency_sigma(num, den, eff, ibin: int) -> float:
         n_eff = d * d / v_den if v_den > 0.0 else d
         var = e * max(0.0, 1.0 - e) / n_eff if n_eff > 0.0 else 0.0
     return math.sqrt(max(0.0, var))
+
+
+def clopper_pearson_errors(ROOT, num, den, eff, ibin: int) -> Tuple[float, float]:
+    """68.3% Clopper-Pearson lower/upper statistical errors for unweighted data."""
+    total_value = float(den.GetBinContent(ibin))
+    passed_value = float(num.GetBinContent(ibin))
+    if total_value <= 0.0:
+        return 0.0, 0.0
+    if passed_value < -1.0e-6 or passed_value > total_value + 1.0e-6:
+        raise ValueError(
+            f"Data numerator is not a subset of denominator in bin {ibin}: "
+            f"num={passed_value}, den={total_value}"
+        )
+
+    total = max(0, int(round(total_value)))
+    passed = max(0, min(total, int(round(passed_value))))
+    if total <= 0:
+        return 0.0, 0.0
+
+    value = float(eff.GetBinContent(ibin))
+    low = float(ROOT.TEfficiency.ClopperPearson(total, passed, DATA_INTERVAL_CL, False))
+    high = float(ROOT.TEfficiency.ClopperPearson(total, passed, DATA_INTERVAL_CL, True))
+    return max(0.0, value - low), max(0.0, high - value)
+
+
+def set_data_efficiency_hist_errors(ROOT, eff, num, den) -> None:
+    """Store a symmetric TH1 approximation; exact asymmetric errors are saved as graphs."""
+    for ibin in range(1, eff.GetNbinsX() + 1):
+        low, high = clopper_pearson_errors(ROOT, num, den, eff, ibin)
+        eff.SetBinError(ibin, 0.5 * (low + high))
+
+
+def set_mc_efficiency_hist_errors(eff, num, den) -> None:
+    """Store covariance-aware weighted-binomial MC statistical errors in the TH1."""
+    for ibin in range(1, eff.GetNbinsX() + 1):
+        eff.SetBinError(ibin, weighted_efficiency_sigma(num, den, eff, ibin))
+
+
+def sf_stat_uncertainties(
+    ROOT,
+    data_eff,
+    data_num,
+    data_den,
+    mc_eff,
+    mc_num,
+    mc_den,
+    ibin: int,
+):
+    """Return SF and separated data, MC, and total statistical uncertainties."""
+    if float(data_den.GetBinContent(ibin)) <= 0.0:
+        return None
+
+    data_value = float(data_eff.GetBinContent(ibin))
+    mc_value = float(mc_eff.GetBinContent(ibin))
+    if mc_value <= 0.0 or not math.isfinite(mc_value):
+        return None
+
+    sf = data_value / mc_value
+    data_low_eff, data_high_eff = clopper_pearson_errors(
+        ROOT, data_num, data_den, data_eff, ibin
+    )
+    data_low = data_low_eff / mc_value
+    data_high = data_high_eff / mc_value
+
+    mc_sigma = weighted_efficiency_sigma(mc_num, mc_den, mc_eff, ibin)
+    mc_component = abs(sf) * mc_sigma / mc_value
+    total_low = math.sqrt(data_low * data_low + mc_component * mc_component)
+    total_high = math.sqrt(data_high * data_high + mc_component * mc_component)
+    return sf, data_low, data_high, mc_component, total_low, total_high
+
+
+def make_data_efficiency_graph(ROOT, eff, num, den, name: str):
+    xs = array("d")
+    ys = array("d")
+    exl = array("d")
+    exh = array("d")
+    eyl = array("d")
+    eyh = array("d")
+
+    for ibin in range(1, eff.GetNbinsX() + 1):
+        low = float(eff.GetXaxis().GetBinLowEdge(ibin))
+        high = float(eff.GetXaxis().GetBinUpEdge(ibin))
+        if high <= X_MIN or low >= X_MAX:
+            continue
+        if float(den.GetBinContent(ibin)) <= 0.0:
+            continue
+
+        draw_low = max(low, X_MIN)
+        draw_high = min(high, X_MAX)
+        if draw_low <= 0.0 or draw_high <= 0.0:
+            continue
+
+        x = math.sqrt(draw_low * draw_high)
+        y = float(eff.GetBinContent(ibin))
+        err_low, err_high = clopper_pearson_errors(ROOT, num, den, eff, ibin)
+
+        xs.append(x)
+        ys.append(y)
+        exl.append(x - draw_low)
+        exh.append(draw_high - x)
+        eyl.append(err_low)
+        eyh.append(err_high)
+
+    graph = ROOT.TGraphAsymmErrors(len(xs), xs, ys, exl, exh, eyl, eyh)
+    graph.SetName(name)
+    graph.SetTitle("")
+    return graph
+
+
+def make_sf_graph(
+    ROOT,
+    data_eff,
+    data_num,
+    data_den,
+    mc_eff,
+    mc_num,
+    mc_den,
+    name: str,
+    include_mc_stat: bool,
+):
+    xs = array("d")
+    ys = array("d")
+    exl = array("d")
+    exh = array("d")
+    eyl = array("d")
+    eyh = array("d")
+
+    for ibin in range(1, data_eff.GetNbinsX() + 1):
+        low = float(data_eff.GetXaxis().GetBinLowEdge(ibin))
+        high = float(data_eff.GetXaxis().GetBinUpEdge(ibin))
+        if high <= X_MIN or low >= X_MAX:
+            continue
+
+        stat = sf_stat_uncertainties(
+            ROOT,
+            data_eff,
+            data_num,
+            data_den,
+            mc_eff,
+            mc_num,
+            mc_den,
+            ibin,
+        )
+        if stat is None:
+            continue
+
+        sf, data_low, data_high, mc_component, total_low, total_high = stat
+        draw_low = max(low, X_MIN)
+        draw_high = min(high, X_MAX)
+        if draw_low <= 0.0 or draw_high <= 0.0:
+            continue
+
+        x = math.sqrt(draw_low * draw_high)
+        xs.append(x)
+        ys.append(sf)
+        exl.append(x - draw_low)
+        exh.append(draw_high - x)
+        if include_mc_stat:
+            eyl.append(total_low)
+            eyh.append(total_high)
+        else:
+            eyl.append(data_low)
+            eyh.append(data_high)
+
+    graph = ROOT.TGraphAsymmErrors(len(xs), xs, ys, exl, exh, eyl, eyh)
+    graph.SetName(name)
+    graph.SetTitle("")
+    return graph
 
 
 def make_efficiency_band(ROOT, eff, num, den, name: str, color: int):
@@ -706,23 +874,42 @@ def draw_reference_efficiency(
     era: str,
     object_name: str,
     data_eff,
+    data_num,
+    data_den,
     mc_eff,
     mc_num,
     mc_den,
     output_base: Path,
 ) -> None:
     region_key, region_label, eta_text = REGION_INFO[object_name]
-    data_ratio = data_over_mc_ratio(data_eff, mc_eff, _NAMES.unique("ratio_data_over_mc"))
+
+    data_graph = make_data_efficiency_graph(
+        ROOT,
+        data_eff,
+        data_num,
+        data_den,
+        _NAMES.unique("data_eff_cp68"),
+    )
+    sf_data_graph = make_sf_graph(
+        ROOT,
+        data_eff,
+        data_num,
+        data_den,
+        mc_eff,
+        mc_num,
+        mc_den,
+        _NAMES.unique("sf_data_stat"),
+        include_mc_stat=False,
+    )
 
     # Exact reference colours/styles.
     set_eff_style(data_eff, ROOT.kBlack, 20)
     set_eff_style(mc_eff, ROOT.kRed + 1, 1)
-    data_ratio.SetStats(0)
-    data_ratio.SetMarkerStyle(20)
-    data_ratio.SetMarkerSize(0.9)
-    data_ratio.SetLineColor(ROOT.kBlack)
-    data_ratio.SetMarkerColor(ROOT.kBlack)
-    data_ratio.SetTitle("")
+    for graph in (data_graph, sf_data_graph):
+        graph.SetMarkerStyle(20)
+        graph.SetMarkerSize(0.9)
+        graph.SetLineColor(ROOT.kBlack)
+        graph.SetMarkerColor(ROOT.kBlack)
 
     mc_band = make_efficiency_band(
         ROOT,
@@ -740,6 +927,8 @@ def draw_reference_efficiency(
         _NAMES.unique("mc_ratio_band"),
         ROOT.kRed + 1,
     )
+    ratio_frame = clone_hist(data_eff, _NAMES.unique("ratio_frame"))
+    ratio_frame.Reset("ICES")
 
     # Exact reference canvas and pad geometry.
     canvas = ROOT.TCanvas(
@@ -771,29 +960,27 @@ def draw_reference_efficiency(
 
     upper.cd()
     configure_axes(data_eff)
-    data_eff.Draw("E1")
+    data_eff.Draw("AXIS")
     if mc_band is not None:
         mc_band.Draw("2 SAME")
     mc_eff.Draw("HIST SAME")
-    data_eff.Draw("E1 SAME")
+    data_graph.Draw("P SAME")
     upper.SetGridx(True)
     upper.SetGridy(True)
     upper.RedrawAxis()
 
-    # Exact reference legend box/text.
     leg = ROOT.TLegend(0.55, 0.18, 0.92, 0.39)
     leg.SetBorderSize(0)
     leg.SetFillStyle(0)
     leg.SetTextFont(42)
     leg.SetTextSize(0.034)
-    leg.AddEntry(data_eff, "SingleMuon data", "pe")
+    leg.AddEntry(data_graph, "Data (68.3% CP stat.)", "pe")
     if mc_band is not None:
         leg.AddEntry(mc_band, "Top + QCD MC stat.", "f")
     else:
         leg.AddEntry(mc_eff, "Top + QCD MC", "l")
     leg.Draw()
 
-    # Exact reference TLatex strings, font sizes and NDC positions.
     latex_objs = [
         draw_label(ROOT, "#bf{CMS} #it{Preliminary}", 0.14, 0.965, 0.043, 13),
         draw_label(ROOT, LUMI_LABEL.get(era, era), 0.96, 0.965, 0.037, 33),
@@ -802,8 +989,8 @@ def draw_reference_efficiency(
     ]
 
     lower.cd()
-    configure_ratio_axes(data_ratio)
-    data_ratio.Draw("E1")
+    configure_ratio_axes(ratio_frame)
+    ratio_frame.Draw("AXIS")
     if ratio_band is not None:
         ratio_band.Draw("2 SAME")
     unity = ROOT.TLine(X_MIN, 1.0, X_MAX, 1.0)
@@ -811,12 +998,21 @@ def draw_reference_efficiency(
     unity.SetLineStyle(2)
     unity.SetLineWidth(2)
     unity.Draw("SAME")
-    data_ratio.Draw("E1 SAME")
+    sf_data_graph.Draw("P SAME")
     lower.SetGridx(True)
     lower.SetGridy(True)
     lower.RedrawAxis()
 
-    keep = [upper, lower, leg, unity, data_ratio, *latex_objs]
+    keep = [
+        upper,
+        lower,
+        leg,
+        unity,
+        ratio_frame,
+        data_graph,
+        sf_data_graph,
+        *latex_objs,
+    ]
     if mc_band is not None:
         keep.append(mc_band)
     if ratio_band is not None:
@@ -855,6 +1051,55 @@ def write_measurement_outputs(
     csv_path = outdir / f"trigger_efficiency_{region_key}_{era}.csv"
 
     data_ratio = data_over_mc_ratio(data_eff, mc_eff, _NAMES.unique("sf_output"))
+    data_eff_graph = make_data_efficiency_graph(
+        ROOT,
+        data_eff,
+        data_num,
+        data_den,
+        _NAMES.unique("data_efficiency_cp68"),
+    )
+    sf_data_graph = make_sf_graph(
+        ROOT,
+        data_eff,
+        data_num,
+        data_den,
+        mc_eff,
+        mc_num,
+        mc_den,
+        _NAMES.unique("data_over_mc_data_stat"),
+        include_mc_stat=False,
+    )
+    sf_total_graph = make_sf_graph(
+        ROOT,
+        data_eff,
+        data_num,
+        data_den,
+        mc_eff,
+        mc_num,
+        mc_den,
+        _NAMES.unique("data_over_mc_total_stat"),
+        include_mc_stat=True,
+    )
+
+    # TH1 can only store a symmetric error.  Keep data_over_mc as a convenient
+    # central-value histogram and store the average of the asymmetric total
+    # statistical errors there.  The exact asymmetric result is in the graphs.
+    for ibin in range(1, data_ratio.GetNbinsX() + 1):
+        stat = sf_stat_uncertainties(
+            ROOT,
+            data_eff,
+            data_num,
+            data_den,
+            mc_eff,
+            mc_num,
+            mc_den,
+            ibin,
+        )
+        if stat is None:
+            data_ratio.SetBinError(ibin, 0.0)
+            continue
+        _, _, _, _, total_low, total_high = stat
+        data_ratio.SetBinError(ibin, 0.5 * (total_low + total_high))
 
     fout = ROOT.TFile.Open(str(root_path), "RECREATE")
     if not fout or fout.IsZombie():
@@ -875,6 +1120,14 @@ def write_measurement_outputs(
         ):
             fout.cd()
             hist.Write(name, ROOT.TObject.kOverwrite)
+
+        for name, graph in (
+            ("data_efficiency_cp68", data_eff_graph),
+            ("data_over_mc_data_stat", sf_data_graph),
+            ("data_over_mc_total_stat", sf_total_graph),
+        ):
+            fout.cd()
+            graph.Write(name, ROOT.TObject.kOverwrite)
         fout.Write()
     finally:
         fout.Close()
@@ -891,10 +1144,19 @@ def write_measurement_outputs(
                 "mc_num",
                 "data_eff",
                 "data_eff_err",
+                "data_eff_err_low",
+                "data_eff_err_high",
                 "mc_eff",
                 "mc_eff_stat",
                 "data_over_mc",
                 "data_over_mc_data_err",
+                "data_over_mc_data_err_low",
+                "data_over_mc_data_err_high",
+                "data_over_mc_mc_err",
+                "data_over_mc_total_err",
+                "data_over_mc_total_err_low",
+                "data_over_mc_total_err_high",
+                "data_over_mc_valid",
             ]
         )
         for ibin in range(1, data_eff.GetNbinsX() + 1):
@@ -902,7 +1164,33 @@ def write_measurement_outputs(
             high = float(data_eff.GetXaxis().GetBinUpEdge(ibin))
             if high <= X_MIN or low >= X_MAX:
                 continue
+
+            data_err_low, data_err_high = clopper_pearson_errors(
+                ROOT, data_num, data_den, data_eff, ibin
+            )
             mc_err = weighted_efficiency_sigma(mc_num, mc_den, mc_eff, ibin)
+            stat = sf_stat_uncertainties(
+                ROOT,
+                data_eff,
+                data_num,
+                data_den,
+                mc_eff,
+                mc_num,
+                mc_den,
+                ibin,
+            )
+            if stat is None:
+                sf = float("nan")
+                sf_data_low = float("nan")
+                sf_data_high = float("nan")
+                sf_mc = float("nan")
+                sf_total_low = float("nan")
+                sf_total_high = float("nan")
+                valid = 0
+            else:
+                sf, sf_data_low, sf_data_high, sf_mc, sf_total_low, sf_total_high = stat
+                valid = 1
+
             writer.writerow(
                 [
                     low,
@@ -912,11 +1200,20 @@ def write_measurement_outputs(
                     mc_den.GetBinContent(ibin),
                     mc_num.GetBinContent(ibin),
                     data_eff.GetBinContent(ibin),
-                    data_eff.GetBinError(ibin),
+                    0.5 * (data_err_low + data_err_high),
+                    data_err_low,
+                    data_err_high,
                     mc_eff.GetBinContent(ibin),
                     mc_err,
-                    data_ratio.GetBinContent(ibin),
-                    data_ratio.GetBinError(ibin),
+                    sf,
+                    0.5 * (sf_data_low + sf_data_high) if valid else float("nan"),
+                    sf_data_low,
+                    sf_data_high,
+                    sf_mc,
+                    0.5 * (sf_total_low + sf_total_high) if valid else float("nan"),
+                    sf_total_low,
+                    sf_total_high,
+                    valid,
                 ]
             )
 
@@ -925,21 +1222,52 @@ def write_measurement_outputs(
     return root_path, csv_path
 
 
-def print_bin_values(data_eff, mc_eff, mc_num, mc_den) -> None:
+def print_bin_values(
+    ROOT,
+    data_eff,
+    data_num,
+    data_den,
+    mc_eff,
+    mc_num,
+    mc_den,
+) -> None:
     print("\n[BIN-BY-BIN RESULT]")
-    print("  {:>12s} {:>18s} {:>18s} {:>18s}".format("pT [GeV]", "eff(data)", "eff(MC)", "Data/MC"))
-    ratio = data_over_mc_ratio(data_eff, mc_eff, _NAMES.unique("ratio_print"))
+    print(
+        "  {:>12s} {:>25s} {:>20s} {:>27s}".format(
+            "pT [GeV]", "eff(data), 68.3% CP", "eff(MC)", "Data/MC, total stat."
+        )
+    )
     for ibin in range(1, data_eff.GetNbinsX() + 1):
         low = float(data_eff.GetXaxis().GetBinLowEdge(ibin))
         high = float(data_eff.GetXaxis().GetBinUpEdge(ibin))
         if high <= X_MIN or low >= X_MAX:
             continue
+
+        data_low, data_high = clopper_pearson_errors(
+            ROOT, data_num, data_den, data_eff, ibin
+        )
         mc_err = weighted_efficiency_sigma(mc_num, mc_den, mc_eff, ibin)
+        stat = sf_stat_uncertainties(
+            ROOT,
+            data_eff,
+            data_num,
+            data_den,
+            mc_eff,
+            mc_num,
+            mc_den,
+            ibin,
+        )
+        if stat is None:
+            sf_text = "invalid"
+        else:
+            sf, _, _, _, total_low, total_high = stat
+            sf_text = f"{sf:8.5f} -{total_low:7.5f}/+{total_high:7.5f}"
+
         print(
             f"  {low:5.0f}-{high:<5.0f} "
-            f"{data_eff.GetBinContent(ibin):8.5f} +/- {data_eff.GetBinError(ibin):7.5f} "
+            f"{data_eff.GetBinContent(ibin):8.5f} -{data_low:7.5f}/+{data_high:7.5f} "
             f"{mc_eff.GetBinContent(ibin):8.5f} +/- {mc_err:7.5f} "
-            f"{ratio.GetBinContent(ibin):8.5f} +/- {ratio.GetBinError(ibin):7.5f}"
+            f"{sf_text}"
         )
 
 
@@ -983,6 +1311,8 @@ def run_one_era(ROOT, args: argparse.Namespace, era: str) -> int:
         mc_num = add_histograms(top_num, qcd_num, _NAMES.unique("mc_num"))
         data_eff = efficiency(data_num, data_den, _NAMES.unique("eff_data"))
         mc_eff = efficiency(mc_num, mc_den, _NAMES.unique("eff_mc"))
+        set_data_efficiency_hist_errors(ROOT, data_eff, data_num, data_den)
+        set_mc_efficiency_hist_errors(mc_eff, mc_num, mc_den)
 
         region_key = REGION_INFO[args.object][0]
         outdir = output_dir(era)
@@ -991,6 +1321,8 @@ def run_one_era(ROOT, args: argparse.Namespace, era: str) -> int:
             era=era,
             object_name=args.object,
             data_eff=data_eff,
+            data_num=data_num,
+            data_den=data_den,
             mc_eff=mc_eff,
             mc_num=mc_num,
             mc_den=mc_den,
@@ -1014,7 +1346,15 @@ def run_one_era(ROOT, args: argparse.Namespace, era: str) -> int:
         )
 
         if not args.quiet_bin_values:
-            print_bin_values(data_eff, mc_eff, mc_num, mc_den)
+            print_bin_values(
+                ROOT,
+                data_eff,
+                data_num,
+                data_den,
+                mc_eff,
+                mc_num,
+                mc_den,
+            )
         return 0
     finally:
         for handle in handles:
