@@ -427,10 +427,10 @@ namespace JpsiMuonIDFit {
       return {10., 20., 30., 50., 120.};
     }
     if(NearlyEqual(etaLow, 0.9) && NearlyEqual(etaHigh, 1.2)) {
-      return {10., 30., 50., 120.};
+      return {10., 20., 30., 120.};
     }
     if(NearlyEqual(etaLow, 1.2) && NearlyEqual(etaHigh, 2.1)) {
-      return {10., 30., 120.};
+      return {10., 120.};
     }
     if(NearlyEqual(etaLow, 2.1) && NearlyEqual(etaHigh, 2.4)) {
       return {10., 120.};
