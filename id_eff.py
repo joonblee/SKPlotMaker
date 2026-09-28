@@ -112,12 +112,12 @@ CPP_SOURCE = r"""
 //      with the psi(2S) region vetoed, using the sideband-fitted background shape.
 //   5. The nominal AN model is Crystal Ball + positive Bernstein-5 background.
 //      Other selectable backgrounds remain available for cross-checks.
-//   6. Pass and Fail are fitted separately, as in the AN.  The fitted J/psi
-//      signal normalisations P and F give efficiency = P/(P+F).  The nominal
-//      statistical uncertainty is the Gaussian propagation of the fitted P/F
-//      yield uncertainties.  Rebin=3 (30 MeV) is central; complete refits with
-//      rebin=1,2,4,5 provide a symmetric mass-binning envelope.  Statistical
-//      and mass-binning components are added in quadrature.
+//   6. Efficiency extraction is selectable with --fit-method:
+//        separate     : AN-compatible independent Pass/Fail chi2 fits, then P/(P+F);
+//        simultaneous : joint Pass/Fail fit with efficiency as a fit parameter.
+//      Top/reference MC always uses stored SumW2 bin uncertainties in chi2 fits;
+//      simultaneous Data uses a binned Poisson likelihood.  Rebin=3 (30 MeV) is
+//      central; complete refits with rebin=1,2,4,5 define the binning envelope.
 //   7. data.root in the era directory is the current data-input convention.
 //   8. Histograms are read from the current DileptonJPsi_Mass output directly.
 //      No automatic Dilepton_Mass fallback is used.
@@ -125,8 +125,8 @@ CPP_SOURCE = r"""
 //  10. Output pT binning starts from 10,20,30,50,120 GeV in the barrel and
 //      is progressively merged at larger |eta|:
 //        |eta|=[0.0,0.9]: 10,20,30,50,120 GeV;
-//        |eta|=[0.9,1.2]: 10,30,50,120 GeV;
-//        |eta|=[1.2,2.1]: 10,30,120 GeV;
+//        |eta|=[0.9,1.2]: 10,20,30,120 GeV;
+//        |eta|=[1.2,2.1]: 10,120 GeV;
 //        |eta|=[2.1,2.4]: 10,120 GeV.
 //      All retained edges match analyzer input boundaries, avoiding fractional splitting.
 //      If a requested coarse histogram is not present, it is built from the
@@ -240,6 +240,7 @@ namespace JpsiMuonIDFit {
   double gYieldIntLow = kYieldIntLow;
   double gYieldIntHigh = kYieldIntHigh;
   TString gYieldMode = "fitnorm"; // "integral" or "fitnorm"
+  TString gEfficiencyFitMethod = "separate"; // "separate" or "simultaneous"
 
   bool UseFitNormYield() {
     TString key = gYieldMode;
@@ -248,6 +249,14 @@ namespace JpsiMuonIDFit {
     key.ReplaceAll("-", "");
     return (key == "fitnorm" || key == "norm" || key == "normalisation" || key == "normalization");
   }
+  bool UseSimultaneousEfficiencyFit() {
+    TString key = gEfficiencyFitMethod;
+    key.ToLower();
+    key.ReplaceAll("_", "");
+    key.ReplaceAll("-", "");
+    return (key == "simultaneous" || key == "joint" || key == "sim");
+  }
+
   double gFinalVetoLow = kPsiPVetoLow;
   double gFinalVetoHigh = kPsiPVetoHigh;
   bool gUseFinalVeto = true;
@@ -1142,6 +1151,16 @@ namespace JpsiMuonIDFit {
     return out;
   }
 
+  void CheckReferenceSumw2(TH1D *h, const TString &sample,
+                           const TString &status, const TString &label) {
+    if(!h || sample.EqualTo("Data", TString::kIgnoreCase)) return;
+    if(h->GetSumw2N() <= 0) {
+      cout << "[WARNING] " << sample << " " << status << " " << label
+           << " has no stored SumW2 array. Weighted-MC bin uncertainties "
+           << "cannot be reconstructed from bin contents alone." << endl;
+    }
+  }
+
   int ValidRebinFactor(TH1D *h, int requested) {
     if(!h || requested <= 1) return 1;
     int factor = requested;
@@ -1626,6 +1645,10 @@ namespace JpsiMuonIDFit {
     const int nBkg = NBkgPars(gBackgroundModel);
     const bool isFail = (x[0] >= gSimultaneousSplit);
     Double_t mass[1] = { isFail ? x[0] - gSimultaneousOffset : x[0] };
+    if(gRejectPsiPInFinalFit && IsInFinalFitVeto(mass[0])) {
+      TF1::RejectPoint();
+      return 0.;
+    }
 
     const double eff = std::max(0.0, std::min(1.0, p[0]));
     const double nTotal = std::max(0.0, p[1]);
@@ -2328,7 +2351,6 @@ namespace JpsiMuonIDFit {
     for(int ibin = 1; ibin <= hPass->GetNbinsX(); ++ibin) {
       const double mass = hPass->GetXaxis()->GetBinCenter(ibin);
       if(mass < fitMin || mass >= fitMax) continue;
-      if(gUseFinalVeto && IsInFinalFitVeto(mass)) continue;
       if(firstBin < 0) firstBin = ibin;
       lastBin = ibin;
     }
@@ -2343,10 +2365,6 @@ namespace JpsiMuonIDFit {
     int nMassBins = 0;
     for(int ibin = firstBin; ibin <= lastBin; ++ibin) {
       const double mass = hPass->GetXaxis()->GetBinCenter(ibin);
-      if(gUseFinalVeto && IsInFinalFitVeto(mass)) {
-        cout << "[WARNING] Internal final-fit veto is not supported by the combined likelihood histogram." << endl;
-        return nullptr;
-      }
       const double bwP = hPass->GetXaxis()->GetBinWidth(ibin);
       const double bwF = hFail->GetXaxis()->GetBinWidth(ibin);
       if(std::fabs(bwP - binWidth) > 1e-9 || std::fabs(bwF - binWidth) > 1e-9) {
@@ -2562,12 +2580,20 @@ namespace JpsiMuonIDFit {
     // "I" integrates the model over each mass bin.  Both objectives support
     // Minos, so the same statistical-error prescription is used throughout.
     const bool useDataLikelihood = sample.EqualTo("Data", TString::kIgnoreCase);
-    const TString firstFitOpt = useDataLikelihood ? "SLIRQ0" : "SIRQ0";
-    const TString errorFitOpt = useDataLikelihood ? "SLIERQ0" : "SIERQ0";
+    const bool hasInternalVeto =
+      gUseFinalVeto && gFinalVetoLow < fitMax && gFinalVetoHigh > fitMin;
+    const TString firstFitOpt =
+      useDataLikelihood ? (hasInternalVeto ? "SLRQ0" : "SLIRQ0")
+                        : (hasInternalVeto ? "SRQ0"  : "SIRQ0");
+    const TString errorFitOpt =
+      useDataLikelihood ? (hasInternalVeto ? "SLERQ0" : "SLIERQ0")
+                        : (hasInternalVeto ? "SERQ0"  : "SIERQ0");
 
+    gRejectPsiPInFinalFit = hasInternalVeto;
     TFitResultPtr fitRes = jointHist->Fit(model, firstFitOpt.Data());
     fitRes = jointHist->Fit(model, firstFitOpt.Data());
     if(computeStatError) fitRes = jointHist->Fit(model, errorFitOpt.Data());
+    gRejectPsiPInFinalFit = false;
 
     out.eff.fitStatus = int(fitRes);
     if(fitRes.Get()) out.eff.covStatus = fitRes->CovMatrixStatus();
@@ -2900,6 +2926,68 @@ namespace JpsiMuonIDFit {
     return eff;
   }
 
+
+  EffOutput FitSimultaneousEfficiencyVariation(
+      TH1D *hPass, TH1D *hFail,
+      const TString &label, const TString &year,
+      const TString &sample, const TString &outDir,
+      SignalModel sig, BackgroundModel bkg,
+      double fitMin, double fitMax,
+      bool fixSharedSignalShape,
+      bool fixBkgShapeFromSidebands) {
+    EffOutput invalid;
+    if(!hPass || !hFail) return invalid;
+
+    const TString varLabel =
+      label + "_simvar_" + TString::Itoa(hPass->GetNbinsX(), 10);
+    TH1D *hAll = AddHists(hPass, hFail,
+                          TString("hSimVarAll_") + Sanitise(varLabel + sample));
+    if(!hAll) return invalid;
+
+    const BkgOutput allBkg =
+      FitBackgroundSidebands(hAll, varLabel, year, sample, "AllVar",
+                             outDir, bkg, false);
+    const BkgOutput passBkg =
+      FitBackgroundSidebands(hPass, varLabel, year, sample, "PassVar",
+                             outDir, bkg, false);
+    const BkgOutput failBkg =
+      FitBackgroundSidebands(hFail, varLabel, year, sample, "FailVar",
+                             outDir, bkg, false);
+
+    const BkgOutput *allBkgForFit = allBkg.ok ? &allBkg : nullptr;
+    const BkgOutput *passBkgForFit = passBkg.ok ? &passBkg : allBkgForFit;
+    const BkgOutput *failBkgForFit = failBkg.ok ? &failBkg : allBkgForFit;
+
+    const FitOutput all =
+      FitOne(hAll, varLabel, year, sample, "AllVar", outDir,
+             sig, bkg, fitMin, fitMax, nullptr, false,
+             allBkgForFit, fixBkgShapeFromSidebands, false);
+    const FitOutput *shapeSeed = all.ok ? &all : nullptr;
+
+    const FitOutput passSeed =
+      FitOne(hPass, varLabel, year, sample, "PassSeedVar", outDir,
+             sig, bkg, fitMin, fitMax, shapeSeed, false,
+             passBkgForFit, fixBkgShapeFromSidebands, false);
+    const FitOutput failSeed =
+      FitOne(hFail, varLabel, year, sample, "FailSeedVar", outDir,
+             sig, bkg, fitMin, fitMax, shapeSeed, false,
+             failBkgForFit, fixBkgShapeFromSidebands, false);
+
+    const SimultaneousOutput sim =
+      FitPassFailSimultaneous(
+        hPass, hFail, varLabel, year, sample, outDir,
+        sig, bkg, fitMin, fitMax,
+        shapeSeed, &passSeed, &failSeed,
+        passBkgForFit, failBkgForFit,
+        fixSharedSignalShape, fixBkgShapeFromSidebands,
+        false, false);
+
+    EffOutput eff = sim.eff;
+    eff.ok = sim.ok;
+    delete hAll;
+    return eff;
+  }
+
   double GraphMaxY(TGraphErrors *gr, double fallback = 0.0) {
     double out = fallback;
     if(!gr) return out;
@@ -3213,7 +3301,8 @@ void id_eff(TString Year = "2018",
                       double YieldIntHighInput = -1.0,
                       double BkgFitMinInput = -1.0,
                       double BkgFitMaxInput = -1.0,
-                      TString YieldModeInput = "fitnorm") {
+                      TString YieldModeInput = "fitnorm",
+                      TString FitMethodInput = "separate") {
   using namespace JpsiMuonIDFit;
 
   gStyle->SetOptStat(0);
@@ -3231,6 +3320,20 @@ void id_eff(TString Year = "2018",
     cout << "[WARNING] Unknown YieldModeInput='" << YieldModeInput << "'. Use 'fitnorm'." << endl;
     gYieldMode = "fitnorm";
   }
+
+  gEfficiencyFitMethod = FitMethodInput;
+  gEfficiencyFitMethod.ToLower();
+  gEfficiencyFitMethod.ReplaceAll("_", "");
+  gEfficiencyFitMethod.ReplaceAll("-", "");
+  if(!(gEfficiencyFitMethod == "separate" ||
+       gEfficiencyFitMethod == "simultaneous" ||
+       gEfficiencyFitMethod == "joint" ||
+       gEfficiencyFitMethod == "sim")) {
+    cout << "[WARNING] Unknown FitMethodInput='" << FitMethodInput
+         << "'. Use 'separate'." << endl;
+    gEfficiencyFitMethod = "separate";
+  }
+
   if(!std::isfinite(FitMin) || !std::isfinite(FitMax) || FitMax <= FitMin) {
     cout << "[ERROR] FitMax must be larger than FitMin. Got FitMin=" << FitMin << ", FitMax=" << FitMax << endl;
     return;
@@ -3273,6 +3376,11 @@ void id_eff(TString Year = "2018",
   cout << "[INFO] Bkg prefit     : [" << gBkgFitMin << "," << gBkgFitMax << "] GeV; sidebands " << SidebandRangesText() << " GeV" << endl;
   cout << "[INFO] Bkg fit metric  : " << (gUseLogBkgFit ? "log-density chi2" : "density chi2")
        << "; each rebin variation repeats the full sideband prefit" << endl;
+  cout << "[INFO] Efficiency method: "
+       << (UseSimultaneousEfficiencyFit() ? "simultaneous Pass/Fail" : "separate Pass/Fail") << endl;
+  cout << "[INFO] Weighted MC     : SumW2 bin uncertainties are used in chi2 fits"
+       << (UseSimultaneousEfficiencyFit() ? "; simultaneous Data uses Poisson likelihood" : "")
+       << endl;
   cout << "[INFO] Common shape    : " << (UseCommonShape ? "true" : "false") << endl;
   cout << "[INFO] Fix bkg shape   : " << (FixBkgShapeFromSidebands ? "true" : "false") << endl;
   cout << "[INFO] Bkg norm range  : sideband prefit +/- " << 100.0 * kBkgNormRelConstraint << "% in final S+B fit" << endl;
@@ -3281,13 +3389,25 @@ void id_eff(TString Year = "2018",
   cout << "[INFO] Reference input : " << ReferenceInput << " (label: " << refLabel << ")" << endl;
   if(UseFitNormYield()) {
     cout << "[INFO] Yield definition: N_" << gResonanceLabel << " = fitted signal normalisation parameter" << endl;
-    cout << "[INFO] Efficiency fit : AN-compatible separate Pass/Fail chi2 fits; eff=P/(P+F)" << endl;
-    cout << "[INFO] Uncertainties  : fitted P/F errors propagated to eff; rebin=1,2,4,5 envelope around nominal rebin=3 added in quadrature" << endl;
+    if(UseSimultaneousEfficiencyFit()) {
+      cout << "[INFO] Efficiency fit : simultaneous Pass/Fail fit with efficiency as a fit parameter" << endl;
+      cout << "[INFO] Uncertainties  : Minos/Hessian fit error; rebin=1,2,4,5 envelope around nominal rebin=3 added in quadrature" << endl;
+    }
+    else {
+      cout << "[INFO] Efficiency fit : AN-compatible separate Pass/Fail chi2 fits; eff=P/(P+F)" << endl;
+      cout << "[INFO] Uncertainties  : fitted P/F errors propagated to eff; rebin=1,2,4,5 envelope around nominal rebin=3 added in quadrature" << endl;
+    }
   }
   else {
     cout << "[INFO] Yield definition: N_" << gResonanceLabel << " = Integral(signal function, " << gYieldIntLow << ", " << gYieldIntHigh << ") GeV" << endl;
-    cout << "[INFO] Efficiency fit : separate Pass/Fail chi2 fits; eff=P/(P+F)" << endl;
-    cout << "[INFO] Uncertainties  : fitted P/F errors propagated to eff; rebin=1,2,4,5 envelope around nominal rebin=3 added in quadrature" << endl;
+    if(UseSimultaneousEfficiencyFit()) {
+      cout << "[INFO] Efficiency fit : simultaneous Pass/Fail fit with efficiency as a fit parameter" << endl;
+      cout << "[INFO] Uncertainties  : Minos/Hessian fit error; rebin=1,2,4,5 envelope around nominal rebin=3 added in quadrature" << endl;
+    }
+    else {
+      cout << "[INFO] Efficiency fit : separate Pass/Fail chi2 fits; eff=P/(P+F)" << endl;
+      cout << "[INFO] Uncertainties  : fitted P/F errors propagated to eff; rebin=1,2,4,5 envelope around nominal rebin=3 added in quadrature" << endl;
+    }
   }
   if(UseCommonShape) {
     cout << "[INFO] Signal shape note: --common-shape fixes the separate Pass/Fail signal shapes to the All-fit shape; default AN-compatible mode fits them independently." << endl;
@@ -3298,7 +3418,7 @@ void id_eff(TString Year = "2018",
   cout << "[INFO] Max bins        : " << MaxBins << endl;
   cout << "[INFO] Hist name       : " << HistName << endl;
   cout << "[INFO] Binning mode    : " << BinningModeName(gBinningMode) << endl;
-  cout << "[INFO] Output pT bins  : eta-dependent; 0-0.9: 10,20,30,50,120; 0.9-1.2: 10,30,50,120; 1.2-2.1: 10,30,120; 2.1-2.4: 10,120 GeV" << endl;
+  cout << "[INFO] Output pT bins  : eta-dependent; 0-0.9: 10,20,30,50,120; 0.9-1.2: 10,20,30,120; 1.2-2.1: 10,120; 2.1-2.4: 10,120 GeV" << endl;
   cout << "[INFO] Input merging   : missing analyzer sub-bin histograms contribute zero when forming a merged pT bin; only a completely missing Pass/Fail input leaves the efficiency bin empty" << endl;
   cout << "[INFO] Include incl.   : " << (gIncludeInclusive ? "true" : "false") << endl;
   cout << "[INFO] Inspect only    : " << (InspectOnly ? "true" : "false") << endl;
@@ -3338,6 +3458,8 @@ void id_eff(TString Year = "2018",
     TH1D *hDataFailRaw = LoadForBin(dataFile, BaseRegion, bin, "Fail", bins, TString("hDataFailRaw_") + bin.tag, HistName);
     TH1D *hQCDPassRaw  = LoadForBin(refFile,  BaseRegion, bin, "Pass", bins, TString("hQCDPassRaw_")  + bin.tag, HistName);
     TH1D *hQCDFailRaw  = LoadForBin(refFile,  BaseRegion, bin, "Fail", bins, TString("hQCDFailRaw_")  + bin.tag, HistName);
+    CheckReferenceSumw2(hQCDPassRaw, refLabel, "Pass", bin.tag);
+    CheckReferenceSumw2(hQCDFailRaw, refLabel, "Fail", bin.tag);
     nRawHistsLoaded += (hDataPassRaw ? 1 : 0) + (hDataFailRaw ? 1 : 0) + (hQCDPassRaw ? 1 : 0) + (hQCDFailRaw ? 1 : 0);
 
     const bool dataInputsComplete = (hDataPassRaw != nullptr && hDataFailRaw != nullptr);
@@ -3404,34 +3526,58 @@ void id_eff(TString Year = "2018",
       row.dataAll = FitOne(hDataAll, bin.tag, Year, "Data", "All", outDir,
                            sigModel, bkgModel, FitMin, FitMax, nullptr, false,
                            allBkg, FixBkgShapeFromSidebands, false);
-      const FitOutput *shape =
-        (UseCommonShape && row.dataAll.ok) ? &row.dataAll : nullptr;
-      row.dataPass = FitOne(hDataPass, bin.tag, Year, "Data", "Pass", outDir,
-                            sigModel, bkgModel, FitMin, FitMax, shape, shape != nullptr,
-                            passBkg, FixBkgShapeFromSidebands, SavePerBinPlots);
-      row.dataFail = FitOne(hDataFail, bin.tag, Year, "Data", "Fail", outDir,
-                            sigModel, bkgModel, FitMin, FitMax, shape, shape != nullptr,
-                            failBkg, FixBkgShapeFromSidebands, SavePerBinPlots);
 
-      row.dataEff = MakeEfficiency(row.dataPass, row.dataFail);
-      if(row.dataEff.ok) {
-        const EffOutput r1 = FitSeparateEfficiencyVariation(
-          hDataPassR1, hDataFailR1, bin.tag, Year, "Data", outDir,
-          sigModel, bkgModel, FitMin, FitMax,
-          UseCommonShape, FixBkgShapeFromSidebands);
-        const EffOutput r2 = FitSeparateEfficiencyVariation(
-          hDataPassR2, hDataFailR2, bin.tag, Year, "Data", outDir,
-          sigModel, bkgModel, FitMin, FitMax,
-          UseCommonShape, FixBkgShapeFromSidebands);
-        const EffOutput r4 = FitSeparateEfficiencyVariation(
-          hDataPassR4, hDataFailR4, bin.tag, Year, "Data", outDir,
-          sigModel, bkgModel, FitMin, FitMax,
-          UseCommonShape, FixBkgShapeFromSidebands);
-        const EffOutput r5 = FitSeparateEfficiencyVariation(
-          hDataPassR5, hDataFailR5, bin.tag, Year, "Data", outDir,
-          sigModel, bkgModel, FitMin, FitMax,
-          UseCommonShape, FixBkgShapeFromSidebands);
-        ApplyBinningEnvelope(row.dataEff, r1, r2, r4, r5, "Data", bin.tag);
+      if(UseSimultaneousEfficiencyFit()) {
+        const FitOutput *shapeSeed = row.dataAll.ok ? &row.dataAll : nullptr;
+        const FitOutput passSeed =
+          FitOne(hDataPass, bin.tag, Year, "Data", "PassSeed", outDir,
+                 sigModel, bkgModel, FitMin, FitMax, shapeSeed, false,
+                 passBkg, FixBkgShapeFromSidebands, false);
+        const FitOutput failSeed =
+          FitOne(hDataFail, bin.tag, Year, "Data", "FailSeed", outDir,
+                 sigModel, bkgModel, FitMin, FitMax, shapeSeed, false,
+                 failBkg, FixBkgShapeFromSidebands, false);
+
+        const SimultaneousOutput sim =
+          FitPassFailSimultaneous(
+            hDataPass, hDataFail, bin.tag, Year, "Data", outDir,
+            sigModel, bkgModel, FitMin, FitMax,
+            shapeSeed, &passSeed, &failSeed,
+            passBkg, failBkg,
+            UseCommonShape, FixBkgShapeFromSidebands,
+            SavePerBinPlots, true);
+
+        row.dataPass = sim.pass;
+        row.dataFail = sim.fail;
+        row.dataEff = sim.eff;
+        row.dataEff.ok = sim.ok;
+
+        if(row.dataEff.ok) {
+          const EffOutput r1 = FitSimultaneousEfficiencyVariation(hDataPassR1, hDataFailR1, bin.tag, Year, "Data", outDir, sigModel, bkgModel, FitMin, FitMax, UseCommonShape, FixBkgShapeFromSidebands);
+          const EffOutput r2 = FitSimultaneousEfficiencyVariation(hDataPassR2, hDataFailR2, bin.tag, Year, "Data", outDir, sigModel, bkgModel, FitMin, FitMax, UseCommonShape, FixBkgShapeFromSidebands);
+          const EffOutput r4 = FitSimultaneousEfficiencyVariation(hDataPassR4, hDataFailR4, bin.tag, Year, "Data", outDir, sigModel, bkgModel, FitMin, FitMax, UseCommonShape, FixBkgShapeFromSidebands);
+          const EffOutput r5 = FitSimultaneousEfficiencyVariation(hDataPassR5, hDataFailR5, bin.tag, Year, "Data", outDir, sigModel, bkgModel, FitMin, FitMax, UseCommonShape, FixBkgShapeFromSidebands);
+          ApplyBinningEnvelope(row.dataEff, r1, r2, r4, r5, "Data", bin.tag);
+        }
+      }
+      else {
+        const FitOutput *shape =
+          (UseCommonShape && row.dataAll.ok) ? &row.dataAll : nullptr;
+        row.dataPass = FitOne(hDataPass, bin.tag, Year, "Data", "Pass", outDir,
+                              sigModel, bkgModel, FitMin, FitMax, shape, shape != nullptr,
+                              passBkg, FixBkgShapeFromSidebands, SavePerBinPlots);
+        row.dataFail = FitOne(hDataFail, bin.tag, Year, "Data", "Fail", outDir,
+                              sigModel, bkgModel, FitMin, FitMax, shape, shape != nullptr,
+                              failBkg, FixBkgShapeFromSidebands, SavePerBinPlots);
+
+        row.dataEff = MakeEfficiency(row.dataPass, row.dataFail);
+        if(row.dataEff.ok) {
+          const EffOutput r1 = FitSeparateEfficiencyVariation(hDataPassR1, hDataFailR1, bin.tag, Year, "Data", outDir, sigModel, bkgModel, FitMin, FitMax, UseCommonShape, FixBkgShapeFromSidebands);
+          const EffOutput r2 = FitSeparateEfficiencyVariation(hDataPassR2, hDataFailR2, bin.tag, Year, "Data", outDir, sigModel, bkgModel, FitMin, FitMax, UseCommonShape, FixBkgShapeFromSidebands);
+          const EffOutput r4 = FitSeparateEfficiencyVariation(hDataPassR4, hDataFailR4, bin.tag, Year, "Data", outDir, sigModel, bkgModel, FitMin, FitMax, UseCommonShape, FixBkgShapeFromSidebands);
+          const EffOutput r5 = FitSeparateEfficiencyVariation(hDataPassR5, hDataFailR5, bin.tag, Year, "Data", outDir, sigModel, bkgModel, FitMin, FitMax, UseCommonShape, FixBkgShapeFromSidebands);
+          ApplyBinningEnvelope(row.dataEff, r1, r2, r4, r5, "Data", bin.tag);
+        }
       }
     }
 
@@ -3447,34 +3593,58 @@ void id_eff(TString Year = "2018",
       row.qcdAll = FitOne(hQCDAll, bin.tag, Year, refLabel, "All", outDir,
                           sigModel, bkgModel, FitMin, FitMax, nullptr, false,
                           allBkg, FixBkgShapeFromSidebands, false);
-      const FitOutput *shape =
-        (UseCommonShape && row.qcdAll.ok) ? &row.qcdAll : nullptr;
-      row.qcdPass = FitOne(hQCDPass, bin.tag, Year, refLabel, "Pass", outDir,
-                           sigModel, bkgModel, FitMin, FitMax, shape, shape != nullptr,
-                           passBkg, FixBkgShapeFromSidebands, SavePerBinPlots);
-      row.qcdFail = FitOne(hQCDFail, bin.tag, Year, refLabel, "Fail", outDir,
-                           sigModel, bkgModel, FitMin, FitMax, shape, shape != nullptr,
-                           failBkg, FixBkgShapeFromSidebands, SavePerBinPlots);
 
-      row.qcdEff = MakeEfficiency(row.qcdPass, row.qcdFail);
-      if(row.qcdEff.ok) {
-        const EffOutput r1 = FitSeparateEfficiencyVariation(
-          hQCDPassR1, hQCDFailR1, bin.tag, Year, refLabel, outDir,
-          sigModel, bkgModel, FitMin, FitMax,
-          UseCommonShape, FixBkgShapeFromSidebands);
-        const EffOutput r2 = FitSeparateEfficiencyVariation(
-          hQCDPassR2, hQCDFailR2, bin.tag, Year, refLabel, outDir,
-          sigModel, bkgModel, FitMin, FitMax,
-          UseCommonShape, FixBkgShapeFromSidebands);
-        const EffOutput r4 = FitSeparateEfficiencyVariation(
-          hQCDPassR4, hQCDFailR4, bin.tag, Year, refLabel, outDir,
-          sigModel, bkgModel, FitMin, FitMax,
-          UseCommonShape, FixBkgShapeFromSidebands);
-        const EffOutput r5 = FitSeparateEfficiencyVariation(
-          hQCDPassR5, hQCDFailR5, bin.tag, Year, refLabel, outDir,
-          sigModel, bkgModel, FitMin, FitMax,
-          UseCommonShape, FixBkgShapeFromSidebands);
-        ApplyBinningEnvelope(row.qcdEff, r1, r2, r4, r5, refLabel, bin.tag);
+      if(UseSimultaneousEfficiencyFit()) {
+        const FitOutput *shapeSeed = row.qcdAll.ok ? &row.qcdAll : nullptr;
+        const FitOutput passSeed =
+          FitOne(hQCDPass, bin.tag, Year, refLabel, "PassSeed", outDir,
+                 sigModel, bkgModel, FitMin, FitMax, shapeSeed, false,
+                 passBkg, FixBkgShapeFromSidebands, false);
+        const FitOutput failSeed =
+          FitOne(hQCDFail, bin.tag, Year, refLabel, "FailSeed", outDir,
+                 sigModel, bkgModel, FitMin, FitMax, shapeSeed, false,
+                 failBkg, FixBkgShapeFromSidebands, false);
+
+        const SimultaneousOutput sim =
+          FitPassFailSimultaneous(
+            hQCDPass, hQCDFail, bin.tag, Year, refLabel, outDir,
+            sigModel, bkgModel, FitMin, FitMax,
+            shapeSeed, &passSeed, &failSeed,
+            passBkg, failBkg,
+            UseCommonShape, FixBkgShapeFromSidebands,
+            SavePerBinPlots, true);
+
+        row.qcdPass = sim.pass;
+        row.qcdFail = sim.fail;
+        row.qcdEff = sim.eff;
+        row.qcdEff.ok = sim.ok;
+
+        if(row.qcdEff.ok) {
+          const EffOutput r1 = FitSimultaneousEfficiencyVariation(hQCDPassR1, hQCDFailR1, bin.tag, Year, refLabel, outDir, sigModel, bkgModel, FitMin, FitMax, UseCommonShape, FixBkgShapeFromSidebands);
+          const EffOutput r2 = FitSimultaneousEfficiencyVariation(hQCDPassR2, hQCDFailR2, bin.tag, Year, refLabel, outDir, sigModel, bkgModel, FitMin, FitMax, UseCommonShape, FixBkgShapeFromSidebands);
+          const EffOutput r4 = FitSimultaneousEfficiencyVariation(hQCDPassR4, hQCDFailR4, bin.tag, Year, refLabel, outDir, sigModel, bkgModel, FitMin, FitMax, UseCommonShape, FixBkgShapeFromSidebands);
+          const EffOutput r5 = FitSimultaneousEfficiencyVariation(hQCDPassR5, hQCDFailR5, bin.tag, Year, refLabel, outDir, sigModel, bkgModel, FitMin, FitMax, UseCommonShape, FixBkgShapeFromSidebands);
+          ApplyBinningEnvelope(row.qcdEff, r1, r2, r4, r5, refLabel, bin.tag);
+        }
+      }
+      else {
+        const FitOutput *shape =
+          (UseCommonShape && row.qcdAll.ok) ? &row.qcdAll : nullptr;
+        row.qcdPass = FitOne(hQCDPass, bin.tag, Year, refLabel, "Pass", outDir,
+                             sigModel, bkgModel, FitMin, FitMax, shape, shape != nullptr,
+                             passBkg, FixBkgShapeFromSidebands, SavePerBinPlots);
+        row.qcdFail = FitOne(hQCDFail, bin.tag, Year, refLabel, "Fail", outDir,
+                             sigModel, bkgModel, FitMin, FitMax, shape, shape != nullptr,
+                             failBkg, FixBkgShapeFromSidebands, SavePerBinPlots);
+
+        row.qcdEff = MakeEfficiency(row.qcdPass, row.qcdFail);
+        if(row.qcdEff.ok) {
+          const EffOutput r1 = FitSeparateEfficiencyVariation(hQCDPassR1, hQCDFailR1, bin.tag, Year, refLabel, outDir, sigModel, bkgModel, FitMin, FitMax, UseCommonShape, FixBkgShapeFromSidebands);
+          const EffOutput r2 = FitSeparateEfficiencyVariation(hQCDPassR2, hQCDFailR2, bin.tag, Year, refLabel, outDir, sigModel, bkgModel, FitMin, FitMax, UseCommonShape, FixBkgShapeFromSidebands);
+          const EffOutput r4 = FitSeparateEfficiencyVariation(hQCDPassR4, hQCDFailR4, bin.tag, Year, refLabel, outDir, sigModel, bkgModel, FitMin, FitMax, UseCommonShape, FixBkgShapeFromSidebands);
+          const EffOutput r5 = FitSeparateEfficiencyVariation(hQCDPassR5, hQCDFailR5, bin.tag, Year, refLabel, outDir, sigModel, bkgModel, FitMin, FitMax, UseCommonShape, FixBkgShapeFromSidebands);
+          ApplyBinningEnvelope(row.qcdEff, r1, r2, r4, r5, refLabel, bin.tag);
+        }
       }
     }
 
@@ -3671,7 +3841,8 @@ void id_eff_v8(TString Year = "2018",
                double YieldIntHighInput = -1.0,
                double BkgFitMinInput = -1.0,
                double BkgFitMaxInput = -1.0,
-               TString YieldModeInput = "fitnorm") {
+               TString YieldModeInput = "fitnorm",
+               TString FitMethodInput = "separate") {
   id_eff(Year, Trigger, BaseDir, Analyzer, BaseRegion, RebinFactor,
          SignalModelInput, BackgroundModelInput, FitMin, FitMax,
          UseCommonShape, FixBkgShapeFromSidebands, Side2FitWeight,
@@ -3679,7 +3850,7 @@ void id_eff_v8(TString Year = "2018",
          SavePerBinPlots, SaveSummaryPlots, BinFilter, MaxBins,
          HistName, IncludeInclusive, InspectOnly,
          ResonanceInput, BinningInput, YieldIntLowInput, YieldIntHighInput,
-         BkgFitMinInput, BkgFitMaxInput, YieldModeInput);
+         BkgFitMinInput, BkgFitMaxInput, YieldModeInput, FitMethodInput);
 }
 """
 
@@ -3754,8 +3925,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  yield integral [80,100] GeV; bkg prefit [60,120] GeV.\n\n"
             "Muon-ID efficiency pT output bins:\n"
             "  |eta| 0.0-0.9 : 10,20,30,50,120 GeV\n"
-            "  |eta| 0.9-1.2 : 10,30,50,120 GeV\n"
-            "  |eta| 1.2-2.1 : 10,30,120 GeV\n"
+            "  |eta| 0.9-1.2 : 10,20,30,120 GeV\n"
+            "  |eta| 1.2-2.1 : 10,120 GeV\n"
             "  |eta| 2.1-2.4 : 10,120 GeV\n"
             "  retained edges coincide with analyzer input-bin boundaries.\n\n"
             "Run with python3; never source this file."
@@ -3834,6 +4005,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--bkg-fit-min", type=float, default=None)
     parser.add_argument("--bkg-fit-max", type=float, default=None)
+    parser.add_argument(
+        "--fit-method",
+        choices=["separate", "simultaneous"],
+        default="separate",
+        help=(
+            "efficiency extraction method: separate fits Pass/Fail independently; "
+            "simultaneous fits them jointly with efficiency as a parameter. "
+            "Default: %(default)s"
+        ),
+    )
     parser.add_argument(
         "--common-shape",
         action="store_true",
@@ -4014,6 +4195,7 @@ def equivalent_command(args: argparse.Namespace, era: str) -> str:
     cmd += ["--fit-min", str(args.fit_min), "--fit-max", str(args.fit_max)]
     cmd += ["--yield-min", str(args.yield_min), "--yield-max", str(args.yield_max)]
     cmd += ["--yield-mode", args.yield_mode]
+    cmd += ["--fit-method", args.fit_method]
     cmd += ["--bkg-fit-min", str(args.bkg_fit_min), "--bkg-fit-max", str(args.bkg_fit_max)]
     cmd += ["--side2-fit-weight", str(args.side2_fit_weight)]
     cmd += ["--min-bkg-rel-err", str(args.min_bkg_rel_err)]
@@ -4118,7 +4300,8 @@ def run_one_era(ROOT, args: argparse.Namespace, era: str) -> int:
     print(
         "[CONFIG] "
         f"resonance={args.resonance}, hist={args.hist_name}, "
-        f"binning={args.binning}, AN-fit, nominal-rebin=3 (variations=1,2,4,5), "
+        f"binning={args.binning}, fit-method={args.fit_method}, "
+        f"nominal-rebin=3 (variations=1,2,4,5), "
         f"fit=[{args.fit_min},{args.fit_max}], "
         f"yield-mode={args.yield_mode}, "
         f"yield=[{args.yield_min},{args.yield_max}], "
@@ -4167,6 +4350,7 @@ def run_one_era(ROOT, args: argparse.Namespace, era: str) -> int:
         repr(float(args.bkg_fit_min)),
         repr(float(args.bkg_fit_max)),
         cpp_string(args.yield_mode),
+        cpp_string(args.fit_method),
     ]
 
     call = "id_eff(" + ",".join(call_args) + ");"
