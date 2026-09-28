@@ -108,21 +108,16 @@ CPP_SOURCE = r"""
 //   3. The continuum background is first fitted only in sidebands:
 //        2.0--2.8, 3.3--3.5, and 3.8--5.0 GeV.
 //      The J/psi and psi(2S) peak regions are excluded from this bkg-only fit.
-//   4. The final J/psi signal+background fit is still done near the peak
-//      by default, 2.70--3.50 GeV, using the sideband-fitted bkg shape.
-//   5. Default model is Crystal Ball + positive Bernstein-7 background.
-//      Other selectable backgrounds are Exp1/2/3/4, MonoExp1/2/3/4,
-//      Cheb1/2/3/4, MonoCheb1/2/3/4, Bern1...8, and MonoBern1...8.
-//      The 3.3--3.5 GeV sideband is upweighted by default because it is the
-//      closest direct constraint on the continuum under the J/psi peak.
-//   6. Final efficiencies come from a simultaneous Pass/Fail fit:
-//        N_pass = efficiency * N_signal and N_fail = (1-efficiency) * N_signal.
-//      Pass and Fail share one signal shape, while their background models remain independent.
-//      Data uses a Poisson likelihood; weighted MC/reference uses a SumW2 chi2.
-//      The model is integrated over every mass bin.  The nominal result uses
-//      rebin=3 (30 MeV).  The fit-statistical uncertainty uses Minos (Hessian only
-//      as a numerical fallback), and rebin=1,2,4,5 shifts form a symmetric mass-binning
-//      envelope.  The statistical and binning components are added in quadrature.
+//   4. AN-compatible nominal fit: signal+background is fitted over 2.0--5.0 GeV
+//      with the psi(2S) region vetoed, using the sideband-fitted background shape.
+//   5. The nominal AN model is Crystal Ball + positive Bernstein-5 background.
+//      Other selectable backgrounds remain available for cross-checks.
+//   6. Pass and Fail are fitted separately, as in the AN.  The fitted J/psi
+//      signal normalisations P and F give efficiency = P/(P+F).  The nominal
+//      statistical uncertainty is the Gaussian propagation of the fitted P/F
+//      yield uncertainties.  Rebin=3 (30 MeV) is central; complete refits with
+//      rebin=1,2,4,5 provide a symmetric mass-binning envelope.  Statistical
+//      and mass-binning components are added in quadrature.
 //   7. data.root in the era directory is the current data-input convention.
 //   8. Histograms are read from the current DileptonJPsi_Mass output directly.
 //      No automatic Dilepton_Mass fallback is used.
@@ -203,7 +198,7 @@ namespace JpsiMuonIDFit {
   enum BinningMode { kBinningEtaPt = 0, kBinningPtOnly = 1 };
 
   SignalModel gSignalModel = kCB;
-  BackgroundModel gBackgroundModel = kBern7;
+  BackgroundModel gBackgroundModel = kBern5;
   ResonanceMode gResonanceMode = kResJpsi;
   BinningMode gBinningMode = kBinningEtaPt;
 
@@ -213,8 +208,8 @@ namespace JpsiMuonIDFit {
   double gPeakMass = 3.0969;
 
   // Final signal+background fit window around the selected resonance peak.
-  double gFitMin = 2.70;
-  double gFitMax = 3.50;
+  double gFitMin = 2.00;
+  double gFitMax = 5.00;
 
   // Background-only sideband fit window and sideband definitions.
   // The continuum background is fitted only in:
@@ -244,7 +239,7 @@ namespace JpsiMuonIDFit {
   double gBkgFitMax = kBkgFitMax;
   double gYieldIntLow = kYieldIntLow;
   double gYieldIntHigh = kYieldIntHigh;
-  TString gYieldMode = "integral"; // "integral" or "fitnorm"
+  TString gYieldMode = "fitnorm"; // "integral" or "fitnorm"
 
   bool UseFitNormYield() {
     TString key = gYieldMode;
@@ -292,7 +287,6 @@ namespace JpsiMuonIDFit {
   double gMinBkgRelErr = 0.015;
 
   const double kBkgNormRelConstraint = 0.05;  // final S+B bkg norm is limited to sideband value +/-5%
-  const int kBkgPrefitRebinFactor = 3; // keep sideband-shape extraction independent of final display rebinning
   bool gIncludeInclusive = false;      // Inclusive is optional because the analyzer often does not fill it
 
   struct BinDef {
@@ -535,7 +529,8 @@ namespace JpsiMuonIDFit {
       gPeakMass = 91.1876;
 
       // If the user did not override the J/psi defaults, switch to Z defaults.
-      if(NearlyEqual(fitMin, 2.70) && NearlyEqual(fitMax, 3.50)) {
+      if((NearlyEqual(fitMin, 2.70) && NearlyEqual(fitMax, 3.50)) ||
+         (NearlyEqual(fitMin, 2.00) && NearlyEqual(fitMax, 5.00))) {
         fitMin = 70.0;
         fitMax = 110.0;
       }
@@ -2298,8 +2293,10 @@ namespace JpsiMuonIDFit {
       out.errs[i] = model->GetParError(i);
     }
 
-    out.ok = std::isfinite(out.yield) && out.yield > 0. && std::isfinite(out.mean) &&
-             std::isfinite(out.sigma) && out.sigma > 0. && out.eventsInFitRange > 0.;
+    out.ok = std::isfinite(out.yield) && out.yield >= 0. &&
+             std::isfinite(out.yieldErr) && out.yieldErr >= 0. &&
+             std::isfinite(out.mean) && std::isfinite(out.sigma) &&
+             out.sigma > 0. && out.eventsInFitRange > 0.;
 
     if(!out.ok || out.fitStatus != 0) {
       cout << "[WARNING] Fit diagnostic: " << sample << " " << status << " " << label
@@ -2745,27 +2742,26 @@ namespace JpsiMuonIDFit {
   }
 
   void ApplyBinningEnvelope(EffOutput &nominal,
-                            const SimultaneousOutput &rebin1,
-                            const SimultaneousOutput &rebin2,
-                            const SimultaneousOutput &rebin4,
-                            const SimultaneousOutput &rebin5,
+                            const EffOutput &rebin1,
+                            const EffOutput &rebin2,
+                            const EffOutput &rebin4,
+                            const EffOutput &rebin5,
                             const TString &sample,
                             const TString &label) {
-    nominal.rebin1Ok = rebin1.ok && rebin1.eff.ok;
-    nominal.rebin2Ok = rebin2.ok && rebin2.eff.ok;
-    nominal.rebin4Ok = rebin4.ok && rebin4.eff.ok;
-    nominal.rebin5Ok = rebin5.ok && rebin5.eff.ok;
+    nominal.rebin1Ok = rebin1.ok;
+    nominal.rebin2Ok = rebin2.ok;
+    nominal.rebin4Ok = rebin4.ok;
+    nominal.rebin5Ok = rebin5.ok;
 
-    if(nominal.rebin1Ok) nominal.rebin1Eff = rebin1.eff.eff;
-    if(nominal.rebin2Ok) nominal.rebin2Eff = rebin2.eff.eff;
-    if(nominal.rebin4Ok) nominal.rebin4Eff = rebin4.eff.eff;
-    if(nominal.rebin5Ok) nominal.rebin5Eff = rebin5.eff.eff;
+    if(nominal.rebin1Ok) nominal.rebin1Eff = rebin1.eff;
+    if(nominal.rebin2Ok) nominal.rebin2Eff = rebin2.eff;
+    if(nominal.rebin4Ok) nominal.rebin4Eff = rebin4.eff;
+    if(nominal.rebin5Ok) nominal.rebin5Eff = rebin5.eff;
 
     nominal.binningErr = 0.;
     int nValid = 0;
-
     auto includeVariation = [&](bool ok, double eff) {
-      if(!ok) return;
+      if(!ok || !std::isfinite(eff)) return;
       ++nValid;
       nominal.binningErr = std::max(
         nominal.binningErr, std::fabs(eff - nominal.eff));
@@ -2783,14 +2779,10 @@ namespace JpsiMuonIDFit {
 
     cout << "[BINNING] " << sample << " " << label
          << ": nominal(r3)=" << nominal.eff;
-    if(nominal.rebin1Ok) cout << ", r1=" << nominal.rebin1Eff;
-    else cout << ", r1=FAIL";
-    if(nominal.rebin2Ok) cout << ", r2=" << nominal.rebin2Eff;
-    else cout << ", r2=FAIL";
-    if(nominal.rebin4Ok) cout << ", r4=" << nominal.rebin4Eff;
-    else cout << ", r4=FAIL";
-    if(nominal.rebin5Ok) cout << ", r5=" << nominal.rebin5Eff;
-    else cout << ", r5=FAIL";
+    if(nominal.rebin1Ok) cout << ", r1=" << nominal.rebin1Eff; else cout << ", r1=FAIL";
+    if(nominal.rebin2Ok) cout << ", r2=" << nominal.rebin2Eff; else cout << ", r2=FAIL";
+    if(nominal.rebin4Ok) cout << ", r4=" << nominal.rebin4Eff; else cout << ", r4=FAIL";
+    if(nominal.rebin5Ok) cout << ", r5=" << nominal.rebin5Eff; else cout << ", r5=FAIL";
     cout << ", nValid=" << nValid
          << ", stat=" << nominal.statErr
          << ", binning=" << nominal.binningErr
@@ -2824,28 +2816,88 @@ namespace JpsiMuonIDFit {
   }
 
   EffOutput MakeEfficiency(const FitOutput &pass, const FitOutput &fail) {
-    // Fallback used only if the simultaneous Pass/Fail fit fails.
+    // AN-era prescription: fit Pass and Fail independently and propagate the
+    // fitted signal-yield uncertainties through efficiency = P/(P+F).
     EffOutput out;
-    const double p = (std::isfinite(pass.yield) && pass.yield > 0.) ? pass.yield : 0.;
-    const double f = (std::isfinite(fail.yield) && fail.yield > 0.) ? fail.yield : 0.;
+    if(!pass.ok || !fail.ok) return out;
+    if(!std::isfinite(pass.yield) || !std::isfinite(fail.yield)) return out;
+
+    const double p = std::max(0.0, pass.yield);
+    const double f = std::max(0.0, fail.yield);
     const double total = p + f;
-    if(!pass.ok || p <= 0. || total <= 0.) return out;
+    if(!(total > 0.)) return out;
+
+    const double sigmaP =
+      (std::isfinite(pass.yieldErr) && pass.yieldErr >= 0.) ? pass.yieldErr : std::sqrt(p);
+    const double sigmaF =
+      (std::isfinite(fail.yieldErr) && fail.yieldErr >= 0.) ? fail.yieldErr : std::sqrt(f);
 
     out.eff = p / total;
-    const double sigmaP =
-      (std::isfinite(pass.yieldErr) && pass.yieldErr > 0.) ? pass.yieldErr : std::sqrt(p);
-    const double sigmaF =
-      (std::isfinite(fail.yieldErr) && fail.yieldErr > 0.) ? fail.yieldErr : std::sqrt(f);
     const double dEdP = f / (total * total);
     const double dEdF = -p / (total * total);
     const double var =
       dEdP * dEdP * sigmaP * sigmaP +
       dEdF * dEdF * sigmaF * sigmaF;
+
     out.fitErr = (std::isfinite(var) && var >= 0.) ? std::sqrt(var) : 0.;
-    FillWilsonFloor(out, total);
-    out.err = std::max(out.fitErr, out.wilsonErr);
-    out.ok = std::isfinite(out.eff) && std::isfinite(out.err);
+    out.statErr = out.fitErr;
+    out.err = out.statErr;
+    out.nCount = total;
+    out.ok = std::isfinite(out.eff) && std::isfinite(out.err) && out.err >= 0.;
     return out;
+  }
+
+
+  EffOutput FitSeparateEfficiencyVariation(
+      TH1D *hPass, TH1D *hFail,
+      const TString &label, const TString &year,
+      const TString &sample, const TString &outDir,
+      SignalModel sig, BackgroundModel bkg,
+      double fitMin, double fitMax,
+      bool useCommonShape,
+      bool fixBkgShapeFromSidebands) {
+    EffOutput invalid;
+    if(!hPass || !hFail) return invalid;
+
+    TH1D *hAll = AddHists(hPass, hFail,
+                          TString("hVarAll_") + Sanitise(label + sample) +
+                          "_" + TString::Itoa(hPass->GetNbinsX(), 10));
+    if(!hAll) return invalid;
+
+    const BkgOutput allBkg =
+      FitBackgroundSidebands(hAll, label, year, sample, "AllVar",
+                             outDir, bkg, false);
+    const BkgOutput passBkg =
+      FitBackgroundSidebands(hPass, label, year, sample, "PassVar",
+                             outDir, bkg, false);
+    const BkgOutput failBkg =
+      FitBackgroundSidebands(hFail, label, year, sample, "FailVar",
+                             outDir, bkg, false);
+
+    const BkgOutput *allBkgForFit = allBkg.ok ? &allBkg : nullptr;
+    const BkgOutput *passBkgForFit = passBkg.ok ? &passBkg : allBkgForFit;
+    const BkgOutput *failBkgForFit = failBkg.ok ? &failBkg : allBkgForFit;
+
+    const FitOutput all =
+      FitOne(hAll, label, year, sample, "AllVar", outDir,
+             sig, bkg, fitMin, fitMax, nullptr, false,
+             allBkgForFit, fixBkgShapeFromSidebands, false);
+
+    const FitOutput *shape =
+      (useCommonShape && all.ok) ? &all : nullptr;
+
+    const FitOutput pass =
+      FitOne(hPass, label, year, sample, "PassVar", outDir,
+             sig, bkg, fitMin, fitMax, shape, shape != nullptr,
+             passBkgForFit, fixBkgShapeFromSidebands, false);
+    const FitOutput fail =
+      FitOne(hFail, label, year, sample, "FailVar", outDir,
+             sig, bkg, fitMin, fitMax, shape, shape != nullptr,
+             failBkgForFit, fixBkgShapeFromSidebands, false);
+
+    EffOutput eff = MakeEfficiency(pass, fail);
+    delete hAll;
+    return eff;
   }
 
   double GraphMaxY(TGraphErrors *gr, double fallback = 0.0) {
@@ -3137,10 +3189,10 @@ void id_eff(TString Year = "2018",
                       TString Analyzer = "NIsoMuon",
                       TString BaseRegion = "OS_POGMedium_tight_BJet_MuonIDEfficiency",
                       int RebinFactor = 3,
-                      TString SignalModelInput = "DSCB",
-                      TString BackgroundModelInput = "Bern7",
-                      double FitMin = 2.70,
-                      double FitMax = 3.50,
+                      TString SignalModelInput = "CB",
+                      TString BackgroundModelInput = "Bern5",
+                      double FitMin = 2.00,
+                      double FitMax = 5.00,
                       bool UseCommonShape = false,
                       bool FixBkgShapeFromSidebands = true,
                       double Side2FitWeight = 4.0,
@@ -3161,7 +3213,7 @@ void id_eff(TString Year = "2018",
                       double YieldIntHighInput = -1.0,
                       double BkgFitMinInput = -1.0,
                       double BkgFitMaxInput = -1.0,
-                      TString YieldModeInput = "integral") {
+                      TString YieldModeInput = "fitnorm") {
   using namespace JpsiMuonIDFit;
 
   gStyle->SetOptStat(0);
@@ -3176,8 +3228,8 @@ void id_eff(TString Year = "2018",
   gYieldMode.ToLower();
   if(!(gYieldMode == "integral" || gYieldMode == "fitnorm" || gYieldMode == "norm" ||
        gYieldMode == "normalisation" || gYieldMode == "normalization")) {
-    cout << "[WARNING] Unknown YieldModeInput='" << YieldModeInput << "'. Use 'integral'." << endl;
-    gYieldMode = "integral";
+    cout << "[WARNING] Unknown YieldModeInput='" << YieldModeInput << "'. Use 'fitnorm'." << endl;
+    gYieldMode = "fitnorm";
   }
   if(!std::isfinite(FitMin) || !std::isfinite(FitMax) || FitMax <= FitMin) {
     cout << "[ERROR] FitMax must be larger than FitMin. Got FitMin=" << FitMin << ", FitMax=" << FitMax << endl;
@@ -3220,7 +3272,7 @@ void id_eff(TString Year = "2018",
   cout << "[INFO] Final veto     : " << (gUseFinalVeto ? Form("[%.1f,%.1f] GeV if it overlaps", gFinalVetoLow, gFinalVetoHigh) : TString("none")) << endl;
   cout << "[INFO] Bkg prefit     : [" << gBkgFitMin << "," << gBkgFitMax << "] GeV; sidebands " << SidebandRangesText() << " GeV" << endl;
   cout << "[INFO] Bkg fit metric  : " << (gUseLogBkgFit ? "log-density chi2" : "density chi2")
-       << " with fixed rebin=" << kBkgPrefitRebinFactor << endl;
+       << "; each rebin variation repeats the full sideband prefit" << endl;
   cout << "[INFO] Common shape    : " << (UseCommonShape ? "true" : "false") << endl;
   cout << "[INFO] Fix bkg shape   : " << (FixBkgShapeFromSidebands ? "true" : "false") << endl;
   cout << "[INFO] Bkg norm range  : sideband prefit +/- " << 100.0 * kBkgNormRelConstraint << "% in final S+B fit" << endl;
@@ -3229,18 +3281,16 @@ void id_eff(TString Year = "2018",
   cout << "[INFO] Reference input : " << ReferenceInput << " (label: " << refLabel << ")" << endl;
   if(UseFitNormYield()) {
     cout << "[INFO] Yield definition: N_" << gResonanceLabel << " = fitted signal normalisation parameter" << endl;
-    cout << "[INFO] Efficiency fit : simultaneous Pass/Fail fit with Npass=eff*Nsig and Nfail=(1-eff)*Nsig" << endl;
-    cout << "[INFO] Fit statistic  : Poisson likelihood for Data; SumW2 chi2 for weighted MC/reference; bin-integrated model (I)" << endl;
-    cout << "[INFO] Uncertainties  : nominal Minos/Hessian statistical error plus rebin=1,2,4,5 envelope around nominal rebin=3, added in quadrature" << endl;
+    cout << "[INFO] Efficiency fit : AN-compatible separate Pass/Fail chi2 fits; eff=P/(P+F)" << endl;
+    cout << "[INFO] Uncertainties  : fitted P/F errors propagated to eff; rebin=1,2,4,5 envelope around nominal rebin=3 added in quadrature" << endl;
   }
   else {
     cout << "[INFO] Yield definition: N_" << gResonanceLabel << " = Integral(signal function, " << gYieldIntLow << ", " << gYieldIntHigh << ") GeV" << endl;
-    cout << "[INFO] Efficiency fit : simultaneous Pass/Fail fit with Npass=eff*Nsig and Nfail=(1-eff)*Nsig" << endl;
-    cout << "[INFO] Fit statistic  : Poisson likelihood for Data; SumW2 chi2 for weighted MC/reference; bin-integrated model (I)" << endl;
-    cout << "[INFO] Uncertainties  : nominal Minos/Hessian statistical error plus rebin=1,2,4,5 envelope around nominal rebin=3, added in quadrature" << endl;
+    cout << "[INFO] Efficiency fit : separate Pass/Fail chi2 fits; eff=P/(P+F)" << endl;
+    cout << "[INFO] Uncertainties  : fitted P/F errors propagated to eff; rebin=1,2,4,5 envelope around nominal rebin=3 added in quadrature" << endl;
   }
   if(UseCommonShape) {
-    cout << "[INFO] Signal shape note: Pass/Fail always share one signal shape; --common-shape fixes that shared shape to the All fit instead of floating it jointly." << endl;
+    cout << "[INFO] Signal shape note: --common-shape fixes the separate Pass/Fail signal shapes to the All-fit shape; default AN-compatible mode fits them independently." << endl;
   }
   cout << "[INFO] Save bin plots  : " << (SavePerBinPlots ? "true" : "false") << endl;
   cout << "[INFO] Save summaries  : " << (SaveSummaryPlots ? "true" : "false") << endl;
@@ -3339,167 +3389,94 @@ void id_eff(TString Year = "2018",
     TH1D *hQCDPassR5  = RebinAndMakeDensity(hQCDPassRaw,  5, TString("hQCDPassR5_")  + bin.tag, false);
     TH1D *hQCDFailR5  = RebinAndMakeDensity(hQCDFailRaw,  5, TString("hQCDFailR5_")  + bin.tag, false);
 
-    // Sideband background shapes are always extracted with one fixed mass
-    // binning so changing --rebin only changes the final likelihood/display
-    // binning, not the sideband-shape prior fed into that fit.
-    TH1D *hDataAllBkgFit  = RebinAndMakeDensity(hDataAllRaw,  kBkgPrefitRebinFactor, TString("hDataAllBkgFit_")  + bin.tag, false);
-    TH1D *hDataPassBkgFit = RebinAndMakeDensity(hDataPassRaw, kBkgPrefitRebinFactor, TString("hDataPassBkgFit_") + bin.tag, false);
-    TH1D *hDataFailBkgFit = RebinAndMakeDensity(hDataFailRaw, kBkgPrefitRebinFactor, TString("hDataFailBkgFit_") + bin.tag, false);
-    TH1D *hQCDAllBkgFit   = RebinAndMakeDensity(hQCDAllRaw,   kBkgPrefitRebinFactor, TString("hQCDAllBkgFit_")   + bin.tag, false);
-    TH1D *hQCDPassBkgFit  = RebinAndMakeDensity(hQCDPassRaw,  kBkgPrefitRebinFactor, TString("hQCDPassBkgFit_")  + bin.tag, false);
-    TH1D *hQCDFailBkgFit  = RebinAndMakeDensity(hQCDFailRaw,  kBkgPrefitRebinFactor, TString("hQCDFailBkgFit_")  + bin.tag, false);
-
+    // AN-era nominal method: background prefit and final Pass/Fail fits use
+    // the same mass binning.  The full procedure is repeated for each rebin
+    // variation so the envelope measures the actual fit-binning dependence.
     if(dataInputsComplete) {
-      row.dataAllBkg  = FitBackgroundSidebands(hDataAllBkgFit,  bin.tag, Year, "Data", "All",  outDir, bkgModel, false);
-      row.dataPassBkg = FitBackgroundSidebands(hDataPassBkgFit, bin.tag, Year, "Data", "Pass", outDir, bkgModel, SavePerBinPlots && hDataPassBkgFit != nullptr);
-      row.dataFailBkg = FitBackgroundSidebands(hDataFailBkgFit, bin.tag, Year, "Data", "Fail", outDir, bkgModel, SavePerBinPlots && hDataFailBkgFit != nullptr);
-    }
-    if(refInputsComplete) {
-      row.qcdAllBkg   = FitBackgroundSidebands(hQCDAllBkgFit,   bin.tag, Year, refLabel, "All",  outDir, bkgModel, false);
-      row.qcdPassBkg  = FitBackgroundSidebands(hQCDPassBkgFit,  bin.tag, Year, refLabel, "Pass", outDir, bkgModel, SavePerBinPlots && hQCDPassBkgFit  != nullptr);
-      row.qcdFailBkg  = FitBackgroundSidebands(hQCDFailBkgFit,  bin.tag, Year, refLabel, "Fail", outDir, bkgModel, SavePerBinPlots && hQCDFailBkgFit  != nullptr);
-    }
+      row.dataAllBkg  = FitBackgroundSidebands(hDataAll,  bin.tag, Year, "Data", "All",  outDir, bkgModel, false);
+      row.dataPassBkg = FitBackgroundSidebands(hDataPass, bin.tag, Year, "Data", "Pass", outDir, bkgModel, SavePerBinPlots);
+      row.dataFailBkg = FitBackgroundSidebands(hDataFail, bin.tag, Year, "Data", "Fail", outDir, bkgModel, SavePerBinPlots);
 
-    const BkgOutput *dataAllBkgForFit  = row.dataAllBkg.ok  ? &row.dataAllBkg  : nullptr;
-    const BkgOutput *dataPassBkgForFit = row.dataPassBkg.ok ? &row.dataPassBkg : dataAllBkgForFit;
-    const BkgOutput *dataFailBkgForFit = row.dataFailBkg.ok ? &row.dataFailBkg : dataAllBkgForFit;
-    const BkgOutput *qcdAllBkgForFit   = row.qcdAllBkg.ok   ? &row.qcdAllBkg   : nullptr;
-    const BkgOutput *qcdPassBkgForFit  = row.qcdPassBkg.ok  ? &row.qcdPassBkg  : qcdAllBkgForFit;
-    const BkgOutput *qcdFailBkgForFit  = row.qcdFailBkg.ok  ? &row.qcdFailBkg  : qcdAllBkgForFit;
+      const BkgOutput *allBkg = row.dataAllBkg.ok ? &row.dataAllBkg : nullptr;
+      const BkgOutput *passBkg = row.dataPassBkg.ok ? &row.dataPassBkg : allBkg;
+      const BkgOutput *failBkg = row.dataFailBkg.ok ? &row.dataFailBkg : allBkg;
 
-    if(dataInputsComplete) {
       row.dataAll = FitOne(hDataAll, bin.tag, Year, "Data", "All", outDir,
                            sigModel, bkgModel, FitMin, FitMax, nullptr, false,
-                           dataAllBkgForFit, FixBkgShapeFromSidebands, false);
-      const FitOutput *dataShapeSeed = row.dataAll.ok ? &row.dataAll : nullptr;
-      const FitOutput dataPassSeed = FitOne(
-        hDataPass, bin.tag, Year, "Data", "PassSeed", outDir,
-        sigModel, bkgModel, FitMin, FitMax, dataShapeSeed, false,
-        dataPassBkgForFit, FixBkgShapeFromSidebands, false);
-      const FitOutput dataFailSeed = FitOne(
-        hDataFail, bin.tag, Year, "Data", "FailSeed", outDir,
-        sigModel, bkgModel, FitMin, FitMax, dataShapeSeed, false,
-        dataFailBkgForFit, FixBkgShapeFromSidebands, false);
-  
-      const SimultaneousOutput dataSim = FitPassFailSimultaneous(
-        hDataPass, hDataFail, bin.tag, Year, "Data", outDir,
-        sigModel, bkgModel, FitMin, FitMax,
-        dataShapeSeed, &dataPassSeed, &dataFailSeed,
-        dataPassBkgForFit, dataFailBkgForFit,
-        UseCommonShape, FixBkgShapeFromSidebands,
-        SavePerBinPlots);
-      if(dataSim.ok) {
-        row.dataPass = dataSim.pass;
-        row.dataFail = dataSim.fail;
-        row.dataEff = dataSim.eff;
+                           allBkg, FixBkgShapeFromSidebands, false);
+      const FitOutput *shape =
+        (UseCommonShape && row.dataAll.ok) ? &row.dataAll : nullptr;
+      row.dataPass = FitOne(hDataPass, bin.tag, Year, "Data", "Pass", outDir,
+                            sigModel, bkgModel, FitMin, FitMax, shape, shape != nullptr,
+                            passBkg, FixBkgShapeFromSidebands, SavePerBinPlots);
+      row.dataFail = FitOne(hDataFail, bin.tag, Year, "Data", "Fail", outDir,
+                            sigModel, bkgModel, FitMin, FitMax, shape, shape != nullptr,
+                            failBkg, FixBkgShapeFromSidebands, SavePerBinPlots);
 
-        const SimultaneousOutput dataR1 = FitPassFailSimultaneous(
+      row.dataEff = MakeEfficiency(row.dataPass, row.dataFail);
+      if(row.dataEff.ok) {
+        const EffOutput r1 = FitSeparateEfficiencyVariation(
           hDataPassR1, hDataFailR1, bin.tag, Year, "Data", outDir,
           sigModel, bkgModel, FitMin, FitMax,
-          dataShapeSeed, &dataPassSeed, &dataFailSeed,
-          dataPassBkgForFit, dataFailBkgForFit,
-          UseCommonShape, FixBkgShapeFromSidebands,
-          false, false);
-        const SimultaneousOutput dataR2 = FitPassFailSimultaneous(
+          UseCommonShape, FixBkgShapeFromSidebands);
+        const EffOutput r2 = FitSeparateEfficiencyVariation(
           hDataPassR2, hDataFailR2, bin.tag, Year, "Data", outDir,
           sigModel, bkgModel, FitMin, FitMax,
-          dataShapeSeed, &dataPassSeed, &dataFailSeed,
-          dataPassBkgForFit, dataFailBkgForFit,
-          UseCommonShape, FixBkgShapeFromSidebands,
-          false, false);
-        const SimultaneousOutput dataR4 = FitPassFailSimultaneous(
+          UseCommonShape, FixBkgShapeFromSidebands);
+        const EffOutput r4 = FitSeparateEfficiencyVariation(
           hDataPassR4, hDataFailR4, bin.tag, Year, "Data", outDir,
           sigModel, bkgModel, FitMin, FitMax,
-          dataShapeSeed, &dataPassSeed, &dataFailSeed,
-          dataPassBkgForFit, dataFailBkgForFit,
-          UseCommonShape, FixBkgShapeFromSidebands,
-          false, false);
-        const SimultaneousOutput dataR5 = FitPassFailSimultaneous(
+          UseCommonShape, FixBkgShapeFromSidebands);
+        const EffOutput r5 = FitSeparateEfficiencyVariation(
           hDataPassR5, hDataFailR5, bin.tag, Year, "Data", outDir,
           sigModel, bkgModel, FitMin, FitMax,
-          dataShapeSeed, &dataPassSeed, &dataFailSeed,
-          dataPassBkgForFit, dataFailBkgForFit,
-          UseCommonShape, FixBkgShapeFromSidebands,
-          false, false);
-        ApplyBinningEnvelope(row.dataEff, dataR1, dataR2, dataR4, dataR5, "Data", bin.tag);
+          UseCommonShape, FixBkgShapeFromSidebands);
+        ApplyBinningEnvelope(row.dataEff, r1, r2, r4, r5, "Data", bin.tag);
       }
-      else {
-        row.dataPass = dataPassSeed;
-        row.dataFail = dataFailSeed;
-        row.dataEff = MakeEfficiency(row.dataPass, row.dataFail);
-        row.dataEff.ok = false;
-        cout << "[WARNING] Nominal simultaneous Data fit failed for " << bin.tag
-             << "; separate-fit value is diagnostic only and the final efficiency point is invalid." << endl;
-      }
-  
-      }
+    }
 
     if(refInputsComplete) {
+      row.qcdAllBkg  = FitBackgroundSidebands(hQCDAll,  bin.tag, Year, refLabel, "All",  outDir, bkgModel, false);
+      row.qcdPassBkg = FitBackgroundSidebands(hQCDPass, bin.tag, Year, refLabel, "Pass", outDir, bkgModel, SavePerBinPlots);
+      row.qcdFailBkg = FitBackgroundSidebands(hQCDFail, bin.tag, Year, refLabel, "Fail", outDir, bkgModel, SavePerBinPlots);
+
+      const BkgOutput *allBkg = row.qcdAllBkg.ok ? &row.qcdAllBkg : nullptr;
+      const BkgOutput *passBkg = row.qcdPassBkg.ok ? &row.qcdPassBkg : allBkg;
+      const BkgOutput *failBkg = row.qcdFailBkg.ok ? &row.qcdFailBkg : allBkg;
+
       row.qcdAll = FitOne(hQCDAll, bin.tag, Year, refLabel, "All", outDir,
                           sigModel, bkgModel, FitMin, FitMax, nullptr, false,
-                          qcdAllBkgForFit, FixBkgShapeFromSidebands, false);
-      const FitOutput *qcdShapeSeed = row.qcdAll.ok ? &row.qcdAll : nullptr;
-      const FitOutput qcdPassSeed = FitOne(
-        hQCDPass, bin.tag, Year, refLabel, "PassSeed", outDir,
-        sigModel, bkgModel, FitMin, FitMax, qcdShapeSeed, false,
-        qcdPassBkgForFit, FixBkgShapeFromSidebands, false);
-      const FitOutput qcdFailSeed = FitOne(
-        hQCDFail, bin.tag, Year, refLabel, "FailSeed", outDir,
-        sigModel, bkgModel, FitMin, FitMax, qcdShapeSeed, false,
-        qcdFailBkgForFit, FixBkgShapeFromSidebands, false);
-  
-      const SimultaneousOutput qcdSim = FitPassFailSimultaneous(
-        hQCDPass, hQCDFail, bin.tag, Year, refLabel, outDir,
-        sigModel, bkgModel, FitMin, FitMax,
-        qcdShapeSeed, &qcdPassSeed, &qcdFailSeed,
-        qcdPassBkgForFit, qcdFailBkgForFit,
-        UseCommonShape, FixBkgShapeFromSidebands,
-        SavePerBinPlots);
-      if(qcdSim.ok) {
-        row.qcdPass = qcdSim.pass;
-        row.qcdFail = qcdSim.fail;
-        row.qcdEff = qcdSim.eff;
+                          allBkg, FixBkgShapeFromSidebands, false);
+      const FitOutput *shape =
+        (UseCommonShape && row.qcdAll.ok) ? &row.qcdAll : nullptr;
+      row.qcdPass = FitOne(hQCDPass, bin.tag, Year, refLabel, "Pass", outDir,
+                           sigModel, bkgModel, FitMin, FitMax, shape, shape != nullptr,
+                           passBkg, FixBkgShapeFromSidebands, SavePerBinPlots);
+      row.qcdFail = FitOne(hQCDFail, bin.tag, Year, refLabel, "Fail", outDir,
+                           sigModel, bkgModel, FitMin, FitMax, shape, shape != nullptr,
+                           failBkg, FixBkgShapeFromSidebands, SavePerBinPlots);
 
-        const SimultaneousOutput qcdR1 = FitPassFailSimultaneous(
+      row.qcdEff = MakeEfficiency(row.qcdPass, row.qcdFail);
+      if(row.qcdEff.ok) {
+        const EffOutput r1 = FitSeparateEfficiencyVariation(
           hQCDPassR1, hQCDFailR1, bin.tag, Year, refLabel, outDir,
           sigModel, bkgModel, FitMin, FitMax,
-          qcdShapeSeed, &qcdPassSeed, &qcdFailSeed,
-          qcdPassBkgForFit, qcdFailBkgForFit,
-          UseCommonShape, FixBkgShapeFromSidebands,
-          false, false);
-        const SimultaneousOutput qcdR2 = FitPassFailSimultaneous(
+          UseCommonShape, FixBkgShapeFromSidebands);
+        const EffOutput r2 = FitSeparateEfficiencyVariation(
           hQCDPassR2, hQCDFailR2, bin.tag, Year, refLabel, outDir,
           sigModel, bkgModel, FitMin, FitMax,
-          qcdShapeSeed, &qcdPassSeed, &qcdFailSeed,
-          qcdPassBkgForFit, qcdFailBkgForFit,
-          UseCommonShape, FixBkgShapeFromSidebands,
-          false, false);
-        const SimultaneousOutput qcdR4 = FitPassFailSimultaneous(
+          UseCommonShape, FixBkgShapeFromSidebands);
+        const EffOutput r4 = FitSeparateEfficiencyVariation(
           hQCDPassR4, hQCDFailR4, bin.tag, Year, refLabel, outDir,
           sigModel, bkgModel, FitMin, FitMax,
-          qcdShapeSeed, &qcdPassSeed, &qcdFailSeed,
-          qcdPassBkgForFit, qcdFailBkgForFit,
-          UseCommonShape, FixBkgShapeFromSidebands,
-          false, false);
-        const SimultaneousOutput qcdR5 = FitPassFailSimultaneous(
+          UseCommonShape, FixBkgShapeFromSidebands);
+        const EffOutput r5 = FitSeparateEfficiencyVariation(
           hQCDPassR5, hQCDFailR5, bin.tag, Year, refLabel, outDir,
           sigModel, bkgModel, FitMin, FitMax,
-          qcdShapeSeed, &qcdPassSeed, &qcdFailSeed,
-          qcdPassBkgForFit, qcdFailBkgForFit,
-          UseCommonShape, FixBkgShapeFromSidebands,
-          false, false);
-        ApplyBinningEnvelope(row.qcdEff, qcdR1, qcdR2, qcdR4, qcdR5, refLabel, bin.tag);
+          UseCommonShape, FixBkgShapeFromSidebands);
+        ApplyBinningEnvelope(row.qcdEff, r1, r2, r4, r5, refLabel, bin.tag);
       }
-      else {
-        row.qcdPass = qcdPassSeed;
-        row.qcdFail = qcdFailSeed;
-        row.qcdEff = MakeEfficiency(row.qcdPass, row.qcdFail);
-        row.qcdEff.ok = false;
-        cout << "[WARNING] Nominal simultaneous " << refLabel << " fit failed for " << bin.tag
-             << "; separate-fit value is diagnostic only and the final efficiency point is invalid." << endl;
-      }
-  
-      }
+    }
 
     if(row.dataEff.ok && row.qcdEff.ok &&
        row.dataEff.eff > 0. && row.qcdEff.eff > 0.) {
@@ -3641,12 +3618,6 @@ void id_eff(TString Year = "2018",
     delete hQCDFailR4;
     delete hQCDPassR5;
     delete hQCDFailR5;
-    delete hDataAllBkgFit;
-    delete hDataPassBkgFit;
-    delete hDataFailBkgFit;
-    delete hQCDAllBkgFit;
-    delete hQCDPassBkgFit;
-    delete hQCDFailBkgFit;
   }
 
   csv.close();
@@ -3676,10 +3647,10 @@ void id_eff_v8(TString Year = "2018",
                TString Analyzer = "NIsoMuon",
                TString BaseRegion = "OS_POGMedium_tight_BJet_MuonIDEfficiency",
                int RebinFactor = 3,
-               TString SignalModelInput = "DSCB",
-               TString BackgroundModelInput = "Bern7",
-               double FitMin = 2.70,
-               double FitMax = 3.50,
+               TString SignalModelInput = "CB",
+               TString BackgroundModelInput = "Bern5",
+               double FitMin = 2.00,
+               double FitMax = 5.00,
                bool UseCommonShape = false,
                bool FixBkgShapeFromSidebands = true,
                double Side2FitWeight = 4.0,
@@ -3700,7 +3671,7 @@ void id_eff_v8(TString Year = "2018",
                double YieldIntHighInput = -1.0,
                double BkgFitMinInput = -1.0,
                double BkgFitMaxInput = -1.0,
-               TString YieldModeInput = "integral") {
+               TString YieldModeInput = "fitnorm") {
   id_eff(Year, Trigger, BaseDir, Analyzer, BaseRegion, RebinFactor,
          SignalModelInput, BackgroundModelInput, FitMin, FitMax,
          UseCommonShape, FixBkgShapeFromSidebands, Side2FitWeight,
@@ -3746,7 +3717,7 @@ def resonance_defaults(
     if key in {"z", "zpeak", "zmumu", "zboson"}:
         # This follows the uploaded C++ implementation exactly.
         return (70.0, 110.0, "Dilepton_Mass", 80.0, 100.0, 60.0, 120.0)
-    return (2.70, 3.50, "DileptonJPsi_Mass", 3.00, 3.20, 2.00, 5.00)
+    return (2.00, 5.00, "DileptonJPsi_Mass", 3.00, 3.20, 2.00, 5.00)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -3775,7 +3746,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  python3 id_eff.py --year 2023 --yield-mode fitnorm\n"
             "  python3 id_eff.py --year all\n\n"
             "J/psi defaults from the uploaded C++:\n"
-            "  HistName=DileptonJPsi_Mass; final fit [2.70,3.50] GeV;\n"
+            "  HistName=DileptonJPsi_Mass; final fit [2.00,5.00] GeV with the psi(2S) region vetoed;\n"
             "  core-yield integral [3.00,3.20] GeV; bkg prefit [2,5] GeV.\n\n"
             "Z defaults from the uploaded C++:\n"
             "  HistName=Dilepton_Mass; final fit [70,110] GeV;\n"
@@ -3836,12 +3807,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--signal-model",
         choices=["CB", "DSCB"],
-        default="DSCB",
-        help="signal model; callable C++ default: %(default)s",
+        default="CB",
+        help="signal model; AN-compatible default: %(default)s",
     )
     parser.add_argument(
         "--background-model",
-        default="Bern7",
+        default="Bern5",
         help=(
             "Exp1..4, MonoExp1..4, Cheb1..4, MonoCheb1..4, "
             "Bern1..8, or MonoBern1..8; default: %(default)s"
@@ -3854,7 +3825,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--yield-mode",
         choices=["integral", "fitnorm"],
-        default="integral",
+        default="fitnorm",
         help=(
             "integral: signal-function integral in the configured window; "
             "fitnorm: fitted signal normalization; default: %(default)s"
@@ -3865,7 +3836,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--common-shape",
         action="store_true",
-        help="fix the shared Pass/Fail signal shape to the pass+fail (All) fit; otherwise it floats jointly",
+        help="fix the separate Pass/Fail signal shapes to the pass+fail (All) fit; default fits them independently",
     )
     parser.add_argument(
         "--no-fix-bkg-shape",
@@ -4146,7 +4117,7 @@ def run_one_era(ROOT, args: argparse.Namespace, era: str) -> int:
     print(
         "[CONFIG] "
         f"resonance={args.resonance}, hist={args.hist_name}, "
-        f"binning={args.binning}, nominal-rebin=3 (variations=1,2,4,5), "
+        f"binning={args.binning}, AN-fit, nominal-rebin=3 (variations=1,2,4,5), "
         f"fit=[{args.fit_min},{args.fit_max}], "
         f"yield-mode={args.yield_mode}, "
         f"yield=[{args.yield_min},{args.yield_max}], "
