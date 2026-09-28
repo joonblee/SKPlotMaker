@@ -113,8 +113,12 @@ CPP_SOURCE = r"""
 //   5. The nominal AN model is Crystal Ball + positive Bernstein-5 background.
 //      Other selectable backgrounds remain available for cross-checks.
 //   6. Efficiency extraction is selectable with --fit-method:
-//        separate     : AN-compatible independent Pass/Fail chi2 fits, then P/(P+F);
-//        simultaneous : joint Pass/Fail fit with efficiency as a fit parameter.
+//        simultaneous-independent (default): joint Pass/Fail fit with efficiency
+//          as a parameter and independent Pass/Fail signal shapes;
+//        simultaneous: legacy joint fit with all signal-shape parameters shared;
+//        simultaneous-shared-mean: joint fit with a common peak mean but
+//          independent Pass/Fail resolution/tail parameters;
+//        separate: AN-compatible independent Pass/Fail fits, then P/(P+F).
 //      Top/reference MC always uses stored SumW2 bin uncertainties in chi2 fits;
 //      simultaneous Data uses a binned Poisson likelihood.  Rebin=3 (30 MeV) is
 //      central; complete refits with rebin=1,2,4,5 define the binning envelope.
@@ -196,6 +200,11 @@ namespace JpsiMuonIDFit {
 
   enum ResonanceMode { kResJpsi = 0, kResZ = 1 };
   enum BinningMode { kBinningEtaPt = 0, kBinningPtOnly = 1 };
+  enum SimSignalShapeMode {
+    kSimSharedAll = 0,
+    kSimIndependent = 1,
+    kSimSharedMean = 2
+  };
 
   SignalModel gSignalModel = kCB;
   BackgroundModel gBackgroundModel = kBern5;
@@ -240,7 +249,8 @@ namespace JpsiMuonIDFit {
   double gYieldIntLow = kYieldIntLow;
   double gYieldIntHigh = kYieldIntHigh;
   TString gYieldMode = "fitnorm"; // "integral" or "fitnorm"
-  TString gEfficiencyFitMethod = "separate"; // "separate" or "simultaneous"
+  TString gEfficiencyFitMethod = "simultaneousindependent";
+  SimSignalShapeMode gSimSignalShapeMode = kSimIndependent;
 
   bool UseFitNormYield() {
     TString key = gYieldMode;
@@ -249,12 +259,43 @@ namespace JpsiMuonIDFit {
     key.ReplaceAll("-", "");
     return (key == "fitnorm" || key == "norm" || key == "normalisation" || key == "normalization");
   }
-  bool UseSimultaneousEfficiencyFit() {
+  TString NormalisedEfficiencyFitMethod() {
     TString key = gEfficiencyFitMethod;
     key.ToLower();
     key.ReplaceAll("_", "");
     key.ReplaceAll("-", "");
-    return (key == "simultaneous" || key == "joint" || key == "sim");
+    return key;
+  }
+
+  bool UseSimultaneousEfficiencyFit() {
+    const TString key = NormalisedEfficiencyFitMethod();
+    return (key == "simultaneous" || key == "joint" || key == "sim" ||
+            key == "simultaneousindependent" || key == "independent" ||
+            key == "simultaneoussharedmean" || key == "sharedmean");
+  }
+
+  SimSignalShapeMode EfficiencySimShapeMode() {
+    const TString key = NormalisedEfficiencyFitMethod();
+    if(key == "simultaneous" || key == "joint" || key == "sim") return kSimSharedAll;
+    if(key == "simultaneoussharedmean" || key == "sharedmean") return kSimSharedMean;
+    return kSimIndependent;
+  }
+
+  TString SimSignalShapeModeName(SimSignalShapeMode mode) {
+    if(mode == kSimSharedAll) return "all-shape-shared";
+    if(mode == kSimSharedMean) return "shared-mean";
+    return "independent-shapes";
+  }
+
+  TString EfficiencyFitMethodLabel() {
+    const TString key = NormalisedEfficiencyFitMethod();
+    if(key == "separate") return "separate Pass/Fail";
+    const SimSignalShapeMode mode = EfficiencySimShapeMode();
+    if(mode == kSimSharedAll)
+      return "simultaneous Pass/Fail (all signal-shape parameters shared)";
+    if(mode == kSimSharedMean)
+      return "simultaneous Pass/Fail (shared mean; independent width/tails)";
+    return "simultaneous Pass/Fail (independent Pass/Fail signal shapes)";
   }
 
   double gFinalVetoLow = kPsiPVetoLow;
@@ -674,6 +715,90 @@ namespace JpsiMuonIDFit {
     if(IsChebBackground(model)) return 1 + ChebOrder(model);
     if(IsBernBackground(model)) return 1 + BernOrder(model);
     return 2;
+  }
+
+
+  int NSimShapePars(SignalModel sig, SimSignalShapeMode mode) {
+    const int nShape = std::max(0, NSignalPars(sig) - 1);
+    if(mode == kSimSharedAll) return nShape;
+    if(mode == kSimIndependent) return 2 * nShape;
+    if(nShape <= 0) return 0;
+    return 1 + 2 * (nShape - 1);
+  }
+
+  int SimSignalShapeParameterIndex(bool isFail, int sigParIndex,
+                                   SignalModel sig, SimSignalShapeMode mode) {
+    if(sigParIndex < 1 || sigParIndex >= NSignalPars(sig)) return -1;
+    const int nShape = NSignalPars(sig) - 1;
+
+    if(mode == kSimSharedAll) {
+      return 1 + sigParIndex;
+    }
+
+    if(mode == kSimIndependent) {
+      const int categoryOffset = isFail ? nShape : 0;
+      return 2 + categoryOffset + (sigParIndex - 1);
+    }
+
+    if(sigParIndex == 1) return 2;
+    const int nIndependentPerCategory = std::max(0, nShape - 1);
+    const int categoryOffset = isFail ? nIndependentPerCategory : 0;
+    return 3 + categoryOffset + (sigParIndex - 2);
+  }
+
+  int SimPassBkgStart(SignalModel sig, SimSignalShapeMode mode) {
+    return 2 + NSimShapePars(sig, mode);
+  }
+
+  int SimFailBkgStart(SignalModel sig, BackgroundModel bkg,
+                      SimSignalShapeMode mode) {
+    return SimPassBkgStart(sig, mode) + NBkgPars(bkg);
+  }
+
+  double DefaultSignalShapeValue(int sigParIndex) {
+    if(sigParIndex == 1) return gPeakMass;
+    if(sigParIndex == 2) return gSignalSigmaInit;
+    if(sigParIndex == 3) return 1.6;
+    if(sigParIndex == 4) return 5.0;
+    if(sigParIndex == 5) return 2.0;
+    if(sigParIndex == 6) return 5.0;
+    return 0.0;
+  }
+
+  double SeedSignalShapeValue(const FitOutput *preferred,
+                              const FitOutput *fallback,
+                              int sigParIndex) {
+    if(preferred && preferred->ok &&
+       (int)preferred->pars.size() > sigParIndex &&
+       std::isfinite(preferred->pars[sigParIndex])) {
+      return preferred->pars[sigParIndex];
+    }
+    if(fallback && fallback->ok &&
+       (int)fallback->pars.size() > sigParIndex &&
+       std::isfinite(fallback->pars[sigParIndex])) {
+      return fallback->pars[sigParIndex];
+    }
+    return DefaultSignalShapeValue(sigParIndex);
+  }
+
+  TString SignalShapeParameterBaseName(int sigParIndex, SignalModel sig) {
+    if(sigParIndex == 1) return "m";
+    if(sigParIndex == 2) return "#sigma";
+    if(sigParIndex == 3) return (sig == kDSCB) ? "#alpha_{L}" : "#alpha";
+    if(sigParIndex == 4) return (sig == kDSCB) ? "n_{L}" : "n";
+    if(sigParIndex == 5) return "#alpha_{R}";
+    if(sigParIndex == 6) return "n_{R}";
+    return Form("sigShape%d", sigParIndex);
+  }
+
+  void SetSignalShapeLimits(TF1 *model, int dst, int sigParIndex) {
+    if(!model || dst < 0) return;
+    if(sigParIndex == 1) model->SetParLimits(dst, gMeanFitLow, gMeanFitHigh);
+    else if(sigParIndex == 2) model->SetParLimits(dst, gSignalSigmaMin, gSignalSigmaMax);
+    else if(sigParIndex == 3) model->SetParLimits(dst, 0.4, 6.0);
+    else if(sigParIndex == 4) model->SetParLimits(dst, 1.05, 60.0);
+    else if(sigParIndex == 5) model->SetParLimits(dst, 0.4, 6.0);
+    else if(sigParIndex == 6) model->SetParLimits(dst, 1.05, 60.0);
   }
 
   SignalModel ParseSignalModel(TString s) {
@@ -1642,7 +1767,6 @@ namespace JpsiMuonIDFit {
 
   Double_t GenericSimultaneousModel(Double_t *x, Double_t *p) {
     const int nSig = NSignalPars(gSignalModel);
-    const int nBkg = NBkgPars(gBackgroundModel);
     const bool isFail = (x[0] >= gSimultaneousSplit);
     Double_t mass[1] = { isFail ? x[0] - gSimultaneousOffset : x[0] };
     if(gRejectPsiPInFinalFit && IsInFinalFitVeto(mass[0])) {
@@ -1654,10 +1778,15 @@ namespace JpsiMuonIDFit {
     const double nTotal = std::max(0.0, p[1]);
     double sigPars[7] = {0., 0., 0., 0., 0., 0., 0.};
     sigPars[0] = nTotal * (isFail ? (1.0 - eff) : eff);
-    for(int i = 1; i < nSig; ++i) sigPars[i] = p[i + 1];
+    for(int i = 1; i < nSig; ++i) {
+      const int src =
+        SimSignalShapeParameterIndex(isFail, i, gSignalModel, gSimSignalShapeMode);
+      if(src >= 0) sigPars[i] = p[src];
+    }
 
-    const int passBkgStart = nSig + 1;
-    const int failBkgStart = passBkgStart + nBkg;
+    const int passBkgStart = SimPassBkgStart(gSignalModel, gSimSignalShapeMode);
+    const int failBkgStart =
+      SimFailBkgStart(gSignalModel, gBackgroundModel, gSimSignalShapeMode);
     const int bkgStart = isFail ? failBkgStart : passBkgStart;
 
     return GenericSignal(mass, sigPars) + GenericBackground(mass, &p[bkgStart]);
@@ -2356,9 +2485,9 @@ namespace JpsiMuonIDFit {
     }
     if(firstBin < 0 || lastBin < firstBin) return nullptr;
 
-    // The current resonance configurations have no internal veto inside the
-    // final fit range.  Require contiguous, equal-width mass bins so the two
-    // categories can be concatenated without artificial likelihood bins.
+    // Require contiguous, equal-width mass bins so the two categories can be
+    // concatenated.  Any internal resonance veto is handled during the fit with
+    // TF1::RejectPoint rather than by removing bins from this joint histogram.
     const double binWidth = hPass->GetXaxis()->GetBinWidth(firstBin);
     if(!(binWidth > 0.) || !std::isfinite(binWidth)) return nullptr;
 
@@ -2478,16 +2607,14 @@ namespace JpsiMuonIDFit {
       bool computeStatError = true) {
 
     SimultaneousOutput out;
-    // A true simultaneous fit needs both categories.  If a histogram is
-    // genuinely absent (rather than present with zero entries), fall back to
-    // the separate-yield + Wilson treatment below instead of fitting a
-    // degenerate joint model.
     if(!hPass || !hFail) return out;
 
     gSignalModel = sig;
     gBackgroundModel = bkg;
     gFitMin = fitMin;
     gFitMax = fitMax;
+    const SimSignalShapeMode shapeMode = EfficiencySimShapeMode();
+    gSimSignalShapeMode = shapeMode;
 
     TH1D *jointHist = BuildSimultaneousLikelihoodHist(
       hPass, hFail, TString("hSimLike_") + Sanitise(label + sample), fitMin, fitMax);
@@ -2498,8 +2625,8 @@ namespace JpsiMuonIDFit {
 
     const int nSig = NSignalPars(sig);
     const int nBkg = NBkgPars(bkg);
-    const int passBkgStart = nSig + 1;
-    const int failBkgStart = passBkgStart + nBkg;
+    const int passBkgStart = SimPassBkgStart(sig, shapeMode);
+    const int failBkgStart = SimFailBkgStart(sig, bkg, shapeMode);
     const int nPar = failBkgStart + nBkg;
 
     TF1 *model = new TF1(
@@ -2522,48 +2649,56 @@ namespace JpsiMuonIDFit {
 
     const double eventsFit =
       std::max(HistIntegralDensity(hPass, fitMin, fitMax, true), 0.0) +
-      (hFail ? std::max(HistIntegralDensity(hFail, fitMin, fitMax, true), 0.0) : 0.0);
+      std::max(HistIntegralDensity(hFail, fitMin, fitMax, true), 0.0);
     double totalGuess =
       (allShape && std::isfinite(allShape->rawNorm) && allShape->rawNorm > 0.)
       ? allShape->rawNorm : std::max(seedSum, 1.0);
-    totalGuess = std::max(1e-6, std::min(totalGuess, 10.0 * std::max(eventsFit, 1.0) + 100.0));
+    totalGuess = std::max(
+      1e-6, std::min(totalGuess, 10.0 * std::max(eventsFit, 1.0) + 100.0));
 
     model->SetParameter(0, effGuess);
     model->SetParLimits(0, 0.0, 1.0);
     model->SetParameter(1, totalGuess);
     model->SetParLimits(1, 0.0, 10.0 * std::max(eventsFit, 1.0) + 100.0);
 
-    // Shared signal-shape parameters.  The All fit is used as the seed.
-    for(int i = 1; i < nSig; ++i) {
-      const int dst = i + 1;
-      double value = 0.;
-      if(allShape && allShape->ok && (int)allShape->pars.size() > i) {
-        value = allShape->pars[i];
-      }
-      else {
-        if(i == 1) value = gPeakMass;
-        else if(i == 2) value = gSignalSigmaInit;
-        else if(i == 3) value = 1.6;
-        else if(i == 4) value = 5.0;
-        else if(i == 5) value = 2.0;
-        else if(i == 6) value = 5.0;
-      }
+    auto configureShapeParameter =
+      [&](bool isFail, int sigParIndex, const FitOutput *preferredSeed,
+          bool sharedParameter) {
+        const int dst =
+          SimSignalShapeParameterIndex(isFail, sigParIndex, sig, shapeMode);
+        if(dst < 0) return;
 
-      if(i == 1) model->SetParName(dst, "m_{shared}");
-      else if(i == 2) model->SetParName(dst, "#sigma_{shared}");
-      else model->SetParName(dst, Form("sigShape%d", i));
+        const double value =
+          SeedSignalShapeValue(preferredSeed, allShape, sigParIndex);
+        const TString base = SignalShapeParameterBaseName(sigParIndex, sig);
+        const TString suffix =
+          sharedParameter ? "shared" : (isFail ? "fail" : "pass");
+        model->SetParName(dst, (base + "_{" + suffix + "}").Data());
+        model->SetParameter(dst, value);
 
-      model->SetParameter(dst, value);
-      if(fixSharedSignalShape && allShape && allShape->ok) {
-        model->FixParameter(dst, value);
+        const bool fixThis =
+          sharedParameter && fixSharedSignalShape &&
+          allShape && allShape->ok &&
+          (int)allShape->pars.size() > sigParIndex;
+        if(fixThis) model->FixParameter(dst, value);
+        else SetSignalShapeLimits(model, dst, sigParIndex);
+      };
+
+    if(shapeMode == kSimSharedAll) {
+      for(int i = 1; i < nSig; ++i)
+        configureShapeParameter(false, i, allShape, true);
+    }
+    else if(shapeMode == kSimIndependent) {
+      for(int i = 1; i < nSig; ++i) {
+        configureShapeParameter(false, i, passSeed, false);
+        configureShapeParameter(true,  i, failSeed, false);
       }
-      else {
-        if(i == 1) model->SetParLimits(dst, gMeanFitLow, gMeanFitHigh);
-        else if(i == 2) model->SetParLimits(dst, gSignalSigmaMin, gSignalSigmaMax);
-        else if(i == 3) model->SetParLimits(dst, 0.4, 6.0);
-        else if(i == 4) model->SetParLimits(dst, 1.05, 60.0);
-        else if(i == 5) model->SetParLimits(dst, 0.4, 6.0);
-        else if(i == 6) model->SetParLimits(dst, 1.05, 60.0);
+    }
+    else {
+      configureShapeParameter(false, 1, allShape, true);
+      for(int i = 2; i < nSig; ++i) {
+        configureShapeParameter(false, i, passSeed, false);
+        configureShapeParameter(true,  i, failSeed, false);
       }
     }
 
@@ -2571,14 +2706,9 @@ namespace JpsiMuonIDFit {
       model, passBkgStart, hPass, allShape, passBkg,
       sig, bkg, fitMin, fitMax, fixBkgShapeFromSidebands, "Pass");
     CopyBackgroundSetupToSimultaneous(
-      model, failBkgStart, hFail ? hFail : hPass, allShape, failBkg,
+      model, failBkgStart, hFail, allShape, failBkg,
       sig, bkg, fitMin, fitMax, fixBkgShapeFromSidebands, "Fail");
 
-    // Nominal statistical fit:
-    //   Data        -> Poisson binned likelihood;
-    //   MC/reference -> chi2 with the stored SumW2 bin uncertainties.
-    // "I" integrates the model over each mass bin.  Both objectives support
-    // Minos, so the same statistical-error prescription is used throughout.
     const bool useDataLikelihood = sample.EqualTo("Data", TString::kIgnoreCase);
     const bool hasInternalVeto =
       gUseFinalVeto && gFinalVetoLow < fitMax && gFinalVetoHigh > fitMin;
@@ -2628,8 +2758,6 @@ namespace JpsiMuonIDFit {
     out.eff.ok = std::isfinite(out.eff.eff) && std::isfinite(out.eff.err) &&
                  out.eff.err >= 0. && nTotal > 0.;
 
-    // Build category models from the joint-fit parameters for diagnostics and
-    // for the stored Pass/Fail signal yields.
     auto buildCategory = [&](const bool isFail, const TString &status, TH1D *h,
                              FitOutput &catOut) -> TF1* {
       if(!h) return nullptr;
@@ -2641,13 +2769,25 @@ namespace JpsiMuonIDFit {
       const double eff = out.eff.eff;
       const double rawNorm = nTotal * (isFail ? (1.0 - eff) : eff);
       cat->SetParameter(0, rawNorm);
-      for(int i = 1; i < nSig; ++i) cat->SetParameter(i, model->GetParameter(i + 1));
+
+      vector<double> sigPars(nSig, 0.);
+      sigPars[0] = 1.0;
+      for(int i = 1; i < nSig; ++i) {
+        const int src =
+          SimSignalShapeParameterIndex(isFail, i, sig, shapeMode);
+        const double value =
+          (src >= 0) ? model->GetParameter(src) : DefaultSignalShapeValue(i);
+        cat->SetParameter(i, value);
+        sigPars[i] = value;
+      }
+
       const int srcBkg = isFail ? failBkgStart : passBkgStart;
-      for(int i = 0; i < nBkg; ++i) cat->SetParameter(nSig + i, model->GetParameter(srcBkg + i));
+      for(int i = 0; i < nBkg; ++i)
+        cat->SetParameter(nSig + i, model->GetParameter(srcBkg + i));
 
       catOut.fitStatus = out.eff.fitStatus;
       catOut.covStatus = out.eff.covStatus;
-      catOut.usedCommonShape = true;
+      catOut.usedCommonShape = (shapeMode != kSimIndependent);
       catOut.rawNorm = rawNorm;
 
       double varEff = 0.;
@@ -2664,22 +2804,20 @@ namespace JpsiMuonIDFit {
           nTotal * nTotal * varEff +
           oneMinus * oneMinus * varN -
           2.0 * nTotal * oneMinus * covEffN;
-        catOut.rawNormErr = (std::isfinite(varRaw) && varRaw > 0.) ? std::sqrt(varRaw) : 0.;
+        catOut.rawNormErr =
+          (std::isfinite(varRaw) && varRaw > 0.) ? std::sqrt(varRaw) : 0.;
       }
       else {
         const double varRaw =
           nTotal * nTotal * varEff +
           eff * eff * varN +
           2.0 * nTotal * eff * covEffN;
-        catOut.rawNormErr = (std::isfinite(varRaw) && varRaw > 0.) ? std::sqrt(varRaw) : 0.;
+        catOut.rawNormErr =
+          (std::isfinite(varRaw) && varRaw > 0.) ? std::sqrt(varRaw) : 0.;
       }
 
-      vector<double> sigPars(nSig, 0.);
-      sigPars[0] = 1.0;
-      for(int i = 1; i < nSig; ++i) sigPars[i] = model->GetParameter(i + 1);
       const double coreFraction =
         SignalIntegralFromPars(sigPars, sig, gYieldIntLow, gYieldIntHigh);
-
       if(UseFitNormYield()) {
         catOut.yield = rawNorm;
         catOut.yieldErr = catOut.rawNormErr;
@@ -2689,8 +2827,8 @@ namespace JpsiMuonIDFit {
         catOut.yieldErr = catOut.rawNormErr * coreFraction;
       }
 
-      catOut.mean = model->GetParameter(2);
-      catOut.sigma = std::fabs(model->GetParameter(3));
+      catOut.mean = (nSig > 1) ? sigPars[1] : gPeakMass;
+      catOut.sigma = (nSig > 2) ? std::fabs(sigPars[2]) : 0.;
       catOut.eventsInFitRange = HistIntegralDensity(h, fitMin, fitMax, true);
       int nPoints = 0;
       catOut.chi2 = CategoryChi2(h, cat, fitMin, fitMax, nPoints);
@@ -2700,7 +2838,18 @@ namespace JpsiMuonIDFit {
 
       catOut.pars.resize(nSig + nBkg);
       catOut.errs.assign(nSig + nBkg, 0.);
-      for(int i = 0; i < nSig + nBkg; ++i) catOut.pars[i] = cat->GetParameter(i);
+      catOut.pars[0] = rawNorm;
+      catOut.errs[0] = catOut.rawNormErr;
+      for(int i = 1; i < nSig; ++i) {
+        const int src =
+          SimSignalShapeParameterIndex(isFail, i, sig, shapeMode);
+        catOut.pars[i] = cat->GetParameter(i);
+        if(src >= 0) catOut.errs[i] = model->GetParError(src);
+      }
+      for(int i = 0; i < nBkg; ++i) {
+        catOut.pars[nSig + i] = cat->GetParameter(nSig + i);
+        catOut.errs[nSig + i] = model->GetParError(srcBkg + i);
+      }
       return cat;
     };
 
@@ -2713,9 +2862,6 @@ namespace JpsiMuonIDFit {
       !computeStatError ||
       (std::isfinite(out.eff.statErr) && out.eff.statErr > 0.);
 
-    // Nominal fits need a usable covariance/error.  Rebin-variation fits are
-    // used only for their central efficiency, so do not reject a converged
-    // minimum merely because the covariance matrix is poor.
     if(computeStatError) {
       out.ok = out.eff.ok && minimumValid && covarianceUsable && statErrorUsable;
     }
@@ -2728,7 +2874,9 @@ namespace JpsiMuonIDFit {
 
     if(computeStatError) {
       if(!out.ok) {
-        cout << "[WARNING] Simultaneous Pass/Fail fit diagnostic: " << sample << " " << label
+        cout << "[WARNING] Simultaneous Pass/Fail fit diagnostic: " << sample
+             << " " << label
+             << ", shape=" << SimSignalShapeModeName(shapeMode)
              << ", status=" << out.eff.fitStatus
              << ", validMinimum=" << minimumValid
              << ", cov=" << out.eff.covStatus
@@ -2738,7 +2886,8 @@ namespace JpsiMuonIDFit {
       }
       else {
         cout << "[SIMULTANEOUS] " << sample << " " << label
-             << ": eff=" << out.eff.eff << " +/- " << out.eff.statErr;
+             << ": shape=" << SimSignalShapeModeName(shapeMode)
+             << ", eff=" << out.eff.eff << " +/- " << out.eff.statErr;
         if(out.eff.hasMinos) {
           cout << " (Minos=" << out.eff.minosLow << "/+" << out.eff.minosHigh
                << ", parabolic=" << out.eff.fitErr << ")";
@@ -2754,10 +2903,12 @@ namespace JpsiMuonIDFit {
     }
 
     if(savePlots) {
-      if(passModel && hPass) DrawFitPlot(hPass, passModel, out.pass, label, year, sample, "Pass",
-                                         outDir, fitMin, fitMax, sig, bkg);
-      if(failModel && hFail) DrawFitPlot(hFail, failModel, out.fail, label, year, sample, "Fail",
-                                         outDir, fitMin, fitMax, sig, bkg);
+      if(passModel && hPass)
+        DrawFitPlot(hPass, passModel, out.pass, label, year, sample, "Pass",
+                    outDir, fitMin, fitMax, sig, bkg);
+      if(failModel && hFail)
+        DrawFitPlot(hFail, failModel, out.fail, label, year, sample, "Fail",
+                    outDir, fitMin, fitMax, sig, bkg);
     }
 
     delete passModel;
@@ -3302,7 +3453,7 @@ void id_eff(TString Year = "2018",
                       double BkgFitMinInput = -1.0,
                       double BkgFitMaxInput = -1.0,
                       TString YieldModeInput = "fitnorm",
-                      TString FitMethodInput = "separate") {
+                      TString FitMethodInput = "simultaneous-independent") {
   using namespace JpsiMuonIDFit;
 
   gStyle->SetOptStat(0);
@@ -3325,13 +3476,19 @@ void id_eff(TString Year = "2018",
   gEfficiencyFitMethod.ToLower();
   gEfficiencyFitMethod.ReplaceAll("_", "");
   gEfficiencyFitMethod.ReplaceAll("-", "");
+  if(gEfficiencyFitMethod == "independent")
+    gEfficiencyFitMethod = "simultaneousindependent";
+  if(gEfficiencyFitMethod == "sharedmean")
+    gEfficiencyFitMethod = "simultaneoussharedmean";
   if(!(gEfficiencyFitMethod == "separate" ||
        gEfficiencyFitMethod == "simultaneous" ||
        gEfficiencyFitMethod == "joint" ||
-       gEfficiencyFitMethod == "sim")) {
+       gEfficiencyFitMethod == "sim" ||
+       gEfficiencyFitMethod == "simultaneousindependent" ||
+       gEfficiencyFitMethod == "simultaneoussharedmean")) {
     cout << "[WARNING] Unknown FitMethodInput='" << FitMethodInput
-         << "'. Use 'separate'." << endl;
-    gEfficiencyFitMethod = "separate";
+         << "'. Use 'simultaneous-independent'." << endl;
+    gEfficiencyFitMethod = "simultaneousindependent";
   }
 
   if(!std::isfinite(FitMin) || !std::isfinite(FitMax) || FitMax <= FitMin) {
@@ -3376,8 +3533,7 @@ void id_eff(TString Year = "2018",
   cout << "[INFO] Bkg prefit     : [" << gBkgFitMin << "," << gBkgFitMax << "] GeV; sidebands " << SidebandRangesText() << " GeV" << endl;
   cout << "[INFO] Bkg fit metric  : " << (gUseLogBkgFit ? "log-density chi2" : "density chi2")
        << "; each rebin variation repeats the full sideband prefit" << endl;
-  cout << "[INFO] Efficiency method: "
-       << (UseSimultaneousEfficiencyFit() ? "simultaneous Pass/Fail" : "separate Pass/Fail") << endl;
+  cout << "[INFO] Efficiency method: " << EfficiencyFitMethodLabel() << endl;
   cout << "[INFO] Weighted MC     : SumW2 bin uncertainties are used in chi2 fits"
        << (UseSimultaneousEfficiencyFit() ? "; simultaneous Data uses Poisson likelihood" : "")
        << endl;
@@ -3390,7 +3546,8 @@ void id_eff(TString Year = "2018",
   if(UseFitNormYield()) {
     cout << "[INFO] Yield definition: N_" << gResonanceLabel << " = fitted signal normalisation parameter" << endl;
     if(UseSimultaneousEfficiencyFit()) {
-      cout << "[INFO] Efficiency fit : simultaneous Pass/Fail fit with efficiency as a fit parameter" << endl;
+      cout << "[INFO] Efficiency fit : simultaneous Pass/Fail fit with efficiency as a fit parameter; "
+           << "signal-shape mode=" << SimSignalShapeModeName(EfficiencySimShapeMode()) << endl;
       cout << "[INFO] Uncertainties  : Minos/Hessian fit error; rebin=1,2,4,5 envelope around nominal rebin=3 added in quadrature" << endl;
     }
     else {
@@ -3401,7 +3558,8 @@ void id_eff(TString Year = "2018",
   else {
     cout << "[INFO] Yield definition: N_" << gResonanceLabel << " = Integral(signal function, " << gYieldIntLow << ", " << gYieldIntHigh << ") GeV" << endl;
     if(UseSimultaneousEfficiencyFit()) {
-      cout << "[INFO] Efficiency fit : simultaneous Pass/Fail fit with efficiency as a fit parameter" << endl;
+      cout << "[INFO] Efficiency fit : simultaneous Pass/Fail fit with efficiency as a fit parameter; "
+           << "signal-shape mode=" << SimSignalShapeModeName(EfficiencySimShapeMode()) << endl;
       cout << "[INFO] Uncertainties  : Minos/Hessian fit error; rebin=1,2,4,5 envelope around nominal rebin=3 added in quadrature" << endl;
     }
     else {
@@ -3410,7 +3568,18 @@ void id_eff(TString Year = "2018",
     }
   }
   if(UseCommonShape) {
-    cout << "[INFO] Signal shape note: --common-shape fixes the separate Pass/Fail signal shapes to the All-fit shape; default AN-compatible mode fits them independently." << endl;
+    if(!UseSimultaneousEfficiencyFit()) {
+      cout << "[INFO] Signal shape note: --common-shape fixes the separate Pass/Fail signal shapes to the All-fit shape." << endl;
+    }
+    else if(EfficiencySimShapeMode() == kSimSharedAll) {
+      cout << "[INFO] Signal shape note: --common-shape fixes all shared simultaneous signal-shape parameters to the All-fit values." << endl;
+    }
+    else if(EfficiencySimShapeMode() == kSimSharedMean) {
+      cout << "[INFO] Signal shape note: --common-shape fixes only the shared resonance mean to the All-fit value; width/tails remain category-dependent." << endl;
+    }
+    else {
+      cout << "[INFO] Signal shape note: --common-shape has no effect in simultaneous-independent mode because no signal-shape parameter is shared." << endl;
+    }
   }
   cout << "[INFO] Save bin plots  : " << (SavePerBinPlots ? "true" : "false") << endl;
   cout << "[INFO] Save summaries  : " << (SaveSummaryPlots ? "true" : "false") << endl;
@@ -3842,7 +4011,7 @@ void id_eff_v8(TString Year = "2018",
                double BkgFitMinInput = -1.0,
                double BkgFitMaxInput = -1.0,
                TString YieldModeInput = "fitnorm",
-               TString FitMethodInput = "separate") {
+               TString FitMethodInput = "simultaneous-independent") {
   id_eff(Year, Trigger, BaseDir, Analyzer, BaseRegion, RebinFactor,
          SignalModelInput, BackgroundModelInput, FitMin, FitMax,
          UseCommonShape, FixBkgShapeFromSidebands, Side2FitWeight,
@@ -4007,18 +4176,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bkg-fit-max", type=float, default=None)
     parser.add_argument(
         "--fit-method",
-        choices=["separate", "simultaneous"],
-        default="separate",
+        choices=[
+            "simultaneous-independent",
+            "simultaneous",
+            "simultaneous-shared-mean",
+            "separate",
+        ],
+        default="simultaneous-independent",
         help=(
-            "efficiency extraction method: separate fits Pass/Fail independently; "
-            "simultaneous fits them jointly with efficiency as a parameter. "
-            "Default: %(default)s"
+            "efficiency extraction method. simultaneous-independent (default): "
+            "joint fit with independent Pass/Fail signal shapes; simultaneous: "
+            "legacy joint fit with all signal-shape parameters shared; "
+            "simultaneous-shared-mean: shared peak mean with independent width/tails; "
+            "separate: independent Pass/Fail fits followed by P/(P+F)"
         ),
     )
     parser.add_argument(
         "--common-shape",
         action="store_true",
-        help="fix the separate Pass/Fail signal shapes to the pass+fail (All) fit; default fits them independently",
+        help=(
+            "shape-fixing cross-check: separate fixes both category shapes to the All fit; "
+            "legacy simultaneous fixes its shared shape; shared-mean fixes only the common mean; "
+            "no effect for simultaneous-independent"
+        ),
     )
     parser.add_argument(
         "--no-fix-bkg-shape",
