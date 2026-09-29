@@ -3102,9 +3102,15 @@ namespace JpsiMuonIDFit {
     out.wilsonErr = std::max(errLow, errHigh);
   }
 
-  EffOutput MakeEfficiency(const FitOutput &pass, const FitOutput &fail) {
+  EffOutput MakeEfficiency(const FitOutput &pass, const FitOutput &fail,
+                           bool applyWilsonFloor = false) {
     // AN-era prescription: fit Pass and Fail independently and propagate the
     // fitted signal-yield uncertainties through efficiency = P/(P+F).
+    // Historical separate-mode protection: at the physical boundary
+    // eff=0 or 1 the Gaussian derivative propagation can become artificially
+    // tiny if the fitted Fail/Pass yield is pinned to zero.  When requested,
+    // retain the larger of that propagated error and the 68% Wilson interval
+    // half-width, as used in the earlier implementation.
     EffOutput out;
     if(!pass.ok || !fail.ok) return out;
     if(!std::isfinite(pass.yield) || !std::isfinite(fail.yield)) return out;
@@ -3127,9 +3133,15 @@ namespace JpsiMuonIDFit {
       dEdF * dEdF * sigmaF * sigmaF;
 
     out.fitErr = (std::isfinite(var) && var >= 0.) ? std::sqrt(var) : 0.;
-    out.statErr = out.fitErr;
-    out.err = out.statErr;
     out.nCount = total;
+    if(applyWilsonFloor) {
+      FillWilsonFloor(out, total);
+      out.statErr = std::max(out.fitErr, out.wilsonErr);
+    }
+    else {
+      out.statErr = out.fitErr;
+    }
+    out.err = out.statErr;
     out.ok = std::isfinite(out.eff) && std::isfinite(out.err) && out.err >= 0.;
     return out;
   }
@@ -3698,7 +3710,7 @@ void id_eff(TString Year = "2018",
     }
     else {
       cout << "[INFO] Efficiency fit : AN-compatible separate Pass/Fail chi2 fits; eff=P/(P+F)" << endl;
-      cout << "[INFO] Uncertainties  : fitted P/F errors propagated to eff; rebin=1,2,4,5 envelope around nominal rebin=3 added in quadrature" << endl;
+      cout << "[INFO] Uncertainties  : fitted P/F errors propagated to eff with historical 68% Wilson floor at boundaries; rebin=1,2,4,5 envelope around nominal rebin=3 added in quadrature" << endl;
     }
   }
   else {
@@ -3710,7 +3722,7 @@ void id_eff(TString Year = "2018",
     }
     else {
       cout << "[INFO] Efficiency fit : separate Pass/Fail chi2 fits; eff=P/(P+F)" << endl;
-      cout << "[INFO] Uncertainties  : fitted P/F errors propagated to eff; rebin=1,2,4,5 envelope around nominal rebin=3 added in quadrature" << endl;
+      cout << "[INFO] Uncertainties  : fitted P/F errors propagated to eff with historical 68% Wilson floor at boundaries; rebin=1,2,4,5 envelope around nominal rebin=3 added in quadrature" << endl;
     }
   }
   if(UseCommonShape) {
@@ -3889,7 +3901,7 @@ void id_eff(TString Year = "2018",
                               sigModel, bkgModel, FitMin, FitMax, shape, shape != nullptr,
                               failBkg, FixBkgShapeFromSidebands, SavePerBinPlots);
 
-        row.dataEff = MakeEfficiency(row.dataPass, row.dataFail);
+        row.dataEff = MakeEfficiency(row.dataPass, row.dataFail, true);
         if(row.dataEff.ok) {
           const EffOutput r1 = FitSeparateEfficiencyVariation(hDataPassR1, hDataFailR1, bin.tag, Year, "Data", outDir, sigModel, bkgModel, FitMin, FitMax, UseCommonShape, FixBkgShapeFromSidebands);
           const EffOutput r2 = FitSeparateEfficiencyVariation(hDataPassR2, hDataFailR2, bin.tag, Year, "Data", outDir, sigModel, bkgModel, FitMin, FitMax, UseCommonShape, FixBkgShapeFromSidebands);
@@ -3960,7 +3972,7 @@ void id_eff(TString Year = "2018",
                              sigModel, bkgModel, FitMin, FitMax, shape, shape != nullptr,
                              failBkg, FixBkgShapeFromSidebands, SavePerBinPlots);
 
-        row.qcdEff = MakeEfficiency(row.qcdPass, row.qcdFail);
+        row.qcdEff = MakeEfficiency(row.qcdPass, row.qcdFail, true);
         if(row.qcdEff.ok) {
           const EffOutput r1 = FitSeparateEfficiencyVariation(hQCDPassR1, hQCDFailR1, bin.tag, Year, refLabel, outDir, sigModel, bkgModel, FitMin, FitMax, UseCommonShape, FixBkgShapeFromSidebands);
           const EffOutput r2 = FitSeparateEfficiencyVariation(hQCDPassR2, hQCDFailR2, bin.tag, Year, refLabel, outDir, sigModel, bkgModel, FitMin, FitMax, UseCommonShape, FixBkgShapeFromSidebands);
@@ -4027,7 +4039,8 @@ void id_eff(TString Year = "2018",
          << ", eff = " << row.dataEff.eff << " +/- " << row.dataEff.err;
     if(row.dataEff.ok) {
       cout << "  [stat=" << row.dataEff.statErr
-           << (row.dataEff.usedSeparateStatFallback ? " (separate-fallback)" : " (joint-profile)")
+           << (!UseSimultaneousEfficiencyFit() ? " (separate-fit)"
+               : (row.dataEff.usedSeparateStatFallback ? " (separate-fallback)" : " (joint-profile)"))
            << ", binning=" << row.dataEff.binningErr
            << ", r1=" << (row.dataEff.rebin1Ok ? Form("%.6g", row.dataEff.rebin1Eff) : "FAIL")
            << ", r2=" << (row.dataEff.rebin2Ok ? Form("%.6g", row.dataEff.rebin2Eff) : "FAIL")
@@ -4041,7 +4054,8 @@ void id_eff(TString Year = "2018",
          << ", eff = " << row.qcdEff.eff << " +/- " << row.qcdEff.err;
     if(row.qcdEff.ok) {
       cout << "  [stat=" << row.qcdEff.statErr
-           << (row.qcdEff.usedSeparateStatFallback ? " (separate-fallback)" : " (joint-profile)")
+           << (!UseSimultaneousEfficiencyFit() ? " (separate-fit)"
+               : (row.qcdEff.usedSeparateStatFallback ? " (separate-fallback)" : " (joint-profile)"))
            << ", binning=" << row.qcdEff.binningErr
            << ", r1=" << (row.qcdEff.rebin1Ok ? Form("%.6g", row.qcdEff.rebin1Eff) : "FAIL")
            << ", r2=" << (row.qcdEff.rebin2Ok ? Form("%.6g", row.qcdEff.rebin2Eff) : "FAIL")
