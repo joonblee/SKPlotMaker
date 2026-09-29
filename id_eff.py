@@ -114,7 +114,10 @@ CPP_SOURCE = r"""
 //      Other selectable backgrounds remain available for cross-checks.
 //   6. Efficiency extraction is selectable with --fit-method:
 //        simultaneous-independent (default): joint Pass/Fail fit with efficiency
-//          as a parameter and independent Pass/Fail signal shapes;
+//          as a parameter and independent Pass/Fail signal shapes.  A finite
+//          boundary central value is retained for Minuit status <=2; if the
+//          joint Minos/Hessian error is unusable, the statistical uncertainty
+//          falls back to separate Pass/Fail fitted-yield propagation;
 //        simultaneous: legacy joint fit with all signal-shape parameters shared;
 //        simultaneous-shared-mean: joint fit with a common peak mean but
 //          independent Pass/Fail resolution/tail parameters;
@@ -380,6 +383,8 @@ namespace JpsiMuonIDFit {
   struct EffOutput {
     bool ok = false;
     bool hasMinos = false;
+    bool profileStatOk = false;
+    bool usedSeparateStatFallback = false;
     bool binningOk = false;
     double eff = 0.;
     double err = 0.;          // final symmetric error = sqrt(stat^2 + binning^2)
@@ -2719,10 +2724,94 @@ namespace JpsiMuonIDFit {
       useDataLikelihood ? (hasInternalVeto ? "SLERQ0" : "SLIERQ0")
                         : (hasInternalVeto ? "SERQ0"  : "SIERQ0");
 
+    // Save the seeded model so a problematic boundary fit can be retried from
+    // several efficiency starting points without carrying a failed minimum
+    // into the next attempt.
+    vector<double> seededPars(nPar, 0.);
+    for(int i = 0; i < nPar; ++i) seededPars[i] = model->GetParameter(i);
+
+    auto restorePars = [&](const vector<double> &pars) {
+      for(int i = 0; i < nPar && i < (int)pars.size(); ++i)
+        model->SetParameter(i, pars[i]);
+    };
+    auto currentPars = [&]() {
+      vector<double> pars(nPar, 0.);
+      for(int i = 0; i < nPar; ++i) pars[i] = model->GetParameter(i);
+      return pars;
+    };
+    auto objective = [&](const TFitResultPtr &res) {
+      if(!res.Get()) return std::numeric_limits<double>::infinity();
+      const double value = res->MinFcnValue();
+      return std::isfinite(value)
+        ? value : std::numeric_limits<double>::infinity();
+    };
+
     gRejectPsiPInFinalFit = hasInternalVeto;
     TFitResultPtr fitRes = jointHist->Fit(model, firstFitOpt.Data());
     fitRes = jointHist->Fit(model, firstFitOpt.Data());
-    if(computeStatError) fitRes = jointHist->Fit(model, errorFitOpt.Data());
+
+    double bestObjective = objective(fitRes);
+    vector<double> bestPars = currentPars();
+    int bestStatus = int(fitRes);
+    bool bestValid = fitRes.Get() && fitRes->IsValid();
+
+    // A non-zero Minuit status is common near eff=0/1 when a category signal
+    // yield vanishes.  Retry only problematic fits; ordinary well-behaved bins
+    // pay no extra fitting cost.
+    if(!bestValid || bestStatus != 0 || !std::isfinite(bestObjective)) {
+      const double retrySeeds[] = {0.50, 0.90, 0.99, 0.999};
+      for(double retryEff : retrySeeds) {
+        if(std::fabs(retryEff - effGuess) < 1e-6) continue;
+        restorePars(seededPars);
+        model->SetParameter(0, retryEff);
+        TFitResultPtr retryRes = jointHist->Fit(model, firstFitOpt.Data());
+        retryRes = jointHist->Fit(model, firstFitOpt.Data());
+        const double retryObjective = objective(retryRes);
+        if(std::isfinite(retryObjective) &&
+           (!std::isfinite(bestObjective) || retryObjective < bestObjective)) {
+          bestObjective = retryObjective;
+          bestPars = currentPars();
+          bestStatus = int(retryRes);
+          bestValid = retryRes.Get() && retryRes->IsValid();
+        }
+      }
+
+      if(std::isfinite(bestObjective)) {
+        restorePars(bestPars);
+        // One final central-value minimisation from the best retry point.
+        fitRes = jointHist->Fit(model, firstFitOpt.Data());
+        const double finalObjective = objective(fitRes);
+        if(!std::isfinite(finalObjective) ||
+           finalObjective > bestObjective + 1e-6 * (1.0 + std::fabs(bestObjective))) {
+          restorePars(bestPars);
+        }
+        cout << "[RETRY] Simultaneous central fit: " << sample << " " << label
+             << ", shape=" << SimSignalShapeModeName(shapeMode)
+             << ", bestObjective=" << bestObjective
+             << ", bestStatus=" << bestStatus
+             << ", bestValid=" << bestValid << endl;
+      }
+    }
+
+    // Keep the best finite central point even when the covariance is singular.
+    // The profile error is attempted from that point.  If it is unusable, the
+    // caller will retain this simultaneous central value and use the separate
+    // Pass/Fail propagated statistical error as a fallback.
+    const vector<double> centralPars = currentPars();
+    const double centralObjective = objective(fitRes);
+    const int centralStatus = int(fitRes);
+    const bool centralValidMinimum = fitRes.Get() && fitRes->IsValid();
+
+    if(computeStatError) {
+      TFitResultPtr errorRes = jointHist->Fit(model, errorFitOpt.Data());
+      const double errorObjective = objective(errorRes);
+      if(errorRes.Get() && std::isfinite(errorObjective)) {
+        fitRes = errorRes;
+      }
+      else {
+        restorePars(centralPars);
+      }
+    }
     gRejectPsiPInFinalFit = false;
 
     out.eff.fitStatus = int(fitRes);
@@ -2737,6 +2826,7 @@ namespace JpsiMuonIDFit {
     if(!std::isfinite(out.eff.fitErr) || out.eff.fitErr < 0.) out.eff.fitErr = 0.;
 
     if(computeStatError) {
+      out.eff.profileStatOk = false;
       if(fitRes.Get() && fitRes->HasMinosError(0)) {
         out.eff.hasMinos = true;
         out.eff.minosLow = fitRes->LowerError(0);
@@ -2746,9 +2836,22 @@ namespace JpsiMuonIDFit {
         const double highAbs =
           std::isfinite(out.eff.minosHigh) ? std::fabs(out.eff.minosHigh) : 0.;
         out.eff.statErr = std::max(lowAbs, highAbs);
+        out.eff.profileStatOk =
+          std::isfinite(out.eff.statErr) && out.eff.statErr > 0.;
       }
-      else {
-        out.eff.statErr = out.eff.fitErr;
+
+      if(!out.eff.profileStatOk) {
+        const bool hessianUsable =
+          fitRes.Get() && fitRes->IsValid() &&
+          out.eff.covStatus >= 2 &&
+          std::isfinite(out.eff.fitErr) && out.eff.fitErr > 0.;
+        if(hessianUsable) {
+          out.eff.statErr = out.eff.fitErr;
+          out.eff.profileStatOk = true;
+        }
+        else {
+          out.eff.statErr = 0.;
+        }
       }
       out.eff.err = out.eff.statErr;
     }
@@ -2856,48 +2959,60 @@ namespace JpsiMuonIDFit {
     TF1 *passModel = buildCategory(false, "Pass", hPass, out.pass);
     TF1 *failModel = buildCategory(true, "Fail", hFail, out.fail);
 
-    const bool minimumValid = fitRes.Get() && fitRes->IsValid();
-    const bool covarianceUsable = (out.eff.covStatus >= 2);
-    const bool statErrorUsable =
-      !computeStatError ||
-      (std::isfinite(out.eff.statErr) && out.eff.statErr > 0.);
+    const double selectedObjective =
+      (fitRes.Get() && std::isfinite(fitRes->MinFcnValue()))
+        ? fitRes->MinFcnValue() : centralObjective;
+    const int selectedStatus = fitRes.Get() ? int(fitRes) : centralStatus;
+    const bool selectedValidMinimum =
+      fitRes.Get() ? fitRes->IsValid() : centralValidMinimum;
 
-    if(computeStatError) {
-      out.ok = out.eff.ok && minimumValid && covarianceUsable && statErrorUsable;
-    }
-    else {
-      const bool centralValueUsable =
-        fitRes.Get() && int(fitRes) == 0 &&
-        std::isfinite(out.eff.eff) && nTotal > 0.;
-      out.ok = centralValueUsable;
-    }
+    // For the central value, accept a finite minimum with status 0, 1, or 2.
+    // Status 1/2 commonly reflects a poor/singular covariance at the physical
+    // efficiency boundary, not an unusable central value.  Worse statuses are
+    // still rejected.
+    const bool statusTolerable =
+      selectedStatus >= 0 && selectedStatus <= 2;
+    const bool centralValueUsable =
+      fitRes.Get() &&
+      std::isfinite(selectedObjective) &&
+      std::isfinite(out.eff.eff) &&
+      std::isfinite(nTotal) && nTotal > 0. &&
+      statusTolerable;
+    out.ok = centralValueUsable;
+    out.eff.ok = centralValueUsable;
 
     if(computeStatError) {
       if(!out.ok) {
-        cout << "[WARNING] Simultaneous Pass/Fail fit diagnostic: " << sample
+        cout << "[WARNING] Simultaneous Pass/Fail central fit rejected: " << sample
              << " " << label
              << ", shape=" << SimSignalShapeModeName(shapeMode)
-             << ", status=" << out.eff.fitStatus
-             << ", validMinimum=" << minimumValid
+             << ", status=" << selectedStatus
+             << ", validMinimum=" << selectedValidMinimum
+             << ", objective=" << selectedObjective
              << ", cov=" << out.eff.covStatus
-             << ", hasEffMinos=" << out.eff.hasMinos
-             << ", eff=" << out.eff.eff << " +/- " << out.eff.statErr
-             << endl;
+             << ", eff=" << out.eff.eff << endl;
       }
       else {
         cout << "[SIMULTANEOUS] " << sample << " " << label
              << ": shape=" << SimSignalShapeModeName(shapeMode)
-             << ", eff=" << out.eff.eff << " +/- " << out.eff.statErr;
-        if(out.eff.hasMinos) {
-          cout << " (Minos=" << out.eff.minosLow << "/+" << out.eff.minosHigh
-               << ", parabolic=" << out.eff.fitErr << ")";
+             << ", eff=" << out.eff.eff;
+        if(out.eff.profileStatOk) {
+          cout << " +/- " << out.eff.statErr;
+          if(out.eff.hasMinos) {
+            cout << " (Minos=" << out.eff.minosLow << "/+" << out.eff.minosHigh
+                 << ", parabolic=" << out.eff.fitErr << ")";
+          }
+          else {
+            cout << " (Hessian=" << out.eff.fitErr << ")";
+          }
         }
         else {
-          cout << " (Minos unavailable, Hessian=" << out.eff.fitErr << ")";
+          cout << " (joint profile error unavailable; separate-fit fallback requested)";
         }
         cout << ", Nsig=" << nTotal
              << ", " << (useDataLikelihood ? "2NLL" : "chi2_{SumW2}")
              << "/ndf=" << out.eff.chi2 << "/" << out.eff.ndf
+             << ", status=" << selectedStatus
              << ", cov=" << out.eff.covStatus << endl;
       }
     }
@@ -3022,6 +3137,42 @@ namespace JpsiMuonIDFit {
     out.nCount = total;
     out.ok = std::isfinite(out.eff) && std::isfinite(out.err) && out.err >= 0.;
     return out;
+  }
+
+  bool ApplySeparateStatFallback(EffOutput &simEff,
+                                 const FitOutput &separatePass,
+                                 const FitOutput &separateFail,
+                                 const TString &sample,
+                                 const TString &label) {
+    if(!simEff.ok) return false;
+    if(simEff.profileStatOk &&
+       std::isfinite(simEff.statErr) && simEff.statErr > 0.) {
+      return true;
+    }
+
+    const EffOutput separateEff = MakeEfficiency(separatePass, separateFail);
+    if(!separateEff.ok ||
+       !std::isfinite(separateEff.statErr) ||
+       separateEff.statErr <= 0.) {
+      cout << "[WARNING] Statistical-error fallback unavailable for "
+           << sample << " " << label
+           << "; simultaneous central value is kept internally but the point "
+           << "will be marked invalid because no positive statistical error exists."
+           << endl;
+      simEff.ok = false;
+      simEff.err = 0.;
+      simEff.statErr = 0.;
+      return false;
+    }
+
+    simEff.statErr = separateEff.statErr;
+    simEff.err = simEff.statErr;
+    simEff.usedSeparateStatFallback = true;
+    cout << "[STAT-FALLBACK] " << sample << " " << label
+         << ": central(simultaneous)=" << simEff.eff
+         << ", stat(separate P/F propagation)=" << simEff.statErr
+         << " [separate eff=" << separateEff.eff << "]" << endl;
+    return true;
   }
 
 
@@ -3548,7 +3699,7 @@ void id_eff(TString Year = "2018",
     if(UseSimultaneousEfficiencyFit()) {
       cout << "[INFO] Efficiency fit : simultaneous Pass/Fail fit with efficiency as a fit parameter; "
            << "signal-shape mode=" << SimSignalShapeModeName(EfficiencySimShapeMode()) << endl;
-      cout << "[INFO] Uncertainties  : Minos/Hessian fit error; rebin=1,2,4,5 envelope around nominal rebin=3 added in quadrature" << endl;
+      cout << "[INFO] Uncertainties  : joint Minos/Hessian when usable; otherwise separate P/F propagated stat fallback; rebin=1,2,4,5 central-value envelope added in quadrature" << endl;
     }
     else {
       cout << "[INFO] Efficiency fit : AN-compatible separate Pass/Fail chi2 fits; eff=P/(P+F)" << endl;
@@ -3560,7 +3711,7 @@ void id_eff(TString Year = "2018",
     if(UseSimultaneousEfficiencyFit()) {
       cout << "[INFO] Efficiency fit : simultaneous Pass/Fail fit with efficiency as a fit parameter; "
            << "signal-shape mode=" << SimSignalShapeModeName(EfficiencySimShapeMode()) << endl;
-      cout << "[INFO] Uncertainties  : Minos/Hessian fit error; rebin=1,2,4,5 envelope around nominal rebin=3 added in quadrature" << endl;
+      cout << "[INFO] Uncertainties  : joint Minos/Hessian when usable; otherwise separate P/F propagated stat fallback; rebin=1,2,4,5 central-value envelope added in quadrature" << endl;
     }
     else {
       cout << "[INFO] Efficiency fit : separate Pass/Fail chi2 fits; eff=P/(P+F)" << endl;
@@ -3720,6 +3871,10 @@ void id_eff(TString Year = "2018",
         row.dataFail = sim.fail;
         row.dataEff = sim.eff;
         row.dataEff.ok = sim.ok;
+        if(row.dataEff.ok) {
+          ApplySeparateStatFallback(
+            row.dataEff, passSeed, failSeed, "Data", bin.tag);
+        }
 
         if(row.dataEff.ok) {
           const EffOutput r1 = FitSimultaneousEfficiencyVariation(hDataPassR1, hDataFailR1, bin.tag, Year, "Data", outDir, sigModel, bkgModel, FitMin, FitMax, UseCommonShape, FixBkgShapeFromSidebands);
@@ -3787,6 +3942,10 @@ void id_eff(TString Year = "2018",
         row.qcdFail = sim.fail;
         row.qcdEff = sim.eff;
         row.qcdEff.ok = sim.ok;
+        if(row.qcdEff.ok) {
+          ApplySeparateStatFallback(
+            row.qcdEff, passSeed, failSeed, refLabel, bin.tag);
+        }
 
         if(row.qcdEff.ok) {
           const EffOutput r1 = FitSimultaneousEfficiencyVariation(hQCDPassR1, hQCDFailR1, bin.tag, Year, refLabel, outDir, sigModel, bkgModel, FitMin, FitMax, UseCommonShape, FixBkgShapeFromSidebands);
