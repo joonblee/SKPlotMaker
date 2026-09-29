@@ -2778,13 +2778,6 @@ namespace JpsiMuonIDFit {
 
       if(std::isfinite(bestObjective)) {
         restorePars(bestPars);
-        // One final central-value minimisation from the best retry point.
-        fitRes = jointHist->Fit(model, firstFitOpt.Data());
-        const double finalObjective = objective(fitRes);
-        if(!std::isfinite(finalObjective) ||
-           finalObjective > bestObjective + 1e-6 * (1.0 + std::fabs(bestObjective))) {
-          restorePars(bestPars);
-        }
         cout << "[RETRY] Simultaneous central fit: " << sample << " " << label
              << ", shape=" << SimSignalShapeModeName(shapeMode)
              << ", bestObjective=" << bestObjective
@@ -2794,32 +2787,31 @@ namespace JpsiMuonIDFit {
     }
 
     // Keep the best finite central point even when the covariance is singular.
-    // The profile error is attempted from that point.  If it is unusable, the
-    // caller will retain this simultaneous central value and use the separate
-    // Pass/Fail propagated statistical error as a fallback.
+    // The profile error is attempted from that point, but the model parameters
+    // are restored afterwards so a failed/shifted error fit cannot replace the
+    // chosen simultaneous central value.
     const vector<double> centralPars = currentPars();
-    const double centralObjective = objective(fitRes);
-    const int centralStatus = int(fitRes);
-    const bool centralValidMinimum = fitRes.Get() && fitRes->IsValid();
+    const double centralObjective = bestObjective;
+    const int centralStatus = bestStatus;
+    const bool centralValidMinimum = bestValid;
 
+    TFitResultPtr statRes = fitRes;
     if(computeStatError) {
       TFitResultPtr errorRes = jointHist->Fit(model, errorFitOpt.Data());
       const double errorObjective = objective(errorRes);
       if(errorRes.Get() && std::isfinite(errorObjective)) {
-        fitRes = errorRes;
+        statRes = errorRes;
       }
-      else {
-        restorePars(centralPars);
-      }
+      restorePars(centralPars);
     }
     gRejectPsiPInFinalFit = false;
 
-    out.eff.fitStatus = int(fitRes);
-    if(fitRes.Get()) out.eff.covStatus = fitRes->CovMatrixStatus();
-    if(fitRes.Get()) {
-      const double f = fitRes->MinFcnValue();
-      out.eff.chi2 = std::isfinite(f) ? (useDataLikelihood ? 2.0 * f : f) : 0.;
-    }
+    out.eff.fitStatus = centralStatus;
+    if(statRes.Get()) out.eff.covStatus = statRes->CovMatrixStatus();
+    out.eff.chi2 =
+      std::isfinite(centralObjective)
+        ? (useDataLikelihood ? 2.0 * centralObjective : centralObjective)
+        : 0.;
     out.eff.ndf = model->GetNDF();
     out.eff.eff = std::max(0.0, std::min(1.0, model->GetParameter(0)));
     out.eff.fitErr = model->GetParError(0);
@@ -2827,10 +2819,10 @@ namespace JpsiMuonIDFit {
 
     if(computeStatError) {
       out.eff.profileStatOk = false;
-      if(fitRes.Get() && fitRes->HasMinosError(0)) {
+      if(statRes.Get() && statRes->HasMinosError(0)) {
         out.eff.hasMinos = true;
-        out.eff.minosLow = fitRes->LowerError(0);
-        out.eff.minosHigh = fitRes->UpperError(0);
+        out.eff.minosLow = statRes->LowerError(0);
+        out.eff.minosHigh = statRes->UpperError(0);
         const double lowAbs =
           std::isfinite(out.eff.minosLow) ? std::fabs(out.eff.minosLow) : 0.;
         const double highAbs =
@@ -2842,7 +2834,7 @@ namespace JpsiMuonIDFit {
 
       if(!out.eff.profileStatOk) {
         const bool hessianUsable =
-          fitRes.Get() && fitRes->IsValid() &&
+          statRes.Get() && statRes->IsValid() &&
           out.eff.covStatus >= 2 &&
           std::isfinite(out.eff.fitErr) && out.eff.fitErr > 0.;
         if(hessianUsable) {
@@ -2896,10 +2888,10 @@ namespace JpsiMuonIDFit {
       double varEff = 0.;
       double varN = 0.;
       double covEffN = 0.;
-      if(fitRes.Get()) {
-        varEff = fitRes->CovMatrix(0, 0);
-        varN = fitRes->CovMatrix(1, 1);
-        covEffN = fitRes->CovMatrix(0, 1);
+      if(statRes.Get()) {
+        varEff = statRes->CovMatrix(0, 0);
+        varN = statRes->CovMatrix(1, 1);
+        covEffN = statRes->CovMatrix(0, 1);
       }
       if(isFail) {
         const double oneMinus = 1.0 - eff;
@@ -2959,12 +2951,9 @@ namespace JpsiMuonIDFit {
     TF1 *passModel = buildCategory(false, "Pass", hPass, out.pass);
     TF1 *failModel = buildCategory(true, "Fail", hFail, out.fail);
 
-    const double selectedObjective =
-      (fitRes.Get() && std::isfinite(fitRes->MinFcnValue()))
-        ? fitRes->MinFcnValue() : centralObjective;
-    const int selectedStatus = fitRes.Get() ? int(fitRes) : centralStatus;
-    const bool selectedValidMinimum =
-      fitRes.Get() ? fitRes->IsValid() : centralValidMinimum;
+    const double selectedObjective = centralObjective;
+    const int selectedStatus = centralStatus;
+    const bool selectedValidMinimum = centralValidMinimum;
 
     // For the central value, accept a finite minimum with status 0, 1, or 2.
     // Status 1/2 commonly reflects a poor/singular covariance at the physical
@@ -2973,7 +2962,6 @@ namespace JpsiMuonIDFit {
     const bool statusTolerable =
       selectedStatus >= 0 && selectedStatus <= 2;
     const bool centralValueUsable =
-      fitRes.Get() &&
       std::isfinite(selectedObjective) &&
       std::isfinite(out.eff.eff) &&
       std::isfinite(nTotal) && nTotal > 0. &&
