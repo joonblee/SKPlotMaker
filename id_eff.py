@@ -2767,11 +2767,18 @@ namespace JpsiMuonIDFit {
         TFitResultPtr retryRes = jointHist->Fit(model, firstFitOpt.Data());
         retryRes = jointHist->Fit(model, firstFitOpt.Data());
         const double retryObjective = objective(retryRes);
-        if(std::isfinite(retryObjective) &&
-           (!std::isfinite(bestObjective) || retryObjective < bestObjective)) {
+        const int retryStatus = int(retryRes);
+        const bool retryTolerable = retryStatus >= 0 && retryStatus <= 2;
+        const bool bestTolerable = bestStatus >= 0 && bestStatus <= 2;
+        const bool preferRetry =
+          std::isfinite(retryObjective) &&
+          ((!bestTolerable && retryTolerable) ||
+           (bestTolerable == retryTolerable &&
+            (!std::isfinite(bestObjective) || retryObjective < bestObjective)));
+        if(preferRetry) {
           bestObjective = retryObjective;
           bestPars = currentPars();
-          bestStatus = int(retryRes);
+          bestStatus = retryStatus;
           bestValid = retryRes.Get() && retryRes->IsValid();
         }
       }
@@ -4020,6 +4027,7 @@ void id_eff(TString Year = "2018",
          << ", eff = " << row.dataEff.eff << " +/- " << row.dataEff.err;
     if(row.dataEff.ok) {
       cout << "  [stat=" << row.dataEff.statErr
+           << (row.dataEff.usedSeparateStatFallback ? " (separate-fallback)" : " (joint-profile)")
            << ", binning=" << row.dataEff.binningErr
            << ", r1=" << (row.dataEff.rebin1Ok ? Form("%.6g", row.dataEff.rebin1Eff) : "FAIL")
            << ", r2=" << (row.dataEff.rebin2Ok ? Form("%.6g", row.dataEff.rebin2Eff) : "FAIL")
@@ -4033,6 +4041,7 @@ void id_eff(TString Year = "2018",
          << ", eff = " << row.qcdEff.eff << " +/- " << row.qcdEff.err;
     if(row.qcdEff.ok) {
       cout << "  [stat=" << row.qcdEff.statErr
+           << (row.qcdEff.usedSeparateStatFallback ? " (separate-fallback)" : " (joint-profile)")
            << ", binning=" << row.qcdEff.binningErr
            << ", r1=" << (row.qcdEff.rebin1Ok ? Form("%.6g", row.qcdEff.rebin1Eff) : "FAIL")
            << ", r2=" << (row.qcdEff.rebin2Ok ? Form("%.6g", row.qcdEff.rebin2Eff) : "FAIL")
