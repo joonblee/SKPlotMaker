@@ -236,6 +236,63 @@ for era in 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix Run2 Run3 
 done
 ```
 
+### 6. Convener-review diagnostic studies
+
+The dedicated Run-2 SKFlatAnalyzer modes `ConvenerStudy` and
+`DYValidationDRStudy` write the histograms used for the current convener
+cross-checks.  For the first-pass 2018 study, merge the analyzer outputs with
+
+```bash
+source hadd.sh 2018 ConvenerStudy
+source hadd.sh 2018 DYValidationDRStudy
+```
+
+Then make all current diagnostic plots with
+
+```bash
+python3 convener_studies.py --era 2018 --study all
+```
+
+or run one study at a time:
+
+```bash
+python3 convener_studies.py --era 2018 --study lepton-veto
+python3 convener_studies.py --era 2018 --study jet-composition
+python3 convener_studies.py --era 2018 --study dijet-mass
+python3 convener_studies.py --era 2018 --study dy-vr
+```
+
+The default merged input directories are
+
+```text
+/data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon/ConvenerStudy/2018
+/data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon/DYValidationDRStudy/2018
+```
+
+and can be overridden with `--convener-dir` and `--dy-vr-dir`.
+
+The diagnostics are intentionally separate from the nominal background
+workflow:
+
+- **lepton-veto:** compares the selected yield before and after the additional
+  electron veto, tau veto, and combined veto, and writes
+  `lepton_veto_yields.csv`;
+- **jet-composition:** compares the shape-normalised dimuon-jet constituent
+  multiplicity and charged-hadron energy fraction for QCD, DY, Top, and chosen
+  signal masses;
+- **dijet-mass:** compares the shape-normalised
+  `m(j_mumu,j_tag)` distribution;
+- **dy-vr:** performs the orthogonal
+  `DeltaR(mu, reference jet)>0.4` data closure test.  It subtracts QCD, top,
+  and minor MC backgrounds in the b-jet and light-jet validation categories,
+  derives the aMC@NLO DY transfer factor in `11<m(mumu)<80 GeV`, and compares
+  the target data with the scaled light-jet source.  The bin-by-bin values are
+  also written to `dy_validation_drgt0p4.csv`.
+
+The ConvenerStudy plots are MC-only and do not display signal-region collision
+data.  The DY validation-region plot uses collision data only in the explicitly
+orthogonal validation selection.
+
 ## File guide
 
 | File | Role | Why it exists |
@@ -249,6 +306,7 @@ done
 | `os_ss_comparison.py` | OS/SS QCD validation | Compares QCD-MC and `Data - nonQCD` OS/SS behaviour. In OS, DY subtraction uses `NIsoMuon_DYJets_est.root`; in SS, only Top and Others are subtracted. |
 | `id_eff.py` | Muon-ID tag-and-probe | Self-contained J/psi/Z efficiency and scale-factor measurement. The C++ fit implementation is embedded in the Python script and compiled through ROOT ACLiC. |
 | `trig_eff.py` | Trigger-efficiency measurement | Projects the analyser's 2D trigger-efficiency histograms into the required eta regions and pT binning, then makes data/MC efficiency and SF plots. |
+| `convener_studies.py` | Convener-review diagnostics | Plots the dedicated 2018 electron/tau-veto, dimuon-jet composition, dijet-mass, and orthogonal DY data-closure studies written by the SKFlatAnalyzer diagnostic modes. |
 | `sigFit.py` | Signal mass-shape fit | Fits signal dimuon-mass distributions with a double Crystal Ball or Gaussian and parameterises `sigma_m / m` versus mass. |
 | `sigFit_v2.py` | Extended signal fit/interpolation | Extends the signal-fit workflow with interpolation products, closure information, yields, and signal systematic bookkeeping. Use this version when the interpolation outputs are required. |
 
