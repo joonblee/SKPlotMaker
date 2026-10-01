@@ -16,16 +16,20 @@
 #   nominal           : <BASE>/<era>
 #   RunSyst           : <BASE>/RunSyst/<era>
 #   RunXSecSyst       : <BASE>/RunXSecSyst/<era>
-#   MuonIDEfficiency  : <BASE>/MuonIDEfficiency/<era>
-#   TriggerEfficiency : <BASE>/TriggerEfficiency/<era>
-#   all               : all five
+#   MuonIDEfficiency   : <BASE>/MuonIDEfficiency/<era>
+#   TriggerEfficiency  : <BASE>/TriggerEfficiency/<era>
+#   ConvenerStudy      : <BASE>/ConvenerStudy/<era>
+#   DYValidationDRStudy: <BASE>/DYValidationDRStudy/<era>
+#   all                : all seven
 #
 # Current production policy:
 #   nominal           : data + all nominal backgrounds + signal
 #   RunSyst           : tt/ST/Others + signal, OS BJet histograms only
 #   RunXSecSyst       : tt/ST/Others only, OS BJet histograms only
-#   MuonIDEfficiency  : merge the available efficiency skim files only; no signal
-#   TriggerEfficiency : merge the available efficiency skim files only; no signal
+#   MuonIDEfficiency   : merge the available efficiency skim files only; no signal
+#   TriggerEfficiency  : merge the available efficiency skim files only; no signal
+#   ConvenerStudy      : merge nominal-like data/MC and signal diagnostic outputs
+#   DYValidationDRStudy: merge nominal-like data/MC and signal diagnostic outputs
 #
 # Important details:
 #   * Run-3 TTLL_powheg_ext1 is included in tt where it exists.
@@ -51,7 +55,8 @@ print_help() {
     echo
     echo "COLLECTION (default: nominal):"
     echo "  nominal, RunSyst, RunXSecSyst,"
-    echo "  MuonIDEfficiency, TriggerEfficiency, all"
+    echo "  MuonIDEfficiency, TriggerEfficiency,"
+    echo "  ConvenerStudy, DYValidationDRStudy, all"
 }
 
 run_hadd() {
@@ -105,12 +110,22 @@ is_efficiency_collection() {
     esac
 }
 
+is_diagnostic_collection() {
+    case "$1" in
+        ConvenerStudy|DYValidationDRStudy) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 is_nominal_like_collection() {
-    [[ "$1" == "nominal" ]] || is_efficiency_collection "$1"
+    [[ "$1" == "nominal" ]] ||
+    is_efficiency_collection "$1" ||
+    is_diagnostic_collection "$1"
 }
 
 collection_has_signal() {
-    [[ "$1" == "nominal" || "$1" == "RunSyst" ]]
+    [[ "$1" == "nominal" || "$1" == "RunSyst" ]] ||
+    is_diagnostic_collection "$1"
 }
 
 get_dir() {
@@ -541,7 +556,9 @@ hadd_main() {
         RunXSecSyst|runxsecsyst) collections=(RunXSecSyst) ;;
         MuonIDEfficiency|muonidefficiency|MuonID|muonid) collections=(MuonIDEfficiency) ;;
         TriggerEfficiency|triggerefficiency|TriggerEff|triggereff) collections=(TriggerEfficiency) ;;
-        all) collections=(nominal RunSyst RunXSecSyst MuonIDEfficiency TriggerEfficiency) ;;
+        ConvenerStudy|convenerstudy|convener) collections=(ConvenerStudy) ;;
+        DYValidationDRStudy|dyvalidationdrstudy|dyvr) collections=(DYValidationDRStudy) ;;
+        all) collections=(nominal RunSyst RunXSecSyst MuonIDEfficiency TriggerEfficiency ConvenerStudy DYValidationDRStudy) ;;
         *)
             echo "[ERROR] Unknown COLLECTION: $collection_selection"
             print_help
