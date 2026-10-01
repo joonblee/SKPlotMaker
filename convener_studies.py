@@ -380,13 +380,12 @@ def signal_hist(
 
 
 def style_lines(ROOT):
-    # Keep the convener diagnostics visually close to the validation figures
-    # used in the AN: simple solid/dashed lines and the usual process colours.
+    # Match the MC colour palette used by plotter.py / the AN validation plots.
     return {
-        "QCD": (ROOT.kAzure + 2, 1),
-        "DY": (ROOT.kGray + 2, 2),
-        "Top": (ROOT.kOrange + 7, 3),
-        "Others": (ROOT.kGreen + 2, 4),
+        "QCD": (ROOT.TColor.GetColor("#99CCFF"), 1),
+        "DY": (ROOT.TColor.GetColor("#FFCC66"), 2),
+        "Top": (ROOT.TColor.GetColor("#669966"), 3),
+        "Others": (ROOT.TColor.GetColor("#CCCCCC"), 4),
     }
 
 
@@ -446,7 +445,7 @@ def draw_shape_overlay(
     first.SetMaximum(max_y * 1.45 if max_y > 0.0 else 1.0)
     first.SetMinimum(0.0)
     first.GetXaxis().SetTitle(x_title)
-    first.GetYaxis().SetTitle("Arbitrary units")
+    first.GetYaxis().SetTitle("Normalised to unity")
     first.GetXaxis().SetTitleSize(0.050)
     first.GetYaxis().SetTitleSize(0.050)
     first.GetXaxis().SetLabelSize(0.042)
@@ -615,8 +614,8 @@ def run_lepton_veto(ROOT, args, root_dir: str) -> List[str]:
     mass_hists: List[Tuple[str, object, object, int]] = []
 
     process_colours = {
-        "QCD": ROOT.kAzure + 2,
-        "Top": ROOT.kOrange + 7,
+        "QCD": ROOT.TColor.GetColor("#99CCFF"),
+        "Top": ROOT.TColor.GetColor("#669966"),
     }
 
     for process in veto_processes:
@@ -690,7 +689,7 @@ def run_lepton_veto(ROOT, args, root_dir: str) -> List[str]:
     axis.SetDirectory(0)
     axis.SetMinimum(0.92)
     axis.SetMaximum(1.005)
-    axis.GetYaxis().SetTitle("Fraction of nominal selected yield")
+    axis.GetYaxis().SetTitle("Relative selected yield")
     axis.GetXaxis().SetLabelSize(0.040)
     axis.GetYaxis().SetLabelSize(0.042)
     axis.GetYaxis().SetTitleSize(0.050)
