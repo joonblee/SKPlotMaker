@@ -459,7 +459,7 @@ def draw_shape_overlay(
     for _, hist in styled[1:]:
         hist.Draw("HIST SAME")
 
-    legend = ROOT.TLegend(0.62, 0.18, 0.92, 0.42)
+    legend = ROOT.TLegend(0.62, 0.60, 0.92, 0.84)
     legend.SetFillStyle(0)
     legend.SetTextFont(42)
     legend.SetTextSize(0.035)
@@ -473,7 +473,7 @@ def draw_shape_overlay(
         era,
         subtitle,
         subtitle_x=0.15,
-        subtitle_y=0.18,
+        subtitle_y=0.845,
     )
     keep.extend([legend])
     canvas.RedrawAxis()
