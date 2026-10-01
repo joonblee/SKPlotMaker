@@ -891,6 +891,17 @@ def run_dy_vr(ROOT, args, root_dir: str) -> List[str]:
     prediction.SetDirectory(0)
     prediction.Scale(factor)
 
+    # Propagate both the source-histogram uncertainty and the finite-MC
+    # uncertainty of the transfer factor into the prediction error.
+    for ibin in range(1, prediction.GetNbinsX() + 1):
+        source_value = float(l_data_sub.GetBinContent(ibin))
+        source_error = float(l_data_sub.GetBinError(ibin))
+        variance = (
+            (factor * source_error) ** 2
+            + (source_value * factor_err) ** 2
+        )
+        prediction.SetBinError(ibin, math.sqrt(max(0.0, variance)))
+
     mask_upsilon_bin(b_data_sub)
     mask_upsilon_bin(prediction)
 
@@ -1161,7 +1172,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--constituent-xmin", type=float, default=0.0)
     parser.add_argument("--constituent-xmax", type=float, default=60.0)
-    parser.add_argument("--constituent-rebin", type=int, default=2)
+    parser.add_argument("--constituent-rebin", type=int, default=1)
     parser.add_argument("--charged-fraction-rebin", type=int, default=2)
 
     parser.add_argument("--dijet-xmin", type=float, default=0.0)
