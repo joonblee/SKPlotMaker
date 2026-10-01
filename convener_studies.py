@@ -140,7 +140,15 @@ def set_cms_style(ROOT) -> None:
     ROOT.gStyle.SetLineWidth(2)
 
 
-def draw_cms_header(ROOT, pad, era: str, subtitle: str):
+def draw_cms_header(
+    ROOT,
+    pad,
+    era: str,
+    subtitle: str,
+    *,
+    subtitle_x: float = 0.15,
+    subtitle_y: float = 0.845,
+):
     keep = []
     pad.cd()
 
@@ -166,7 +174,7 @@ def draw_cms_header(ROOT, pad, era: str, subtitle: str):
 
     latex.SetTextAlign(11)
     latex.SetTextSize(0.033)
-    latex.DrawLatex(0.15, 0.845, subtitle)
+    latex.DrawLatex(subtitle_x, subtitle_y, subtitle)
 
     keep.append(latex)
     return keep
@@ -451,7 +459,7 @@ def draw_shape_overlay(
     for _, hist in styled[1:]:
         hist.Draw("HIST SAME")
 
-    legend = ROOT.TLegend(0.60, 0.58, 0.92, 0.84)
+    legend = ROOT.TLegend(0.62, 0.18, 0.92, 0.42)
     legend.SetFillStyle(0)
     legend.SetTextFont(42)
     legend.SetTextSize(0.035)
@@ -459,7 +467,14 @@ def draw_shape_overlay(
         legend.AddEntry(hist, label, "l")
     legend.Draw()
 
-    keep = draw_cms_header(ROOT, canvas, era, subtitle)
+    keep = draw_cms_header(
+        ROOT,
+        canvas,
+        era,
+        subtitle,
+        subtitle_x=0.15,
+        subtitle_y=0.18,
+    )
     keep.extend([legend])
     canvas.RedrawAxis()
     save_canvas(canvas, output_base, extensions)
@@ -571,7 +586,7 @@ def run_lepton_veto(ROOT, args, root_dir: str) -> List[str]:
     line.SetLineColor(ROOT.kGray + 2)
     line.Draw()
 
-    legend = ROOT.TLegend(0.56, 0.60, 0.92, 0.84)
+    legend = ROOT.TLegend(0.66, 0.18, 0.92, 0.40)
     legend.SetFillStyle(0)
     legend.SetTextFont(42)
     legend.SetTextSize(0.034)
@@ -584,6 +599,8 @@ def run_lepton_veto(ROOT, args, root_dir: str) -> List[str]:
         canvas,
         args.era,
         f"Lepton-veto impact, {args.mass_min:g}<m_{{#mu#mu}}<{args.mass_max:g} GeV",
+        subtitle_x=0.15,
+        subtitle_y=0.18,
     )
     keep.extend([axis, line, legend])
     keep.extend(graph for _, graph in graphs)
