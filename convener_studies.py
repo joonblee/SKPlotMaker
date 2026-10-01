@@ -166,7 +166,7 @@ def draw_cms_header(ROOT, pad, era: str, subtitle: str):
 
     latex.SetTextAlign(11)
     latex.SetTextSize(0.033)
-    latex.DrawLatex(0.15, 0.865, subtitle)
+    latex.DrawLatex(0.15, 0.845, subtitle)
 
     keep.append(latex)
     return keep
@@ -372,6 +372,8 @@ def signal_hist(
 
 
 def style_lines(ROOT):
+    # Keep the convener diagnostics visually close to the validation figures
+    # used in the AN: simple solid/dashed lines and the usual process colours.
     return {
         "QCD": (ROOT.kAzure + 2, 1),
         "DY": (ROOT.kGray + 2, 2),
@@ -380,14 +382,12 @@ def style_lines(ROOT):
     }
 
 
-def signal_colours(ROOT):
-    return [
-        ROOT.kRed + 1,
-        ROOT.kMagenta + 2,
-        ROOT.kBlue + 1,
-        ROOT.kViolet + 1,
-        ROOT.kCyan + 2,
-    ]
+def signal_styles(ROOT):
+    # The two benchmark masses shown by default in the review diagnostics.
+    return {
+        12.0: (ROOT.kRed + 1, 1),
+        70.0: (ROOT.kMagenta + 2, 1),
+    }
 
 
 def save_canvas(canvas, base: str, extensions: Sequence[str]) -> None:
@@ -451,7 +451,7 @@ def draw_shape_overlay(
     for _, hist in styled[1:]:
         hist.Draw("HIST SAME")
 
-    legend = ROOT.TLegend(0.62, 0.60, 0.92, 0.85)
+    legend = ROOT.TLegend(0.60, 0.58, 0.92, 0.84)
     legend.SetFillStyle(0)
     legend.SetTextFont(42)
     legend.SetTextSize(0.035)
@@ -526,8 +526,8 @@ def run_lepton_veto(ROOT, args, root_dir: str) -> List[str]:
         len(entries) + 0.5,
     )
     axis.SetDirectory(0)
-    axis.SetMinimum(0.0)
-    axis.SetMaximum(1.12)
+    axis.SetMinimum(0.92)
+    axis.SetMaximum(1.005)
     axis.GetYaxis().SetTitle("Fraction of nominal selected yield")
     axis.GetXaxis().SetLabelSize(0.040)
     axis.GetYaxis().SetLabelSize(0.042)
@@ -670,15 +670,31 @@ def build_mc_shape_inputs(
             )
         )
 
-    sig_colours = signal_colours(ROOT)
+    sig_styles = signal_styles(ROOT)
+    fallback_signal_colours = [
+        ROOT.kRed + 1,
+        ROOT.kMagenta + 2,
+        ROOT.kBlue + 1,
+        ROOT.kViolet + 1,
+        ROOT.kCyan + 2,
+    ]
     for idx, mass in enumerate(args.signal_masses):
         hist = signal_hist(ROOT, root_dir, mass, region, hist_name)
+        colour, line_style = sig_styles.get(
+            float(mass),
+            (
+                fallback_signal_colours[
+                    idx % len(fallback_signal_colours)
+                ],
+                1,
+            ),
+        )
         out.append(
             (
                 f"Z' {mass:g} GeV",
                 hist,
-                sig_colours[idx % len(sig_colours)],
-                1,
+                colour,
+                line_style,
             )
         )
 
@@ -1159,8 +1175,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--signal-masses",
-        default="20,50,70",
-        help="Comma-separated signal masses for MC shape comparisons.",
+        default="12,70",
+        help=(
+            "Comma-separated signal masses for MC shape comparisons. "
+            "Default: 12,70."
+        ),
     )
     parser.add_argument(
         "--processes",
