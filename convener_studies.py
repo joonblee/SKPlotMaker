@@ -480,19 +480,148 @@ def draw_shape_overlay(
     save_canvas(canvas, output_base, extensions)
 
 
+def draw_veto_mass_comparison(
+    ROOT,
+    args,
+    label: str,
+    before,
+    after,
+    colour: int,
+    output_base: str,
+) -> None:
+    """Draw absolute dimuon-mass yields before/after the electron veto.
+
+    The lower panel shows the bin-by-bin electron-veto survival fraction,
+    after/before.  This is more informative than a single integrated number:
+    it tests both the overall acceptance loss and any mass-dependent shape
+    distortion.
+    """
+    h_before = before.Clone(NAMES.get("veto_before"))
+    h_after = after.Clone(NAMES.get("veto_after"))
+    h_before.SetDirectory(0)
+    h_after.SetDirectory(0)
+
+    # The analyzer stores very fine 20-MeV mass bins. Rebin for a readable
+    # review diagnostic while preserving the 11--80 GeV search interval.
+    if args.veto_mass_rebin > 1:
+        h_before.Rebin(args.veto_mass_rebin)
+        h_after.Rebin(args.veto_mass_rebin)
+
+    h_before.GetXaxis().SetRangeUser(args.mass_min, args.mass_max)
+    h_after.GetXaxis().SetRangeUser(args.mass_min, args.mass_max)
+
+    canvas = ROOT.TCanvas(NAMES.get("c_veto_mass"), "", 900, 900)
+    upper = ROOT.TPad(NAMES.get("veto_upper"), "", 0.0, 0.30, 1.0, 1.0)
+    lower = ROOT.TPad(NAMES.get("veto_lower"), "", 0.0, 0.00, 1.0, 0.30)
+
+    upper.SetLeftMargin(0.13)
+    upper.SetRightMargin(0.05)
+    upper.SetTopMargin(0.11)
+    upper.SetBottomMargin(0.03)
+    lower.SetLeftMargin(0.13)
+    lower.SetRightMargin(0.05)
+    lower.SetTopMargin(0.04)
+    lower.SetBottomMargin(0.34)
+    upper.Draw()
+    lower.Draw()
+
+    upper.cd()
+    h_before.SetLineColor(ROOT.kBlack)
+    h_before.SetMarkerColor(ROOT.kBlack)
+    h_before.SetLineWidth(3)
+    h_before.SetLineStyle(1)
+
+    h_after.SetLineColor(colour)
+    h_after.SetMarkerColor(colour)
+    h_after.SetLineWidth(3)
+    h_after.SetLineStyle(2)
+
+    ymax = max(float(h_before.GetMaximum()), float(h_after.GetMaximum()))
+    h_before.SetMaximum(1.40 * ymax if ymax > 0.0 else 1.0)
+    h_before.SetMinimum(0.0)
+    h_before.GetYaxis().SetTitle("Events")
+    h_before.GetYaxis().SetTitleSize(0.055)
+    h_before.GetYaxis().SetLabelSize(0.045)
+    h_before.GetYaxis().SetTitleOffset(1.05)
+    h_before.GetXaxis().SetLabelSize(0.0)
+    h_before.Draw("HIST")
+    h_after.Draw("HIST SAME")
+
+    legend = ROOT.TLegend(0.66, 0.66, 0.92, 0.83)
+    legend.SetFillStyle(0)
+    legend.SetTextFont(42)
+    legend.SetTextSize(0.036)
+    legend.AddEntry(h_before, "No electron veto", "l")
+    legend.AddEntry(h_after, "N_{e}=0", "l")
+    legend.Draw()
+
+    keep = draw_cms_header(
+        ROOT,
+        upper,
+        args.era,
+        f"Electron-veto impact: {label}",
+        subtitle_x=0.16,
+        subtitle_y=0.78,
+    )
+    keep.extend([legend, h_before, h_after])
+
+    lower.cd()
+    ratio = h_after.Clone(NAMES.get("veto_ratio"))
+    ratio.SetDirectory(0)
+    ratio.Divide(h_before)
+    ratio.SetLineColor(colour)
+    ratio.SetMarkerColor(colour)
+    ratio.SetMarkerStyle(20)
+    ratio.SetMarkerSize(0.8)
+    ratio.SetLineWidth(2)
+    ratio.SetMinimum(args.veto_ratio_min)
+    ratio.SetMaximum(args.veto_ratio_max)
+    ratio.GetYaxis().SetTitle("N_{e}=0 / no veto")
+    ratio.GetXaxis().SetTitle("m_{#mu#mu} [GeV]")
+    ratio.GetYaxis().SetNdivisions(505)
+    ratio.GetYaxis().SetTitleSize(0.100)
+    ratio.GetYaxis().SetLabelSize(0.085)
+    ratio.GetYaxis().SetTitleOffset(0.58)
+    ratio.GetXaxis().SetTitleSize(0.120)
+    ratio.GetXaxis().SetLabelSize(0.100)
+    ratio.GetXaxis().SetTitleOffset(1.05)
+    ratio.GetXaxis().SetRangeUser(args.mass_min, args.mass_max)
+    ratio.Draw("E1")
+
+    line = ROOT.TLine(args.mass_min, 1.0, args.mass_max, 1.0)
+    line.SetLineStyle(2)
+    line.SetLineColor(ROOT.kGray + 2)
+    line.Draw()
+
+    keep.extend([ratio, line])
+    save_canvas(canvas, output_base, args.extensions)
+
+
 def run_lepton_veto(ROOT, args, root_dir: str) -> List[str]:
     region = convener_region("BJet")
+
+    # The current SKFlat ntuples do not contain reconstructed tau candidates.
+    # Therefore this review plot deliberately shows only the electron-veto
+    # comparison; no statement about a tau veto is inferred from it.
     hist_names = {
         "No veto": "ConvenerStudy_DileptonMass_NoVeto",
         "N_{e}=0": "ConvenerStudy_DileptonMass_ElectronVeto",
-        "N_{#tau}=0": "ConvenerStudy_DileptonMass_TauVeto",
-        "N_{e}=N_{#tau}=0": "ConvenerStudy_DileptonMass_ElectronTauVeto",
     }
 
+    # DY is intentionally omitted from this diagnostic. The useful comparison
+    # for the convener question is QCD, Top, and the representative signals.
+    veto_processes = ["QCD", "Top"]
     entries: List[Tuple[str, Dict[str, Tuple[float, float]]]] = []
+    mass_hists: List[Tuple[str, object, object, int]] = []
 
-    for process in args.processes:
+    process_colours = {
+        "QCD": ROOT.kAzure + 2,
+        "Top": ROOT.kOrange + 7,
+    }
+
+    for process in veto_processes:
         values = {}
+        loaded = {}
         for label, hist_name in hist_names.items():
             hist = process_hist(
                 ROOT,
@@ -500,31 +629,49 @@ def run_lepton_veto(ROOT, args, root_dir: str) -> List[str]:
                 process,
                 region,
                 hist_name,
-                required=(process != "Others"),
             )
-            if hist is None:
-                continue
+            loaded[label] = hist
             values[label] = integral_and_error(
                 hist,
                 args.mass_min,
                 args.mass_max,
             )
-        if values:
-            entries.append((PROCESS_LABELS.get(process, process), values))
+        entries.append((PROCESS_LABELS.get(process, process), values))
+        mass_hists.append(
+            (
+                PROCESS_LABELS.get(process, process),
+                loaded["No veto"],
+                loaded["N_{e}=0"],
+                process_colours[process],
+            )
+        )
 
-    for mass in args.signal_masses:
+    sig_styles = signal_styles(ROOT)
+    for idx, mass in enumerate(args.signal_masses):
         values = {}
+        loaded = {}
         for label, hist_name in hist_names.items():
             hist = signal_hist(ROOT, root_dir, mass, region, hist_name)
+            loaded[label] = hist
             values[label] = integral_and_error(
                 hist,
                 args.mass_min,
                 args.mass_max,
             )
-        entries.append((f"Z' {mass:g} GeV", values))
-
-    if not entries:
-        raise PlotError("No lepton-veto histograms were loaded.")
+        signal_name = f"Z' {mass:g} GeV"
+        entries.append((signal_name, values))
+        colour, _ = sig_styles.get(
+            float(mass),
+            (ROOT.kRed + 1 + idx, 1),
+        )
+        mass_hists.append(
+            (
+                signal_name,
+                loaded["No veto"],
+                loaded["N_{e}=0"],
+                colour,
+            )
+        )
 
     labels = list(hist_names)
     canvas = ROOT.TCanvas(NAMES.get("c_veto"), "", 1000, 800)
@@ -554,13 +701,8 @@ def run_lepton_veto(ROOT, args, root_dir: str) -> List[str]:
     axis.LabelsOption("v", "X")
     axis.Draw("AXIS")
 
-    colours = [
-        ROOT.kBlack,
-        ROOT.kBlue + 1,
-        ROOT.kOrange + 7,
-        ROOT.kRed + 1,
-    ]
-    markers = [20, 21, 22, 23]
+    colours = [ROOT.kBlack, ROOT.kBlue + 1]
+    markers = [20, 21]
     graphs = []
 
     for ivar, label in enumerate(labels):
@@ -573,10 +715,10 @@ def run_lepton_veto(ROOT, args, root_dir: str) -> List[str]:
         graph.SetLineWidth(2)
 
         for idx, (_, values) in enumerate(entries):
-            denom = values.get("No veto", (0.0, 0.0))[0]
-            num = values.get(label, (0.0, 0.0))[0]
-            ratio = num / denom if denom > 0.0 else 0.0
-            graph.SetPoint(idx, idx + 1.0, ratio)
+            denom = values["No veto"][0]
+            num = values[label][0]
+            ratio_value = num / denom if denom > 0.0 else 0.0
+            graph.SetPoint(idx, idx + 1.0, ratio_value)
 
         graph.Draw("LP SAME")
         graphs.append((label, graph))
@@ -586,7 +728,9 @@ def run_lepton_veto(ROOT, args, root_dir: str) -> List[str]:
     line.SetLineColor(ROOT.kGray + 2)
     line.Draw()
 
-    legend = ROOT.TLegend(0.66, 0.18, 0.92, 0.40)
+    # Keep both the title and the compact two-entry legend inside the lower
+    # half of the frame, but away from the vertical x-axis labels.
+    legend = ROOT.TLegend(0.69, 0.25, 0.91, 0.36)
     legend.SetFillStyle(0)
     legend.SetTextFont(42)
     legend.SetTextSize(0.034)
@@ -598,17 +742,17 @@ def run_lepton_veto(ROOT, args, root_dir: str) -> List[str]:
         ROOT,
         canvas,
         args.era,
-        f"Lepton-veto impact, {args.mass_min:g}<m_{{#mu#mu}}<{args.mass_max:g} GeV",
-        subtitle_x=0.15,
-        subtitle_y=0.18,
+        f"Electron-veto impact, {args.mass_min:g}<m_{{#mu#mu}}<{args.mass_max:g} GeV",
+        subtitle_x=0.16,
+        subtitle_y=0.27,
     )
     keep.extend([axis, line, legend])
     keep.extend(graph for _, graph in graphs)
 
-    out_base = os.path.join(args.output_dir, "lepton_veto_survival")
+    out_base = os.path.join(args.output_dir, "electron_veto_survival")
     save_canvas(canvas, out_base, args.extensions)
 
-    csv_path = os.path.join(args.output_dir, "lepton_veto_yields.csv")
+    csv_path = os.path.join(args.output_dir, "electron_veto_yields.csv")
     ensure_dir(args.output_dir)
     with open(csv_path, "w", newline="", encoding="utf-8") as fout:
         writer = csv.writer(fout)
@@ -622,10 +766,8 @@ def run_lepton_veto(ROOT, args, root_dir: str) -> List[str]:
             ]
         )
         for process_name, values in entries:
-            denom = values.get("No veto", (0.0, 0.0))[0]
+            denom = values["No veto"][0]
             for label in labels:
-                if label not in values:
-                    continue
                 value, error = values[label]
                 fraction = value / denom if denom > 0.0 else float("nan")
                 writer.writerow(
@@ -638,20 +780,44 @@ def run_lepton_veto(ROOT, args, root_dir: str) -> List[str]:
                     ]
                 )
 
+    outputs = [out_base, csv_path]
+
+    # Produce one before/after mass-distribution plot per process. Separate
+    # canvases avoid meaningless comparisons of very different absolute
+    # normalisations and make the lower-panel survival fraction directly
+    # interpretable.
+    for label, before, after, colour in mass_hists:
+        safe = (
+            label.replace(" ", "_")
+            .replace("'", "p")
+            .replace(".", "p")
+        )
+        mass_base = os.path.join(
+            args.output_dir,
+            f"electron_veto_mass_{safe}",
+        )
+        draw_veto_mass_comparison(
+            ROOT,
+            args,
+            label,
+            before,
+            after,
+            colour,
+            mass_base,
+        )
+        outputs.append(mass_base)
+
     print(f"[lepton-veto] wrote {csv_path}")
     for process_name, values in entries:
-        denom = values.get("No veto", (0.0, 0.0))[0]
-        parts = []
-        for label in labels[1:]:
-            if label not in values:
-                continue
-            value = values[label][0]
-            ratio = value / denom if denom > 0.0 else float("nan")
-            parts.append(f"{label}: {ratio:.5f}")
-        print(f"[lepton-veto] {process_name}: " + ", ".join(parts))
+        denom = values["No veto"][0]
+        value = values["N_{e}=0"][0]
+        ratio_value = value / denom if denom > 0.0 else float("nan")
+        print(
+            f"[lepton-veto] {process_name}: "
+            f"N_e=0 / no veto = {ratio_value:.5f}"
+        )
 
-    return [out_base, csv_path]
-
+    return outputs
 
 def build_mc_shape_inputs(
     ROOT,
@@ -1205,6 +1371,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--mass-min", type=float, default=11.0)
     parser.add_argument("--mass-max", type=float, default=80.0)
+    parser.add_argument(
+        "--veto-mass-rebin",
+        type=int,
+        default=50,
+        help=(
+            "Rebin factor for before/after electron-veto dimuon-mass plots. "
+            "The native analyzer bin width is 20 MeV; default 50 gives 1 GeV."
+        ),
+    )
+    parser.add_argument("--veto-ratio-min", type=float, default=0.85)
+    parser.add_argument("--veto-ratio-max", type=float, default=1.02)
 
     parser.add_argument("--constituent-xmin", type=float, default=0.0)
     parser.add_argument("--constituent-xmax", type=float, default=60.0)
