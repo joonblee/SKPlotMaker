@@ -380,12 +380,12 @@ def signal_hist(
 
 
 def style_lines(ROOT):
-    # Match the MC colour palette used by plotter.py / the AN validation plots.
+    # Match the current nominal plotter.py colour convention used in the AN.
     return {
-        "QCD": (ROOT.TColor.GetColor("#99CCFF"), 1),
-        "DY": (ROOT.TColor.GetColor("#FFCC66"), 2),
-        "Top": (ROOT.TColor.GetColor("#669966"), 3),
-        "Others": (ROOT.TColor.GetColor("#CCCCCC"), 4),
+        "QCD": (ROOT.kAzure - 9, 1),
+        "DY": (ROOT.kGray + 1, 2),
+        "Top": (ROOT.kOrange - 2, 3),
+        "Others": (ROOT.kSpring - 9, 4),
     }
 
 
@@ -614,8 +614,8 @@ def run_lepton_veto(ROOT, args, root_dir: str) -> List[str]:
     mass_hists: List[Tuple[str, object, object, int]] = []
 
     process_colours = {
-        "QCD": ROOT.TColor.GetColor("#99CCFF"),
-        "Top": ROOT.TColor.GetColor("#669966"),
+        "QCD": ROOT.kAzure - 9,
+        "Top": ROOT.kOrange - 2,
     }
 
     for process in veto_processes:
