@@ -85,8 +85,9 @@ Main optional controls
   --print-shape-syst-bin-info
   --print-raw-shape-debug
   --uncertainty-diagnostics       SS-data, individual eras only; CSV + JSON
+                                 default mass windows: 12, 30, 70 GeV +/-1%
   --diagnostic-cards CARD_OR_GLOB [CARD_OR_GLOB ...]
-                                 use exact counting windows from datacard comments
+                                 optionally replace mass windows with datacard windows
   --diagnostic-output CSV_PATH    default: plots/QCDUncertainty_<ERA>.csv
   --trigger SUBDIRECTORY      optional legacy input subdirectory
   --analyzer NAME             default: NIsoMuon
@@ -138,12 +139,15 @@ exits without importing ROOT.
 Uncertainty diagnostics (production fits and ROOT templates are unchanged):
   python3 qcd_bkg_estimation.py --mode ss-data --year 2018 \
       --ss-binning adaptive --ss-min-effective-count 10 --ss-max-bin-width 5 \
-      --uncertainty-diagnostics \
-      --diagnostic-cards '/path/to/Run2Run3/datacard_M-*_Run2Run3.txt'
+      --uncertainty-diagnostics
 These opt-in CSV/JSON diagnostics compare the existing binwise function envelope
 and normalization modelling variations with first-order NF-stat and fit-stat.
-Low (5--9 GeV) and high (11--80 GeV) integrals are always included. Datacards add
-the exact per-era counting windows, with the Combine producer's whole-bin rule.
+The default mass windows are 12, 30 and 70 GeV with a +/-1% half-width:
+11.88--12.12, 29.7--30.3 and 69.3--70.7 GeV. No datacards are required.
+Low (5--9 GeV) and high (11--80 GeV) integrals are also included. Optionally add
+--diagnostic-cards '/path/to/Run2Run3/datacard_M-*_Run2Run3.txt' to replace the
+default mass windows with exact per-era counting windows from card comments.
+Both modes use whole native histogram bins and report their effective edges.
 The retained fit covariance is used in its original coordinates, including
 log(A) for SS chi-square fits. NF-stat uses histogram Sumw2 plus the shared DY
 NF-stat contribution in DYAux/NF_aMC. Primitive OS/SS inputs and disjoint MC
@@ -915,11 +919,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--print-raw-shape-debug", action="store_true")
     parser.add_argument(
         "--uncertainty-diagnostics", action="store_true",
-        help="Write diagnostic yield-error comparisons for individual SS-data eras; production templates are unchanged.",
+        help="Compare function-envelope, NF-stat and fit-stat yield errors at 12, 30 and 70 GeV (+/-1%%), plus low/high integrals. Individual SS-data eras only; production templates are unchanged.",
     )
     parser.add_argument(
         "--diagnostic-cards", nargs="+", default=[], metavar="CARD_OR_GLOB",
-        help="Datacards with '# ERA counting window [...] GeV' comments; quote wildcard patterns. Requires --uncertainty-diagnostics.",
+        help="Optional: replace default mass windows with '# ERA counting window [...] GeV' comments from datacards; quote wildcard patterns. Requires --uncertainty-diagnostics.",
     )
     parser.add_argument(
         "--diagnostic-output", type=Path, metavar="CSV_PATH",
@@ -2886,9 +2890,14 @@ def verify_ss_fit_validity(args: argparse.Namespace, selected_by_key: Dict[str, 
 
 
 def diagnostic_windows(args: argparse.Namespace) -> List[dict]:
-    """Read counting windows rather than introducing a second resolution model."""
+    """Use simple +/-1% mass windows, or optional exact datacard windows."""
     windows = [dict(label="low", low=5.0, high=9.0, cards=[]),
                dict(label="high", low=11.0, high=80.0, cards=[])]
+    if not args.diagnostic_cards:
+        for mass in (12, 30, 70):
+            windows.append(dict(label=f"M{mass}", low=mass * 0.99,
+                                high=mass * 1.01, cards=[]))
+        return windows
     by_mass: Dict[str, dict] = {}
     pattern = re.compile(r"^#\s+" + re.escape(args.year) + r"\s+counting window\s+\[([^,]+),\s*([^\]]+)\]\s+GeV", re.M)
     for requested in args.diagnostic_cards:
