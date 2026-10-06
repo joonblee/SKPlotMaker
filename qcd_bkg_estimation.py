@@ -155,6 +155,9 @@ windows are treated as independent. NF-stat and SS-fit-stat share SS data;
 their cross-covariance is not computed. The independence-assuming quadrature
 and their linear sum bound are diagnostics, not coverage tests or new nuisances.
 Unreliable covariance, boundaries and derivative results are flagged.
+Fit-stat derivatives use a fresh analytic TF1, not Clone(): ROOT cannot clone
+the callable of a C++-function TF1. An amplitude-response check and a comparison
+with the production central integral guard against frozen or truncated copies.
 """
 
 from __future__ import annotations
@@ -2994,8 +2997,8 @@ def diagnostic_transfer_statistics(h_ss, h_os, h_qcd_ss, h_qcd_os, h_dy_os, f_dy
                 dy_nf_extra_variance=dy_extra_variance, complete=complete, warnings=warnings)
 
 
-def diagnostic_fit_error(selected: SelectedFit, segments: Sequence[Tuple[float, float, float]], objective: str) -> dict:
-    """Propagate the retained covariance in its own coordinates on a TF1 clone."""
+def diagnostic_fit_error(ROOT, selected: SelectedFit, segments: Sequence[Tuple[float, float, float]], objective: str) -> dict:
+    """Propagate covariance on a fresh analytic TF1 in the result coordinates."""
     result = result_object(selected.result)
     n = selected.model.npar
     status = selected.diagnostics.covariance_status
@@ -3017,14 +3020,32 @@ def diagnostic_fit_error(selected: SelectedFit, segments: Sequence[Tuple[float, 
         if not all(math.isclose(v, float(selected.function.GetParameter(i)), rel_tol=1e-6, abs_tol=1e-12)
                    for i, v in enumerate(physical)):
             raise ValueError("retained covariance parameters do not match the selected physical function")
-        fn = selected.function.Clone(_NAMES.unique("uncertainty_diagnostic"))
+        # C++-function TF1::Clone preserves sampled values, not the callable.
+        # SetParameter then fails to change the sampled shape, and extrapolation
+        # outside the saved fit interval can vanish. Recreate the real model.
+        fn = ROOT.BkgFitFnVariationPy.MakeFitFunction(
+            _NAMES.unique("uncertainty_diagnostic"), selected.model.cpp_id,
+            SS_MODE.fit_min, SS_MODE.fit_max,
+        )
         def evaluate(values):
             for i, value in enumerate(values):
                 fn.SetParameter(i, math.exp(value) if i == 0 and log_amplitude else value)
-            return sum(transfer * float(fn.Integral(low, high)) for low, high, transfer in segments)
+            return math.fsum(transfer * float(fn.Integral(low, high, 1e-9))
+                             for low, high, transfer in segments)
         central = evaluate(parameters)
         if not math.isfinite(central) or central <= 0:
             raise ValueError("non-positive/non-finite central fit integral; local statistical propagation is unavailable")
+        reference = math.fsum(transfer * float(selected.function.Integral(low, high, 1e-9))
+                              for low, high, transfer in segments)
+        if not math.isclose(central, reference, rel_tol=1e-6, abs_tol=1e-30):
+            raise ValueError("diagnostic central integral does not match the production function")
+        shifted = parameters.copy()
+        shifted[0] += 1e-3 if log_amplitude else parameters[0] * 1e-3
+        expected_ratio = math.exp(1e-3) if log_amplitude else 1.001
+        response = evaluate(shifted) / central
+        if not math.isfinite(response) or abs(response - expected_ratio) > 1e-6:
+            raise ValueError("analytic function does not respond correctly to amplitude changes")
+        details.update(central_integral=central, amplitude_response_ratio=response)
         gradients = []
         for scale in (1.0, 0.5):
             gradient = [central if log_amplitude else central / parameters[0]]
@@ -3060,7 +3081,7 @@ def diagnostic_fit_error(selected: SelectedFit, segments: Sequence[Tuple[float, 
     return details
 
 
-def write_uncertainty_diagnostics(args, selected, h_central, h_up, h_down,
+def write_uncertainty_diagnostics(ROOT, args, selected, h_central, h_up, h_down,
                                   h_norm_up, h_norm_down, transfer_stats) -> None:
     rows, fit_details = [], {}
     for window in args._diagnostic_windows:
@@ -3083,7 +3104,11 @@ def write_uncertainty_diagnostics(args, selected, h_central, h_up, h_down,
         nf_variance = ((integrals[0] + transfer_stats["mc_double_ratio"] * integrals[1]) ** 2 * transfer_stats["low_variance"]
                        + (transfer_stats["low_transfer"] * integrals[1]) ** 2 * transfer_stats["double_ratio_variance"])
         nf_stat = math.sqrt(nf_variance) if transfer_stats["complete"] else None
-        fit = diagnostic_fit_error(selected, segments, resolve_objective(args.fit_objective, SS_MODE))
+        fit = diagnostic_fit_error(ROOT, selected, segments, resolve_objective(args.fit_objective, SS_MODE))
+        fit_central = fit.get("central_integral")
+        if fit_central is not None and not math.isclose(fit_central, central, rel_tol=1e-5, abs_tol=1e-30):
+            fit.update(sigma=None, reliable=False)
+            fit["warnings"].append("Fit-stat unavailable: diagnostic integral differs from the production template yield.")
         fit_details[window["label"]] = fit
         fit_stat = fit["sigma"]
         available = nf_stat is not None and fit_stat is not None
@@ -3375,7 +3400,7 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
             print_saved_histogram(h_norm_down, norm_down_dir, norm_down_name)
             if args.uncertainty_diagnostics:
                 write_uncertainty_diagnostics(
-                    args, selected_by_key[SS_NOMINAL_MODEL], h_central, h_up, h_down,
+                    ROOT, args, selected_by_key[SS_NOMINAL_MODEL], h_central, h_up, h_down,
                     h_norm_up, h_norm_down, transfer_stats,
                 )
         finally:
