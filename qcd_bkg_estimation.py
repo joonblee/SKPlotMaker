@@ -39,7 +39,8 @@ Fit modes and objectives
 ------------------------
   --mode ss-data
       Bin-integrated statistical chi-square; produces the central SS-based QCD
-      template plus Norm and analytic-function-envelope Shape variations.
+      template plus Norm and analytic-function-envelope Shape variations,
+      and QCDStat/metadata for statistical yield propagation.
       Auto binning keeps the previous fine bins unless the total SS effective
       count is below five events per fine fit bin. Sparse samples then use
       1 GeV bins below 11 GeV, 2 GeV bins from 11 to 21 GeV, and one
@@ -136,12 +137,18 @@ Build every per-era and full-run anchor:
 Running with no arguments prints this guide and every command-line option, then
 exits without importing ROOT.
 
-Uncertainty diagnostics (production fits and ROOT templates are unchanged):
+Uncertainty diagnostics (central fits and template contents are unchanged):
   python3 qcd_bkg_estimation.py --mode ss-data --year 2018 \
       --ss-binning adaptive --ss-min-effective-count 10 --ss-max-bin-width 5 \
       --uncertainty-diagnostics
 These opt-in CSV/JSON diagnostics compare the existing binwise function envelope
-and normalization modelling variations with first-order NF-stat and fit-stat.
+and normalisation modelling variations with first-order NF-stat and fit-stat.
+Every individual-era SS production also writes QCDStat/metadata. The downstream
+counting model adds one independent-by-era additive statistical nuisance with
+sigma = sigma_NFstat + sigma_fitStat, a conservative first-order bound for the
+unknown NF/fit cross-correlation. The original norm/shape variations remain.
+This requires qcd_stat_uncertainty.py alongside this script. Missing DY NF-stat
+metadata or unreliable central-fit covariance stops output before replacement.
 The default mass windows are 12, 30 and 70 GeV with a +/-1% half-width:
 11.88--12.12, 29.7--30.3 and 69.3--70.7 GeV. No datacards are required.
 Low (5--9 GeV) and high (11--80 GeV) integrals are also included. Optionally add
@@ -153,7 +160,8 @@ log(A) for SS chi-square fits. NF-stat uses histogram Sumw2 plus the shared DY
 NF-stat contribution in DYAux/NF_aMC. Primitive OS/SS inputs and disjoint MC
 windows are treated as independent. NF-stat and SS-fit-stat share SS data;
 their cross-covariance is not computed. The independence-assuming quadrature
-and their linear sum bound are diagnostics, not coverage tests or new nuisances.
+and their linear sum bound are reported; the bound supplies the new QCD_stat
+nuisance. These first-order Gaussian estimates are not coverage tests.
 Unreliable covariance, boundaries and derivative results are flagged.
 Fit-stat derivatives use a fresh analytic TF1, not Clone(): ROOT cannot clone
 the callable of a C++-function TF1. An amplitude-response check and a comparison
@@ -177,6 +185,11 @@ from array import array
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+from qcd_stat_uncertainty import (
+    QCD_STAT_SCHEMA, QCD_STAT_TREATMENT, qcd_window_statistics,
+    validate_qcd_stat_metadata,
+)
 
 
 # =============================================================================
@@ -922,7 +935,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--print-raw-shape-debug", action="store_true")
     parser.add_argument(
         "--uncertainty-diagnostics", action="store_true",
-        help="Compare function-envelope, NF-stat and fit-stat yield errors at 12, 30 and 70 GeV (+/-1%%), plus low/high integrals. Individual SS-data eras only; production templates are unchanged.",
+        help="Compare function-envelope, NF-stat and fit-stat yield errors at 12, 30 and 70 GeV (+/-1%%), plus low/high integrals. Individual SS-data eras only; central templates are unchanged and QCDStat metadata are exported in all individual-era SS production.",
     )
     parser.add_argument(
         "--diagnostic-cards", nargs="+", default=[], metavar="CARD_OR_GLOB",
@@ -3122,10 +3135,18 @@ def write_uncertainty_diagnostics(ROOT, args, selected, h_central, h_up, h_down,
                    stat_sum_over_form=upper / form if upper is not None and form > 0 else None,
                    covariance_status=fit["covariance_status"], statistical_estimate_reliable=bool(reliable),
                    form_ge_stat_sum_linear=(form >= upper) if reliable else None)
+        current_model = math.hypot(form, norm)
+        row.update(sigma_current_model=current_model,
+                   current_model_over_fit_stat=(current_model / fit_stat) if fit_stat else None,
+                   sigma_stat_bound_for_card=upper if reliable else None,
+                   sigma_model_plus_stat_bound=math.hypot(current_model, upper) if reliable else None)
         rows.append(row)
         render = lambda value: "NA" if value is None else f"{value:.6g}"
         print(f"[QCD UNC] {args.year} {window['label']} Q={central:.6g} form={form:.6g} normModel={norm:.6g} "
               f"NFstat={render(nf_stat)} fitStat={render(fit_stat)} statSum={render(upper)} reliable={int(bool(reliable))}")
+        print(f"[QCD UNC MODEL] current(form+norm)={current_model:.6g} "
+              f"current/fitStat={render(row['current_model_over_fit_stat'])} "
+              f"statBoundForCard={render(row['sigma_stat_bound_for_card'])}")
         for warning in fit["warnings"]:
             print(f"[QCD UNC WARNING] {window['label']}: {warning}")
     for warning in transfer_stats["warnings"]:
@@ -3146,7 +3167,9 @@ def write_uncertainty_diagnostics(ROOT, args, selected, h_central, h_up, h_down,
                                  "DY template Sumw2 includes source-stat; DYAux/NF_aMC adds its shared NF-stat once.",
                                  "NF-stat/SS-fit-stat cross-covariance is not evaluated; quadrature assumes independence.",
                                  "The linear sum bounds their first-order standard deviation for any cross-correlation.",
-                                 "These diagnostics do not change ROOT errors, templates, fits or datacards."])
+                                 "Diagnostics do not change fits or template contents/errors.",
+                                 "QCDStat/metadata now exports NF/fit statistics for downstream cards.",
+                                 "One additive QCD_stat Gaussian uses the linear NF+fit bound; cross-covariance is unknown."])
     # Serialize before opening either file so non-finite diagnostics cannot leave
     # a seemingly successful partial report. Missing results are JSON null/CSV NA.
     payload = json.dumps(metadata, indent=2, allow_nan=False) + "\n"
@@ -3157,6 +3180,36 @@ def write_uncertainty_diagnostics(ROOT, args, selected, h_central, h_up, h_down,
     output.with_suffix(".json").write_text(payload)
     print(f"[QCD UNC SAVE] {output}")
     print(f"[QCD UNC SAVE] {output.with_suffix('.json')}")
+
+
+def build_qcd_stat_metadata(ROOT, args, selected, transfer_stats):
+    """Validate statistics before opening/replacing the production ROOT output."""
+    fit = diagnostic_fit_error(ROOT, selected, [(5.0, 9.0, 1.0)], "chi2")
+    if not fit["reliable"]:
+        raise RuntimeError("QCD statistical covariance is unavailable/unreliable: "
+                           + "; ".join(fit["warnings"])
+                           + ". The central fit was not changed; existing ROOT files were not overwritten.")
+    metadata = dict(schema=QCD_STAT_SCHEMA, treatment=QCD_STAT_TREATMENT,
+                    era=args.year, template_path=hist_path(OS_REGION),
+                    fit=dict(model=selected.model.key, **fit),
+                    transfer_statistics=transfer_stats,
+                    fit_range=[SS_MODE.fit_min, SS_MODE.fit_max],
+                    ss_binning=args.ss_binning,
+                    ss_min_effective_count=args.ss_min_effective_count,
+                    ss_max_bin_width=args.ss_max_bin_width,
+                    assumptions=["First-order fit covariance and primitive Sumw2 propagation.",
+                                 "NF-stat and SS fit-stat share SS data; their cross-covariance is unknown.",
+                                 "sigma_nf_stat + sigma_fit_stat bounds their first-order standard deviation.",
+                                 "Independent eras; modelling nuisances remain separate.",
+                                 "Not a coverage test or a simultaneous control-region likelihood."])
+    validate_qcd_stat_metadata(metadata, args.year, hist_path(OS_REGION))
+    t = transfer_stats["low_transfer"]
+    check = qcd_window_statistics(metadata, 5.0, 9.0, fit["central_integral"] * t)
+    if not math.isclose(check["sigma_fit_stat"], fit["sigma"] * t, rel_tol=1e-4, abs_tol=1e-280):
+        raise RuntimeError("Analytic QCD statistical gradient disagrees with the retained ROOT fit covariance propagation.")
+    # Reject non-finite values before replacing an existing ROOT file.
+    json.dumps(metadata, allow_nan=False)
+    return metadata
 
 
 def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, files: Dict[str, object], selected_fits: Sequence[SelectedFit]):
@@ -3254,11 +3307,12 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
         high_transfer_down = high_normalisation * high_norm_down
         high_transfer_up = high_normalisation * high_norm_up
 
-        transfer_stats = None
-        if args.uncertainty_diagnostics:
-            transfer_stats = diagnostic_transfer_statistics(
-                h_ss, h_os, h_qcd_ss, h_qcd_os, h_dy_os, f_dy_est
-            )
+        transfer_stats = diagnostic_transfer_statistics(
+            h_ss, h_os, h_qcd_ss, h_qcd_os, h_dy_os, f_dy_est
+        )
+        stat_metadata = build_qcd_stat_metadata(
+            ROOT, args, selected_by_key[SS_NOMINAL_MODEL], transfer_stats
+        )
 
         print(
             f"[fit.root] DT(Data-nonQCD) OS/SS, {low_min:g}<m<{low_max:g} = "
@@ -3309,6 +3363,10 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
         if not root_file or root_file.IsZombie():
             raise OSError(f"Could not create {output}")
         try:
+            stat_dir = root_file.mkdir("QCDStat")
+            stat_dir.cd()
+            ROOT.TObjString(json.dumps(stat_metadata, allow_nan=False)).Write("metadata", ROOT.TObject.kOverwrite)
+            print("[fit.root] Saved QCDStat/metadata: NF-stat + SS fit-stat; conservative linear bound, covariance between them unknown")
             central_name = f"{HIST_NAME}___{OS_REGION}"
             h_central, d_central = make_output_histogram(root_file, h_data_os, OS_REGION, central_name)
             for ibin in range(1, h_central.GetNbinsX() + 1):

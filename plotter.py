@@ -16,7 +16,8 @@ Revision 2 updates:
   - follows the final counting-model theory treatment for tt/ST only:
     symmetric-Hessian PDF, shared alphaS, and separate muF/muR nuisances
   - treats data-driven QCD shape as a symmetric absolute-yield uncertainty
-    and data-driven DY as constant NF + NFStat + LightJetStat
+    and adds QCDStat/metadata statistical propagation; data-driven DY remains
+    constant NF + NFStat + LightJetStat
   - keeps event-yield and differential-cross-section normalisations only
   - retains the manual cumulative-TH1 stack used to avoid ROOT THStack painting
     crashes in some CMSSW/PyROOT releases
@@ -55,6 +56,8 @@ import sys
 from array import array
 from dataclasses import dataclass, field, replace
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+from qcd_stat_uncertainty import read_qcd_stat_metadata, qcd_window_statistics, whole_bin_window
 
 
 RUN2_ERAS: Tuple[str, ...] = ("2016preVFP", "2016postVFP", "2017", "2018")
@@ -1022,8 +1025,8 @@ def bkg_stat_uncertainty(cfg: Config, bkg: Dict[str, object]) -> Uncertainty:
     e2 = [0.0] * n
 
     for proc, h in bkg.items():
-        # The fitted data-driven QCD template is controlled by QCD_norm and
-        # QCD_shape, not by its stored TH1 bin errors.  For data-driven DY, the
+        # Correlated fitted QCD statistics are added from QCDStat/metadata below,
+        # rather than its zero TH1 errors. For data-driven DY, the
         # nominal TH1 errors intentionally contain only the background-subtracted
         # light-jet data statistical component (LightJetStat), so DY remains in
         # this statistical band.  NFStat/NFModel are added separately below.
@@ -1035,6 +1038,49 @@ def bkg_stat_uncertainty(cfg: Config, bkg: Dict[str, object]) -> Uncertainty:
 
     err = [math.sqrt(x) for x in e2]
     return Uncertainty(low=err[:], high=err[:])
+
+
+def add_qcd_stat_uncertainty(ROOT, cfg, years, by_year, stat, scale):
+    """Propagate each plotting-bin integral; combine independent eras in quadrature."""
+    if use_qcd_mc(cfg) or not is_mass_variable(cfg):
+        return stat
+    variances = [0.0] * len(stat.low)
+    per_width = cfg.divide_by_bin_width and variable_spec(cfg).divide_by_bin_width
+    for year in years:
+        nominal = by_year.get(year, {}).get("QCD")
+        if not nominal:
+            raise RuntimeError(f"{year}: missing QCD nominal histogram for statistical propagation.")
+        filename = process_file(cfg, year, "QCD", -1.0, "", [], report_missing=False)
+        f = ROOT.TFile.Open(filename, "READ")
+        try:
+            if not f or f.IsZombie():
+                raise ValueError("Could not open QCD nominal ROOT file.")
+            path = hist_path(cfg, base_region(cfg))
+            metadata = read_qcd_stat_metadata(f, year, path)
+            native = f.Get(path)
+            if not native:
+                raise ValueError("Missing QCD central histogram.")
+            for ib in range(1, nominal.GetNbinsX() + 1):
+                axis = nominal.GetXaxis()
+                low, high = axis.GetBinLowEdge(ib), axis.GetBinUpEdge(ib)
+                if high <= native.GetXaxis().GetXmin() or low >= native.GetXaxis().GetXmax():
+                    continue
+                low_eff, high_eff = whole_bin_window(native, low, high)
+                if not (math.isclose(low_eff, low, abs_tol=1e-8) and math.isclose(high_eff, high, abs_tol=1e-8)):
+                    raise ValueError("QCD plotting edges must coincide with native template bin edges.")
+                factor = scale / axis.GetBinWidth(ib) if per_width else scale
+                result = qcd_window_statistics(metadata, low_eff, high_eff,
+                                               float(nominal.GetBinContent(ib)) / factor,
+                                               validate=False)
+                variances[ib - 1] += (factor * result["sigma_stat_bound"]) ** 2
+        except (ValueError, KeyError, TypeError, OverflowError) as exc:
+            raise RuntimeError(f"{year}: {filename}: {exc}") from exc
+        finally:
+            if f:
+                f.Close()
+    print("[stat-check] QCD: NF-stat + SS-fit-stat conservative bound from QCDStat/metadata; independent eras")
+    return Uncertainty(low=[math.sqrt(a * a + v) for a, v in zip(stat.low, variances)],
+                       high=[math.sqrt(a * a + v) for a, v in zip(stat.high, variances)])
 
 
 def add_delta_pair_shift(delta_down, delta_up, down2: List[float], up2: List[float]) -> None:
@@ -1870,6 +1916,7 @@ def build_plot_inputs(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> P
     out.signals.sort(key=lambda x: x[0])
 
     out.stat = bkg_stat_uncertainty(cfg, out.bkg)
+    out.stat = add_qcd_stat_uncertainty(ROOT, cfg, years, bkg_by_year, out.stat, scale)
     if cfg.draw_systematics:
         out.syst = bkg_syst_uncertainty(
             ROOT,
@@ -2668,7 +2715,9 @@ Examples:
 Systematic treatment:
   * --uncertainty stat-only (default) never opens RunSyst/ or RunXSecSyst/
   * --uncertainty syst+stat follows the final limit_workflow.py nuisance model
-  * data-driven QCD: QCD_norm + symmetric absolute QCD_shape; no QCD_stat
+  * data-driven QCD: QCD_norm + absolute QCD_shape + QCD_stat from QCDStat/metadata
+  * QCD_stat uses the conservative NF-stat + SS-fit-stat linear bound per bin;
+    fitted bins are integrated before propagation and eras are independent
   * data-driven DY: constant NF + DY_NFStat(TFDown/Up) + DY_LightJetStat; no DY_stat
   * JER/JES/PU/muon and BTV-uncorrelated sources are independent between eras
   * L1 prefiring is era-specific for 2016pre/postVFP, 2017, and 2018

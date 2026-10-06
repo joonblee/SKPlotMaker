@@ -183,6 +183,47 @@ normalisation, shape-envelope convention, and QCD-MC objectives are unchanged.
 
 **Do not normally run the commands above in parallel with `&`.**  Each SS fit updates the same `NIsoMuon_SS_fit_anchors.json` catalogue.  Sequential execution avoids concurrent read/modify/write races in that shared file.
 
+#### Statistical uncertainty of the QCD prediction
+
+Individual-era `ss-data` production now also writes `QCDStat/metadata` into both
+copies of `NIsoMuon_SS_fit.root`. Central fits, transfer factors, Norm/Shape
+contents and zero TH1 errors are retained. The metadata contain the SS central
+fit covariance in `(log(A), n, k, m0, w)` coordinates and the primitive Sumw2
+transfer statistics, including the shared DY NF-stat contribution.
+
+`qcd_stat_uncertainty.py` must remain beside the producer and `plotter.py`.
+It integrates the fitted function over the requested effective native-bin window
+before propagating its full covariance. This preserves fitted-bin correlations.
+Missing DY NF metadata or unreliable central-fit covariance prevents replacement
+of the production ROOT output.
+
+NF-stat and SS-fit-stat share SS events. Their cross-covariance has not been
+calculated, so one statistical nuisance uses the conservative first-order bound
+`sigma_stat = sigma_NFstat + sigma_SSfitStat`. It is not an independent quadrature
+of those two terms or a demonstrated confidence-interval coverage prescription.
+The existing NF-modelling and functional-form uncertainties remain separate.
+`plotter.py` includes this statistical bound per plotting-bin integral, combining
+independent eras in quadrature, even in mass `stat-only` mode. It reads only the
+nominal QCD file for this purpose. Final `syst+stat --strict` plots also retain the
+existing Norm/Shape and other background uncertainties.
+
+Regenerate the individual-era QCD ROOT files before rebuilding Combine cards:
+
+```bash
+for era in 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix; do
+    python3 qcd_bkg_estimation.py --mode ss-data --year "$era" \
+        --ss-binning adaptive --ss-min-effective-count 10 --ss-max-bin-width 5 \
+        --uncertainty-diagnostics
+done
+```
+
+The diagnostic report also shows `sigma_current_model = hypot(form, normModel)`
+and its ratio to SS-fit-stat, matching the comparison of existing modelling
+uncertainties with the central-fit statistical error. The report's default
+12/30/70 GeV windows have a +/-1% half-width; production cards use their actual
+signal-resolution counting windows. Existing cards/limits are not updated by
+running this producer alone.
+
 QCD simulation is used as a modelling/cross-check fit.  For the current workflow use the log-chi-square objective explicitly:
 
 ```bash
@@ -400,3 +441,4 @@ Run these scripts inside an environment with PyROOT/ROOT available and with acce
 ## Development rule of thumb
 
 When modifying this repository, preserve the physics behaviour first and refactor second.  A small explicit change that keeps histogram names, region definitions, normalisations, fit ranges, blinding, and output conventions intact is preferred to a broad cleanup that silently changes the analysis.
+
