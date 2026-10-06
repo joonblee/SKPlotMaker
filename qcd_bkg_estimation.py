@@ -84,6 +84,10 @@ Main optional controls
   --allow-invalid-fit-output
   --print-shape-syst-bin-info
   --print-raw-shape-debug
+  --uncertainty-diagnostics       SS-data, individual eras only; CSV + JSON
+  --diagnostic-cards CARD_OR_GLOB [CARD_OR_GLOB ...]
+                                 use exact counting windows from datacard comments
+  --diagnostic-output CSV_PATH    default: plots/QCDUncertainty_<ERA>.csv
   --trigger SUBDIRECTORY      optional legacy input subdirectory
   --analyzer NAME             default: NIsoMuon
   --base-dir PATH
@@ -130,15 +134,35 @@ Build every per-era and full-run anchor:
 
 Running with no arguments prints this guide and every command-line option, then
 exits without importing ROOT.
+
+Uncertainty diagnostics (production fits and ROOT templates are unchanged):
+  python3 qcd_bkg_estimation.py --mode ss-data --year 2018 \
+      --ss-binning adaptive --ss-min-effective-count 10 --ss-max-bin-width 5 \
+      --uncertainty-diagnostics \
+      --diagnostic-cards '/path/to/Run2Run3/datacard_M-*_Run2Run3.txt'
+These opt-in CSV/JSON diagnostics compare the existing binwise function envelope
+and normalization modelling variations with first-order NF-stat and fit-stat.
+Low (5--9 GeV) and high (11--80 GeV) integrals are always included. Datacards add
+the exact per-era counting windows, with the Combine producer's whole-bin rule.
+The retained fit covariance is used in its original coordinates, including
+log(A) for SS chi-square fits. NF-stat uses histogram Sumw2 plus the shared DY
+NF-stat contribution in DYAux/NF_aMC. Primitive OS/SS inputs and disjoint MC
+windows are treated as independent. NF-stat and SS-fit-stat share SS data;
+their cross-covariance is not computed. The independence-assuming quadrature
+and their linear sum bound are diagnostics, not coverage tests or new nuisances.
+Unreliable covariance, boundaries and derivative results are flagged.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime
+import glob
 import json
 import math
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -889,6 +913,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-invalid-fit-output", action="store_true")
     parser.add_argument("--print-shape-syst-bin-info", action="store_true")
     parser.add_argument("--print-raw-shape-debug", action="store_true")
+    parser.add_argument(
+        "--uncertainty-diagnostics", action="store_true",
+        help="Write diagnostic yield-error comparisons for individual SS-data eras; production templates are unchanged.",
+    )
+    parser.add_argument(
+        "--diagnostic-cards", nargs="+", default=[], metavar="CARD_OR_GLOB",
+        help="Datacards with '# ERA counting window [...] GeV' comments; quote wildcard patterns. Requires --uncertainty-diagnostics.",
+    )
+    parser.add_argument(
+        "--diagnostic-output", type=Path, metavar="CSV_PATH",
+        help="Diagnostic CSV path; matching JSON metadata are also written. Default: plots/QCDUncertainty_<ERA>.csv.",
+    )
     parser.add_argument("--debug", action="store_true")
     return parser
 
@@ -2849,6 +2885,246 @@ def verify_ss_fit_validity(args: argparse.Namespace, selected_by_key: Dict[str, 
     raise RuntimeError(message + ". Existing ROOT files were not overwritten.")
 
 
+def diagnostic_windows(args: argparse.Namespace) -> List[dict]:
+    """Read counting windows rather than introducing a second resolution model."""
+    windows = [dict(label="low", low=5.0, high=9.0, cards=[]),
+               dict(label="high", low=11.0, high=80.0, cards=[])]
+    by_mass: Dict[str, dict] = {}
+    pattern = re.compile(r"^#\s+" + re.escape(args.year) + r"\s+counting window\s+\[([^,]+),\s*([^\]]+)\]\s+GeV", re.M)
+    for requested in args.diagnostic_cards:
+        paths = sorted(glob.glob(os.path.expandvars(os.path.expanduser(requested))))
+        if not paths:
+            raise ValueError(f"No diagnostic datacards match {requested!r}")
+        for filename in paths:
+            text = Path(filename).read_text()
+            match = pattern.search(text)
+            if match is None:
+                continue
+            mass = re.search(r"^# mass M-([^,\s]+)", text, re.M)
+            if mass is None:
+                raise ValueError(f"Missing mass label in {filename}")
+            label = "M" + mass.group(1)
+            low, high = map(float, match.groups())
+            if not (math.isfinite(low) and math.isfinite(high) and 0 <= low < high):
+                raise ValueError(f"Invalid counting window in {filename}")
+            previous = by_mass.setdefault(label, dict(label=label, low=low, high=high, cards=[]))
+            if previous["low"] != low or previous["high"] != high:
+                raise ValueError(f"Conflicting {args.year} {label} windows in diagnostic datacards")
+            previous["cards"].append(str(Path(filename).resolve()))
+    if args.diagnostic_cards and not by_mass:
+        raise ValueError(f"No {args.year} counting-window comments found in diagnostic datacards")
+    windows.extend(sorted(by_mass.values(), key=lambda item: float(item["label"][1:].replace("p", "."))))
+    return windows
+
+
+def diagnostic_bin_range(hist, low: float, high: float) -> Tuple[int, int]:
+    """Match RootReader's whole-bin counting integral, excluding under/overflow."""
+    axis = hist.GetXaxis()
+    low, high = max(low, axis.GetXmin()), min(high, axis.GetXmax())
+    if high <= low:
+        return 1, 0
+    eps = 1e-9 * max(1.0, high - low)
+    n = hist.GetNbinsX()
+    return (max(1, min(n, axis.FindFixBin(low + eps))),
+            max(1, min(n, axis.FindFixBin(high - eps))))
+
+
+def diagnostic_count_variance(hist, low: float, high: float) -> Tuple[float, float]:
+    first, last = diagnostic_bin_range(hist, low, high)
+    value = sum(float(hist.GetBinContent(i)) for i in range(first, last + 1))
+    variance = sum(float(hist.GetBinError(i)) ** 2 for i in range(first, last + 1))
+    if not (math.isfinite(value) and math.isfinite(variance)):
+        raise ValueError("Non-finite diagnostic count or Sumw2 variance")
+    return value, variance
+
+
+def diagnostic_transfer_statistics(h_ss, h_os, h_qcd_ss, h_qcd_os, h_dy_os, f_dy) -> dict:
+    """First-order propagation of independent primitive Sumw2 inputs."""
+    primitive = {}
+    for name, hist, window in (
+        ("data_ss_low", h_ss, QCD_TRANSFER_LOW_WINDOW),
+        ("data_os_low", h_os, QCD_TRANSFER_LOW_WINDOW),
+        ("mc_ss_low", h_qcd_ss, QCD_TRANSFER_LOW_WINDOW),
+        ("mc_os_low", h_qcd_os, QCD_TRANSFER_LOW_WINDOW),
+        ("mc_ss_high", h_qcd_ss, QCD_TRANSFER_HIGH_WINDOW),
+        ("mc_os_high", h_qcd_os, QCD_TRANSFER_HIGH_WINDOW),
+    ):
+        value, variance = diagnostic_count_variance(hist, *window)
+        if value <= 0:
+            raise ValueError(f"Non-positive {name} in diagnostic transfer propagation")
+        primitive[name] = dict(value=value, variance=variance)
+
+    # DY template Sumw2 contains LightJetStat only. Its common NFStat must be
+    # propagated once on the integrated low-mass DY yield, not once per bin.
+    warnings = []
+    nf = f_dy.Get("DYAux/NF_aMC")
+    complete = bool(nf) and nf.GetNbinsX() == 1
+    dy_extra_variance = None
+    if complete:
+        value, error = float(nf.GetBinContent(1)), float(nf.GetBinError(1))
+        complete = value > 0 and error >= 0 and math.isfinite(value) and math.isfinite(error)
+        if complete:
+            dy_low, _ = diagnostic_count_variance(h_dy_os, *QCD_TRANSFER_LOW_WINDOW)
+            dy_extra_variance = (dy_low * error / value) ** 2
+            primitive["data_os_low"]["variance"] += dy_extra_variance
+    if not complete:
+        warnings.append("DYAux/NF_aMC is missing/invalid; NF-stat is unavailable, not zero.")
+
+    get = lambda name: primitive[name]["value"]
+    relative = lambda name: primitive[name]["variance"] / get(name) ** 2
+    low_transfer = get("data_os_low") / get("data_ss_low")
+    mc_double_ratio = get("mc_os_high") * get("mc_ss_low") / (get("mc_ss_high") * get("mc_os_low"))
+    low_variance = low_transfer ** 2 * (relative("data_os_low") + relative("data_ss_low"))
+    double_variance = mc_double_ratio ** 2 * sum(relative(name) for name in
+        ("mc_os_high", "mc_ss_high", "mc_ss_low", "mc_os_low"))
+    return dict(primitive=primitive, low_transfer=low_transfer,
+                mc_double_ratio=mc_double_ratio, high_transfer=low_transfer * mc_double_ratio,
+                low_variance=low_variance, double_ratio_variance=double_variance,
+                high_variance=mc_double_ratio ** 2 * low_variance + low_transfer ** 2 * double_variance,
+                low_high_covariance=mc_double_ratio * low_variance,
+                dy_nf_extra_variance=dy_extra_variance, complete=complete, warnings=warnings)
+
+
+def diagnostic_fit_error(selected: SelectedFit, segments: Sequence[Tuple[float, float, float]], objective: str) -> dict:
+    """Propagate the retained covariance in its own coordinates on a TF1 clone."""
+    result = result_object(selected.result)
+    n = selected.model.npar
+    status = selected.diagnostics.covariance_status
+    log_amplitude = objective == "chi2"
+    details = dict(covariance_status=status, fit_status=selected.diagnostics.status,
+                   boundary_parameters=list(selected.diagnostics.boundary_parameters),
+                   coordinates="log(A),shape" if log_amplitude else "A,shape",
+                   reliable=False, sigma=None, warnings=[])
+    try:
+        if status < 1 or int(result.NPar()) != n:
+            raise ValueError("fit covariance is unavailable or has the wrong dimension")
+        parameters = [float(result.Parameter(i)) for i in range(n)]
+        covariance = [[float(result.CovMatrix(i, j)) for j in range(n)] for i in range(n)]
+        if not all(math.isfinite(v) for v in parameters + [v for row in covariance for v in row]):
+            raise ValueError("non-finite fit parameter/covariance")
+        if any(covariance[i][i] < 0 for i in range(n)):
+            raise ValueError("negative diagonal fit variance")
+        physical = [math.exp(parameters[0]) if log_amplitude else parameters[0], *parameters[1:]]
+        if not all(math.isclose(v, float(selected.function.GetParameter(i)), rel_tol=1e-6, abs_tol=1e-12)
+                   for i, v in enumerate(physical)):
+            raise ValueError("retained covariance parameters do not match the selected physical function")
+        fn = selected.function.Clone(_NAMES.unique("uncertainty_diagnostic"))
+        def evaluate(values):
+            for i, value in enumerate(values):
+                fn.SetParameter(i, math.exp(value) if i == 0 and log_amplitude else value)
+            return sum(transfer * float(fn.Integral(low, high)) for low, high, transfer in segments)
+        central = evaluate(parameters)
+        if not math.isfinite(central) or central <= 0:
+            raise ValueError("non-positive/non-finite central fit integral; local statistical propagation is unavailable")
+        gradients = []
+        for scale in (1.0, 0.5):
+            gradient = [central if log_amplitude else central / parameters[0]]
+            for i in range(1, n):
+                if covariance[i][i] == 0:
+                    gradient.append(0.0)
+                    continue
+                step = scale * 1e-4 * max(abs(parameters[i]), math.sqrt(covariance[i][i]), 1.0)
+                values = []
+                for offset in (-2, -1, 1, 2):
+                    shifted = parameters.copy()
+                    shifted[i] += offset * step
+                    values.append(evaluate(shifted))
+                gradient.append((values[0] - 8 * values[1] + 8 * values[2] - values[3]) / (12 * step))
+            gradients.append(gradient)
+        variances = []
+        for gradient in gradients:
+            terms = [gradient[i] * covariance[i][j] * gradient[j] for i in range(n) for j in range(n)]
+            variance = math.fsum(terms)
+            if not math.isfinite(variance) or variance < -1e-10 * max(math.fsum(map(abs, terms)), 1e-30):
+                raise ValueError("invalid propagated fit variance")
+            variances.append(max(variance, 0.0))
+        sigma = math.sqrt(variances[1])
+        shift = abs(math.sqrt(variances[0]) - sigma) / max(sigma, abs(central) * 1e-12, 1e-30)
+        details.update(sigma=sigma, parameters=parameters, covariance=covariance,
+                       gradient=gradients[1], derivative_relative_shift=shift)
+        details["reliable"] = bool(selected.accepted and status == 3 and
+                                    not details["boundary_parameters"] and shift <= 0.01)
+        if not details["reliable"]:
+            details["warnings"].append("Fit-stat is diagnostic only: covariance/boundary/derivative quality is unreliable.")
+    except Exception as exc:
+        details["warnings"].append(f"Fit-stat unavailable: {exc}")
+    return details
+
+
+def write_uncertainty_diagnostics(args, selected, h_central, h_up, h_down,
+                                  h_norm_up, h_norm_down, transfer_stats) -> None:
+    rows, fit_details = [], {}
+    for window in args._diagnostic_windows:
+        first, last = diagnostic_bin_range(h_central, window["low"], window["high"])
+        if last < first:
+            raise ValueError(f"Empty output-bin selection for {window['label']}")
+        axis = h_central.GetXaxis()
+        low, high = float(axis.GetBinLowEdge(first)), float(axis.GetBinUpEdge(last))
+        integrals = []
+        segments = []
+        for region, transfer in ((QCD_TRANSFER_LOW_WINDOW, transfer_stats["low_transfer"]),
+                                 (QCD_TRANSFER_HIGH_WINDOW, transfer_stats["high_transfer"])):
+            a, b = max(low, region[0]), min(high, region[1])
+            integrals.append(float(selected.function.Integral(a, b)) if b > a else 0.0)
+            if b > a:
+                segments.append((a, b, transfer))
+        central = float(h_central.Integral(first, last))
+        form = max(abs(float(hist.Integral(first, last)) - central) for hist in (h_up, h_down))
+        norm = max(abs(float(hist.Integral(first, last)) - central) for hist in (h_norm_up, h_norm_down))
+        nf_variance = ((integrals[0] + transfer_stats["mc_double_ratio"] * integrals[1]) ** 2 * transfer_stats["low_variance"]
+                       + (transfer_stats["low_transfer"] * integrals[1]) ** 2 * transfer_stats["double_ratio_variance"])
+        nf_stat = math.sqrt(nf_variance) if transfer_stats["complete"] else None
+        fit = diagnostic_fit_error(selected, segments, resolve_objective(args.fit_objective, SS_MODE))
+        fit_details[window["label"]] = fit
+        fit_stat = fit["sigma"]
+        available = nf_stat is not None and fit_stat is not None
+        quadrature = math.hypot(nf_stat, fit_stat) if available else None
+        upper = nf_stat + fit_stat if available else None
+        reliable = available and fit["reliable"]
+        row = dict(era=args.year, window=window["label"], requested_low=window["low"], requested_high=window["high"],
+                   effective_low=low, effective_high=high, central=central,
+                   sigma_form=form, sigma_norm_model=norm, sigma_nf_stat=nf_stat, sigma_fit_stat=fit_stat,
+                   stat_quadrature_assuming_independent=quadrature, stat_sum_bound_linear=upper,
+                   stat_sum_over_form=upper / form if upper is not None and form > 0 else None,
+                   covariance_status=fit["covariance_status"], statistical_estimate_reliable=bool(reliable),
+                   form_ge_stat_sum_linear=(form >= upper) if reliable else None)
+        rows.append(row)
+        render = lambda value: "NA" if value is None else f"{value:.6g}"
+        print(f"[QCD UNC] {args.year} {window['label']} Q={central:.6g} form={form:.6g} normModel={norm:.6g} "
+              f"NFstat={render(nf_stat)} fitStat={render(fit_stat)} statSum={render(upper)} reliable={int(bool(reliable))}")
+        for warning in fit["warnings"]:
+            print(f"[QCD UNC WARNING] {window['label']}: {warning}")
+    for warning in transfer_stats["warnings"]:
+        print(f"[QCD UNC WARNING] {warning}")
+    output = args.diagnostic_output or PLOT_DIR / f"QCDUncertainty_{args.year}.csv"
+    output = Path(os.path.expandvars(str(output))).expanduser()
+    if output.suffix.lower() != ".csv":
+        output = Path(str(output) + ".csv")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    metadata = dict(era=args.year, nominal_model=selected.model.key,
+                    fit_objective=resolve_objective(args.fit_objective, SS_MODE),
+                    ss_binning=args.ss_binning, ss_min_effective_count=args.ss_min_effective_count,
+                    ss_max_bin_width=args.ss_max_bin_width, fit_range=[SS_MODE.fit_min, SS_MODE.fit_max],
+                    windows=args._diagnostic_windows,
+                    transfer_statistics=transfer_stats, fit_statistics=fit_details, rows=rows,
+                    assumptions=["First-order covariance/Sumw2 propagation, not a coverage test.",
+                                 "Primitive OS/SS inputs and disjoint MC windows are treated as independent.",
+                                 "DY template Sumw2 includes source-stat; DYAux/NF_aMC adds its shared NF-stat once.",
+                                 "NF-stat/SS-fit-stat cross-covariance is not evaluated; quadrature assumes independence.",
+                                 "The linear sum bounds their first-order standard deviation for any cross-correlation.",
+                                 "These diagnostics do not change ROOT errors, templates, fits or datacards."])
+    # Serialize before opening either file so non-finite diagnostics cannot leave
+    # a seemingly successful partial report. Missing results are JSON null/CSV NA.
+    payload = json.dumps(metadata, indent=2, allow_nan=False) + "\n"
+    with output.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows({key: "NA" if value is None else value for key, value in row.items()} for row in rows)
+    output.with_suffix(".json").write_text(payload)
+    print(f"[QCD UNC SAVE] {output}")
+    print(f"[QCD UNC SAVE] {output.with_suffix('.json')}")
+
+
 def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, files: Dict[str, object], selected_fits: Sequence[SelectedFit]):
     selected_by_key = {selected.model.key: selected for selected in selected_fits}
     verify_ss_fit_validity(args, selected_by_key)
@@ -2943,6 +3219,12 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
         low_transfer_up = low_normalisation * low_norm_up
         high_transfer_down = high_normalisation * high_norm_down
         high_transfer_up = high_normalisation * high_norm_up
+
+        transfer_stats = None
+        if args.uncertainty_diagnostics:
+            transfer_stats = diagnostic_transfer_statistics(
+                h_ss, h_os, h_qcd_ss, h_qcd_os, h_dy_os, f_dy_est
+            )
 
         print(
             f"[fit.root] DT(Data-nonQCD) OS/SS, {low_min:g}<m<{low_max:g} = "
@@ -3082,6 +3364,11 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
             d_norm_down.cd(); h_norm_down.Write(norm_down_name, ROOT.TObject.kOverwrite)
             print_saved_histogram(h_norm_up, norm_up_dir, norm_up_name)
             print_saved_histogram(h_norm_down, norm_down_dir, norm_down_name)
+            if args.uncertainty_diagnostics:
+                write_uncertainty_diagnostics(
+                    args, selected_by_key[SS_NOMINAL_MODEL], h_central, h_up, h_down,
+                    h_norm_up, h_norm_down, transfer_stats,
+                )
         finally:
             root_file.Close()
 
@@ -3177,6 +3464,12 @@ def close_files(files: Sequence[object]) -> None:
 def run(args: argparse.Namespace) -> int:
     mode = canonical_mode(args.mode)
     objective = resolve_objective(args.fit_objective, mode)
+    if (args.diagnostic_cards or args.diagnostic_output) and not args.uncertainty_diagnostics:
+        raise ValueError("--diagnostic-cards/output requires --uncertainty-diagnostics")
+    if args.uncertainty_diagnostics:
+        if mode.key != SS_MODE.key or len(input_dirs(args)) != 1:
+            raise ValueError("Uncertainty diagnostics require ss-data mode and one individual era")
+        args._diagnostic_windows = diagnostic_windows(args)
     ROOT = import_root()
     declare_fit_functions(ROOT)
     configure_minimizer(ROOT)
