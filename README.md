@@ -288,6 +288,9 @@ It reports the low/high windows plus high-mass subwindows split at 20 and 30 GeV
 SS-fit/background-subtracted SS data, SS-fit/SS MC, the applied transfer,
 local MC OS/SS, DD/MC, and OS-residual/DD. The latter is a required closure
 scale for diagnosis only; no factor is applied to the data-driven prediction.
+SS-fit, SS-residual and OS-residual yields and the residual OS/SS ratio are
+printed directly. Undefined ratios with a non-positive denominator are labelled
+separately from blinded OS observations.
 The yield decomposition is
 `DD/MC = (SS-fit/SS-MC) * (applied transfer/local MC OS/SS)`.
 In the low window, DD/OS residual equals SS-fit/SS residual if the calibration

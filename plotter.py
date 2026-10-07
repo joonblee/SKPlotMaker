@@ -240,6 +240,7 @@ def qcd_normalisation_diagnostic_row(inputs, histograms, low, high, cfg):
         plot_residual = data - count("OS_tt") - count("OS_ST") - others - dy
         result.update(os_data=data, os_top=top, os_others=others, os_dy=dy,
                       os_residual=residual, os_plot_residual=plot_residual,
+                      residual_os_ss=ratio(residual, ss_residual),
                       dd_over_os_residual=ratio(dd, residual),
                       required_dd_scale=ratio(residual, dd),
                       required_mc_scale=ratio(residual, mc_os),
@@ -305,14 +306,19 @@ def write_qcd_normalisation_diagnostics(ROOT, cfg, years, qcd_factor):
                 fit_model=inputs[0]["fit"]["model"], fit_range=inputs[0].get("fit_range"),
                 transfer=transfer, stored_vs_current_anchor_inputs=comparisons, rows=rows)
             print(f"[qcd-norm-diag] {year}: windows={windows} ({window_source})")
-            fmt = lambda value: "blinded/undefined" if value is None else f"{value:.6g}"
+            fmt = lambda value: "undefined(non-positive denominator)" if value is None else f"{value:.6g}"
             for row in rows:
+                os_residual = "blinded" if row["os_data_blinded"] else fmt(row["os_residual"])
+                os_ss = "blinded" if row["os_data_blinded"] else fmt(row["residual_os_ss"])
+                closure = "blinded" if row["os_data_blinded"] else fmt(row["required_dd_scale"])
                 print(f"[qcd-norm-diag] {year} {row['low']:g}--{row['high']:g} GeV: "
-                      f"DD={row['qcd_dd']:.6g}, SS-fit/SS-data-sub={fmt(row['ss_fit_over_residual'])}, "
+                      f"DD={row['qcd_dd']:.6g}, SS-fit={row['ss_fit']:.6g}, "
+                      f"SS-residual={row['ss_residual']:.6g}, OS-residual={os_residual}, "
+                      f"residual OS/SS={os_ss}, SS-fit/SS-data-sub={fmt(row['ss_fit_over_residual'])}, "
                       f"SS-fit/SS-MC={fmt(row['ss_fit_over_mc'])}, "
                       f"T={fmt(row['effective_transfer'])}, local R_MC={fmt(row['mc_os_ss'])}, "
                       f"DD/MC={fmt(row['dd_over_mc'])}, "
-                      f"OS-residual/DD={fmt(row.get('required_dd_scale'))}")
+                      f"OS-residual/DD={closure}")
             for key, comparison in comparisons.items():
                 if not math.isclose(comparison["stored"], comparison["current"], rel_tol=1e-6, abs_tol=1e-6):
                     print(f"[qcd-norm-diag] {year}: stored/current {key} mismatch: {comparison}")
