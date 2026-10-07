@@ -264,6 +264,15 @@ for era in Run2 Run3 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix;
 done
 ```
 
+`QCD_TRANSFER_LOW_WINDOW` and `QCD_TRANSFER_HIGH_WINDOW` in
+`qcd_bkg_estimation.py` govern both the transfer-factor calibration windows and
+the output-template support. Nominal, Norm/Shape and statistical derivative
+integrals all use these constants. Changing the low window to `(6.0, 9.0)`
+also makes the QCD prediction below 6 GeV zero; it is not a calibration-only
+change. Regenerate the affected ROOT templates after changing these windows.
+The separate `plotter.py` low window governs blinded QCD-MC validation
+normalisation, not the SS-data estimator's factor calculation.
+
 The QCD-MC fit excludes `9 < m(mumu) < 11 GeV`.  The OS/SS transfer diagnostics use `5 < m(mumu) < 9 GeV` as the low-mass region and `11 < m(mumu) < 80 GeV` as the high-mass region.
 
 ### 4. Make the final dimuon-mass plots

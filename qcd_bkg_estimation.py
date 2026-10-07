@@ -289,8 +289,9 @@ def _window_statistics(metadata, low, high, max_width):
     fit, transfer = metadata["fit"], metadata["transfer_statistics"]
     p, covariance = fit["parameters"], fit["covariance"]
     integrals, gradients = [], []
-    for a, b, factor in ((5.0, 9.0, transfer["low_transfer"]),
-                         (11.0, 80.0, transfer["high_transfer"])):
+    for window, factor in ((QCD_TRANSFER_LOW_WINDOW, transfer["low_transfer"]),
+                           (QCD_TRANSFER_HIGH_WINDOW, transfer["high_transfer"])):
+        a, b = window
         values = _integral_gradient(p, max(low, a), min(high, b), max_width)
         integrals.append(values[0])
         gradients.append([factor * g for g in values[1:]])
@@ -3334,7 +3335,8 @@ def write_uncertainty_diagnostics(ROOT, args, selected, h_central, h_up, h_down,
 
 def build_qcd_stat_metadata(ROOT, args, selected, transfer_stats):
     """Validate statistics before opening/replacing the production ROOT output."""
-    fit = diagnostic_fit_error(ROOT, selected, [(5.0, 9.0, 1.0)], "chi2")
+    low_min, low_max = QCD_TRANSFER_LOW_WINDOW
+    fit = diagnostic_fit_error(ROOT, selected, [(low_min, low_max, 1.0)], "chi2")
     if not fit["usable"]:
         raise RuntimeError("QCD statistical covariance propagation is unavailable: "
                            + "; ".join(fit["warnings"])
@@ -3354,7 +3356,7 @@ def build_qcd_stat_metadata(ROOT, args, selected, transfer_stats):
                                  "Not a coverage test or a simultaneous control-region likelihood."])
     validate_qcd_stat_metadata(metadata, args.year, hist_path(OS_REGION))
     t = transfer_stats["low_transfer"]
-    check = qcd_window_statistics(metadata, 5.0, 9.0, fit["central_integral"] * t)
+    check = qcd_window_statistics(metadata, low_min, low_max, fit["central_integral"] * t)
     if not math.isclose(check["sigma_fit_stat"], fit["sigma"] * t, rel_tol=1e-4, abs_tol=1e-280):
         raise RuntimeError("Analytic QCD statistical gradient disagrees with the retained ROOT fit covariance propagation.")
     # Reject non-finite values before replacing an existing ROOT file.
@@ -3376,8 +3378,10 @@ def build_qcd_stat_basis(metadata, native, main):
     axis = native.GetXaxis()
     for ibin in range(1, native.GetNbinsX() + 1):
         low, high = axis.GetBinLowEdge(ibin), axis.GetBinUpEdge(ibin)
-        lo = _integral_gradient(p, max(low, 5.0), min(high, 9.0), 0.5)
-        hi = _integral_gradient(p, max(low, 11.0), min(high, 80.0), 0.5)
+        lo = _integral_gradient(p, max(low, QCD_TRANSFER_LOW_WINDOW[0]),
+                                min(high, QCD_TRANSFER_LOW_WINDOW[1]), 0.5)
+        hi = _integral_gradient(p, max(low, QCD_TRANSFER_HIGH_WINDOW[0]),
+                                min(high, QCD_TRANSFER_HIGH_WINDOW[1]), 0.5)
         rows.append([t * lo[0] + th * hi[0]]
                     + [t * lo[i] + th * hi[i] for i in range(1, 6)]
                     + [lo[0] + k * hi[0], t * hi[0]])
