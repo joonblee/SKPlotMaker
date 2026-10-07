@@ -3389,12 +3389,17 @@ def build_qcd_stat_basis(metadata, native, main):
     for value, expected in zip(totals[:6], [reference["central"]] + reference["gradient"]):
         if not math.isclose(value, expected, rel_tol=1e-5, abs_tol=1e-280):
             raise RuntimeError("QCD derivative-bin integration did not converge; ROOT output was not replaced.")
-    for mass in (6.0, 12.0, 30.0, 70.0):
-        ibin = axis.FindFixBin(mass)
-        if 1 <= ibin <= len(rows):
-            nominal = fit_integral_with_transfer(main, native, ibin, t, th)
-            if not math.isclose(rows[ibin - 1][0], nominal, rel_tol=1e-5, abs_tol=1e-280):
-                raise RuntimeError("QCD statistical basis disagrees with the ROOT central function; output was not replaced.")
+    # Consumers check every bin, so preflight must do the same before replacing
+    # production outputs. A four-bin spot check can miss local discrepancies.
+    for ibin, row in enumerate(rows, 1):
+        nominal = fit_integral_with_transfer(main, native, ibin, t, th)
+        if not math.isclose(row[0], nominal, rel_tol=1e-5, abs_tol=1e-280):
+            raise RuntimeError(
+                f"QCD statistical basis disagrees with the ROOT central function: bin={ibin}, "
+                f"mass=[{axis.GetBinLowEdge(ibin):.17g},{axis.GetBinUpEdge(ibin):.17g}] GeV, "
+                f"CentralYield={row[0]:.17g}, nominal={nominal:.17g}; "
+                "output was not replaced."
+            )
     return rows
 
 
