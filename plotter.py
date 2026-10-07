@@ -18,6 +18,8 @@ Revision 2 updates:
   - treats data-driven QCD shape as a symmetric absolute-yield uncertainty
     and sums QCDStat/ derivative histograms before covariance propagation; data-driven DY remains
     constant NF + NFStat + LightJetStat
+  - accepts SS covariance status 2 or 3, including boundary solutions, using
+    Minuit2's positive-definite regularisation where needed
   - keeps event-yield and differential-cross-section normalisations only
   - retains the manual cumulative-TH1 stack used to avoid ROOT THStack painting
     crashes in some CMSSW/PyROOT releases
@@ -77,9 +79,9 @@ def validate_qcd_stat_metadata(metadata, era=None, template_path=None):
         raise ValueError("QCD statistical metadata belong to a different histogram.")
     fit = metadata["fit"]
     if (fit.get("model") != "power_exp_logistic" or fit.get("coordinates") != "log(A),shape"
-            or not fit.get("reliable") or fit.get("covariance_status") != 3
-            or fit.get("boundary_parameters")):
-        raise ValueError("Reliable, interior SS central-fit covariance is required for QCD statistics.")
+            or not fit.get("usable", fit.get("reliable"))
+            or fit.get("covariance_status") not in (2, 3)):
+        raise ValueError("Usable SS central-fit covariance (status 2 or 3) is required for QCD statistics.")
     p, c = fit["parameters"], fit["covariance"]
     if len(p) != 5 or len(c) != 5 or any(len(row) != 5 for row in c):
         raise ValueError("Invalid QCD fit covariance dimensions.")
@@ -175,6 +177,9 @@ def qcd_root_window_statistics(inputs, low, high, nominal=None):
         raise ValueError("Non-finite propagated QCD statistics.")
     return dict(central=central, sigma_nf_stat=nf, sigma_fit_stat=fit, gradient=gradient,
                 sigma_stat_bound=nf + fit, stat_quadrature_assuming_independent=math.hypot(nf, fit),
+                covariance_status=metadata["fit"]["covariance_status"],
+                covariance_regularised=(metadata["fit"]["covariance_status"] == 2),
+                boundary_parameters=list(metadata["fit"].get("boundary_parameters", [])),
                 treatment=QCD_STAT_TREATMENT, effective_low=low, effective_high=high)
 
 

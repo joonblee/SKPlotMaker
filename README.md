@@ -201,8 +201,12 @@ the stored derivatives over their actual window before propagating covariance.
 This preserves fitted-bin and low/high-transfer correlations; summing per-bin
 statistical errors in quadrature would not. `plotter.py` and the Combine workflow
 only read the ROOT information; they do not rebuild or refit the SS function.
-Missing DY NF metadata or unreliable central-fit covariance prevents replacement
-of the production ROOT output.
+Covariance status 2 or 3 is accepted, including parameter-boundary solutions
+such as `n = 0`. Where needed, Minuit2 regularises the covariance to be positive
+definite. The returned matrix is used directly, and its status, regularisation
+flag and boundary parameters are recorded in ROOT and the diagnostic reports.
+Missing DY NF metadata or unavailable/non-finite statistical propagation
+prevents replacement of the production ROOT output.
 
 NF-stat and SS-fit-stat share SS events. Their cross-covariance has not been
 calculated, so one statistical nuisance uses the conservative first-order bound

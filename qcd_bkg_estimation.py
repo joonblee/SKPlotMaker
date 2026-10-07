@@ -41,6 +41,9 @@ Fit modes and objectives
       Bin-integrated statistical chi-square; produces the central SS-based QCD
       template plus Norm and analytic-function-envelope Shape variations,
       and QCDStat/metadata for statistical yield propagation.
+      Covariance status 2 or 3 is used, including boundary solutions. Where
+      needed, Minuit2 regularises the covariance to be positive definite;
+      the returned matrix and status are saved without changing the fit.
       Auto binning keeps the previous fine bins unless the total SS effective
       count is below five events per fine fit bin. Sparse samples then use
       1 GeV bins below 11 GeV, 2 GeV bins from 11 to 21 GeV, and one
@@ -217,9 +220,9 @@ def validate_qcd_stat_metadata(metadata, era=None, template_path=None):
         raise ValueError("QCD statistical metadata belong to a different histogram.")
     fit = metadata["fit"]
     if (fit.get("model") != "power_exp_logistic" or fit.get("coordinates") != "log(A),shape"
-            or not fit.get("reliable") or fit.get("covariance_status") != 3
-            or fit.get("boundary_parameters")):
-        raise ValueError("Reliable, interior SS central-fit covariance is required for QCD statistics.")
+            or not fit.get("usable", fit.get("reliable"))
+            or fit.get("covariance_status") not in (2, 3)):
+        raise ValueError("Usable SS central-fit covariance (status 2 or 3) is required for QCD statistics.")
     p, c = fit["parameters"], fit["covariance"]
     if len(p) != 5 or len(c) != 5 or any(len(row) != 5 for row in c):
         raise ValueError("Invalid QCD fit covariance dimensions.")
@@ -3153,10 +3156,11 @@ def diagnostic_fit_error(ROOT, selected: SelectedFit, segments: Sequence[Tuple[f
     log_amplitude = objective == "chi2"
     details = dict(covariance_status=status, fit_status=selected.diagnostics.status,
                    boundary_parameters=list(selected.diagnostics.boundary_parameters),
+                   covariance_regularised=(status == 2), usable=False,
                    coordinates="log(A),shape" if log_amplitude else "A,shape",
                    reliable=False, sigma=None, warnings=[])
     try:
-        if status < 1 or int(result.NPar()) != n:
+        if status not in (2, 3) or int(result.NPar()) != n:
             raise ValueError("fit covariance is unavailable or has the wrong dimension")
         parameters = [float(result.Parameter(i)) for i in range(n)]
         covariance = [[float(result.CovMatrix(i, j)) for j in range(n)] for i in range(n)]
@@ -3220,10 +3224,15 @@ def diagnostic_fit_error(ROOT, selected: SelectedFit, segments: Sequence[Tuple[f
         shift = abs(math.sqrt(variances[0]) - sigma) / max(sigma, abs(central) * 1e-12, 1e-30)
         details.update(sigma=sigma, parameters=parameters, covariance=covariance,
                        gradient=gradients[1], derivative_relative_shift=shift)
-        details["reliable"] = bool(selected.accepted and status == 3 and
-                                    not details["boundary_parameters"] and shift <= 0.01)
-        if not details["reliable"]:
-            details["warnings"].append("Fit-stat is diagnostic only: covariance/boundary/derivative quality is unreliable.")
+        # Use Minuit2's returned covariance, including its positive-definite
+        # regularisation (status 2). A boundary solution does not veto yield
+        # propagation. Keep the legacy 'reliable' key as a usability alias.
+        details["usable"] = bool(selected.accepted and shift <= 0.01)
+        details["reliable"] = details["usable"]
+        if not selected.accepted:
+            details["warnings"].append("Fit-stat unavailable: the selected central fit was not accepted.")
+        if shift > 0.01:
+            details["warnings"].append("Fit-stat unavailable: covariance propagation changes by more than 1% when the derivative step is halved.")
     except Exception as exc:
         details["warnings"].append(f"Fit-stat unavailable: {exc}")
     return details
@@ -3255,20 +3264,23 @@ def write_uncertainty_diagnostics(ROOT, args, selected, h_central, h_up, h_down,
         fit = diagnostic_fit_error(ROOT, selected, segments, resolve_objective(args.fit_objective, SS_MODE))
         fit_central = fit.get("central_integral")
         if fit_central is not None and not math.isclose(fit_central, central, rel_tol=1e-5, abs_tol=1e-30):
-            fit.update(sigma=None, reliable=False)
+            fit.update(sigma=None, usable=False, reliable=False)
             fit["warnings"].append("Fit-stat unavailable: diagnostic integral differs from the production template yield.")
         fit_details[window["label"]] = fit
         fit_stat = fit["sigma"]
         available = nf_stat is not None and fit_stat is not None
         quadrature = math.hypot(nf_stat, fit_stat) if available else None
         upper = nf_stat + fit_stat if available else None
-        reliable = available and fit["reliable"]
+        reliable = available and fit["usable"]
         row = dict(era=args.year, window=window["label"], requested_low=window["low"], requested_high=window["high"],
                    effective_low=low, effective_high=high, central=central,
                    sigma_form=form, sigma_norm_model=norm, sigma_nf_stat=nf_stat, sigma_fit_stat=fit_stat,
                    stat_quadrature_assuming_independent=quadrature, stat_sum_bound_linear=upper,
                    stat_sum_over_form=upper / form if upper is not None and form > 0 else None,
-                   covariance_status=fit["covariance_status"], statistical_estimate_reliable=bool(reliable),
+                   covariance_status=fit["covariance_status"],
+                   covariance_regularised=fit["covariance_regularised"],
+                   boundary_parameters=";".join(fit["boundary_parameters"]),
+                   statistical_estimate_available=bool(reliable), statistical_estimate_reliable=bool(reliable),
                    form_ge_stat_sum_linear=(form >= upper) if reliable else None)
         current_model = math.hypot(form, norm)
         row.update(sigma_current_model=current_model,
@@ -3278,7 +3290,10 @@ def write_uncertainty_diagnostics(ROOT, args, selected, h_central, h_up, h_down,
         rows.append(row)
         render = lambda value: "NA" if value is None else f"{value:.6g}"
         print(f"[QCD UNC] {args.year} {window['label']} Q={central:.6g} form={form:.6g} normModel={norm:.6g} "
-              f"NFstat={render(nf_stat)} fitStat={render(fit_stat)} statSum={render(upper)} reliable={int(bool(reliable))}")
+              f"NFstat={render(nf_stat)} fitStat={render(fit_stat)} statSum={render(upper)} "
+              f"available={int(bool(reliable))} cov={fit['covariance_status']} "
+              f"regularised={int(fit['covariance_regularised'])} "
+              f"boundary={','.join(fit['boundary_parameters']) or 'none'}")
         print(f"[QCD UNC MODEL] current(form+norm)={current_model:.6g} "
               f"current/fitStat={render(row['current_model_over_fit_stat'])} "
               f"statBoundForCard={render(row['sigma_stat_bound_for_card'])}")
@@ -3320,8 +3335,8 @@ def write_uncertainty_diagnostics(ROOT, args, selected, h_central, h_up, h_down,
 def build_qcd_stat_metadata(ROOT, args, selected, transfer_stats):
     """Validate statistics before opening/replacing the production ROOT output."""
     fit = diagnostic_fit_error(ROOT, selected, [(5.0, 9.0, 1.0)], "chi2")
-    if not fit["reliable"]:
-        raise RuntimeError("QCD statistical covariance is unavailable/unreliable: "
+    if not fit["usable"]:
+        raise RuntimeError("QCD statistical covariance propagation is unavailable: "
                            + "; ".join(fit["warnings"])
                            + ". The central fit was not changed; existing ROOT files were not overwritten.")
     metadata = dict(schema=QCD_STAT_SCHEMA, treatment=QCD_STAT_TREATMENT, basis=QCD_STAT_BASIS,
@@ -3395,6 +3410,10 @@ def write_qcd_stat_basis(ROOT, stat_dir, native, metadata, rows):
             hist.SetBinContent(ibin, row[column])
             hist.SetBinError(ibin, 0.0)
         hist.Write(name, ROOT.TObject.kOverwrite)
+    fit = metadata["fit"]
+    print(f"[fit.root] QCDStat covariance status={fit['covariance_status']} "
+          f"positive-definite regularisation={int(fit.get('covariance_regularised', fit['covariance_status'] == 2))} "
+          f"boundary={','.join(fit['boundary_parameters']) or 'none'}")
     print("[fit.root] Saved QCDStat/metadata, CentralYield, FitGradient_0..4 and NFGradient_*; NF-stat + SS fit-stat bound")
 
 
