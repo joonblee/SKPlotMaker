@@ -275,6 +275,35 @@ normalisation, not the SS-data estimator's factor calculation.
 
 The QCD-MC fit excludes `9 < m(mumu) < 11 GeV`.  The OS/SS transfer diagnostics use `5 < m(mumu) < 9 GeV` as the low-mass region and `11 < m(mumu) < 80 GeV` as the high-mass region.
 
+To diagnose a low QCD data-driven yield using existing ROOT files:
+
+```bash
+python3 plotter.py --era 2016postVFP --unblind --variable dimuon_mass \
+    --uncertainty syst+stat --qcd-normalisation-diagnostics
+```
+
+This prints native-bin event counts and writes
+`plots/2016postVFP_qcd_normalisation_diagnostics_unblind_data-driven.json`.
+It reports the low/high windows plus high-mass subwindows split at 20 and 30 GeV:
+SS-fit/background-subtracted SS data, SS-fit/SS MC, the applied transfer,
+local MC OS/SS, DD/MC, and OS-residual/DD. The latter is a required closure
+scale for diagnosis only; no factor is applied to the data-driven prediction.
+The yield decomposition is
+`DD/MC = (SS-fit/SS-MC) * (applied transfer/local MC OS/SS)`.
+In the low window, DD/OS residual equals SS-fit/SS residual if the calibration
+inputs match; the OS/SS anchor alone does not force the fitted integral to match
+the observed SS integral.
+
+The report uses the producer's subtraction (OS: Top + DY DD + Others;
+SS: Top + Others), also compares Top with the plotter's tt + ST, and compares
+stored transfer primitives with current inputs. New producer files record actual
+window endpoints; older files infer template support from NF derivatives and
+label it explicitly. Existing matching files can be diagnosed without a refit.
+With `--blind`, OS-data closure is omitted for windows intersecting the blinded
+interval. MC-mode reports also record the MC scale used by the plotter: an
+unblinded MC plot is normalised over its displayed range, whereas DD QCD is
+transported from the low-mass anchor without another normalisation.
+
 ### 4. Make the final dimuon-mass plots
 
 A typical full production loop is

@@ -22,6 +22,8 @@ Revision 2 updates:
     Minuit2's positive-definite regularisation where needed
   - audits the stored low-mass data anchor and MC high/low double ratio;
     fitted QCD is never normalised again by the plotter
+  - --qcd-normalisation-diagnostics reports native-bin SS-fit closure, mass-dependent
+    MC OS/SS ratios and OS residuals in JSON, without refitting or rescaling DD QCD
   - derives blinded mass QCD-MC validation normalisation from native 5--9 GeV
     bins, independently of plotting edges; no high-mass OS data enter this factor
   - keeps event-yield and differential-cross-section normalisations only
@@ -169,6 +171,161 @@ def read_qcd_stat_inputs(root_file, era=None, template_path=None):
 def read_qcd_stat_metadata(root_file, era=None, template_path=None):
     # Preflight validates all required ROOT objects before old cards are removed.
     return read_qcd_stat_inputs(root_file, era, template_path)[0]
+
+
+def qcd_transfer_windows(inputs):
+    """Read production endpoints; legacy files expose their support via NF derivatives."""
+    metadata, native, basis = inputs
+    recorded = metadata["transfer_statistics"].get("windows")
+    if recorded is not None:
+        result = [tuple(float(v) for v in recorded[key]) for key in ("low", "high")]
+        if any(len(w) != 2 or not all(math.isfinite(v) for v in w) or w[0] >= w[1]
+               for w in result) or result[0][1] > result[1][0]:
+            raise ValueError("Invalid production QCD transfer windows.")
+        return result, "production metadata"
+    axis = native.GetXaxis()
+    low_bins, high_bins = [], []
+    for i in range(1, native.GetNbinsX() + 1):
+        if basis[-1].GetBinContent(i) > 0:
+            high_bins.append(i)
+        elif basis[-2].GetBinContent(i) > 0:
+            low_bins.append(i)
+    if not low_bins or not high_bins:
+        raise ValueError("Cannot infer legacy QCD low/high support from NF derivatives.")
+    result = [(float(axis.GetBinLowEdge(indices[0])), float(axis.GetBinUpEdge(indices[-1])))
+              for indices in (low_bins, high_bins)]
+    return result, "legacy NF-derivative support (calibration endpoints not recorded)"
+
+
+def qcd_diagnostic_count(hist, low, high):
+    """Integrate event counts on aligned native edges, never display densities."""
+    actual = whole_bin_window(hist, low, high)
+    if any(not math.isclose(a, b, rel_tol=0, abs_tol=1e-8)
+           for a, b in zip(actual, (low, high))):
+        raise ValueError(f"QCD diagnostic window [{low:g},{high:g}] is not on native histogram edges.")
+    axis = hist.GetXaxis()
+    first, last = axis.FindFixBin(low + 1e-8), axis.FindFixBin(high - 1e-8)
+    return math.fsum(float(hist.GetBinContent(i)) for i in range(first, last + 1))
+
+
+def qcd_normalisation_diagnostic_row(inputs, histograms, low, high, cfg):
+    """Decompose yields from stored templates; OS observations obey plot blinding."""
+    transfer = inputs[0]["transfer_statistics"]
+    count = lambda key: qcd_diagnostic_count(histograms[key], low, high)
+    ratio = lambda a, b: a / b if b > 0 else None
+    dd = qcd_diagnostic_count(inputs[1], low, high)
+    # dY/dt = I_low + k I_high, dY/dk = t I_high.
+    fit_high = qcd_diagnostic_count(inputs[2][-1], low, high) / transfer["low_transfer"]
+    fit_low = (qcd_diagnostic_count(inputs[2][-2], low, high)
+               - transfer["mc_double_ratio"] * fit_high)
+    fit = fit_low + fit_high
+    ss_data, ss_top, ss_others = count("SS_data"), count("SS_Top"), count("SS_Others")
+    ss_residual = ss_data - ss_top - ss_others
+    mc_ss, mc_os = count("SS_QCD"), count("OS_QCD")
+    result = dict(low=low, high=high, qcd_dd=dd, ss_fit=fit,
+                  ss_data=ss_data, ss_top=ss_top, ss_others=ss_others,
+                  ss_residual=ss_residual, ss_fit_over_residual=ratio(fit, ss_residual),
+                  qcd_mc_ss=mc_ss, qcd_mc_os=mc_os, mc_os_ss=ratio(mc_os, mc_ss),
+                  ss_fit_over_mc=ratio(fit, mc_ss), effective_transfer=ratio(dd, fit),
+                  dd_over_mc=ratio(dd, mc_os),
+                  ss_top_minus_tt_st=ss_top - count("SS_tt") - count("SS_ST"),
+                  os_top_minus_tt_st=count("OS_Top") - count("OS_tt") - count("OS_ST"))
+    # Never sum observed OS bins in a window intersecting the blinded interval.
+    hidden = cfg.blind and low < cfg.blind_high and high > cfg.blind_low
+    result["os_data_blinded"] = hidden
+    if not hidden:
+        data = count("OS_data")
+        top, others, dy = count("OS_Top"), count("OS_Others"), count("OS_DY")
+        residual = data - top - others - dy
+        plot_residual = data - count("OS_tt") - count("OS_ST") - others - dy
+        result.update(os_data=data, os_top=top, os_others=others, os_dy=dy,
+                      os_residual=residual, os_plot_residual=plot_residual,
+                      dd_over_os_residual=ratio(dd, residual),
+                      required_dd_scale=ratio(residual, dd),
+                      required_mc_scale=ratio(residual, mc_os),
+                      required_transfer=ratio(residual, fit))
+    return result
+
+
+def write_qcd_normalisation_diagnostics(ROOT, cfg, years, qcd_factor):
+    """Read-only per-era diagnosis using producer subtraction and stored fits."""
+    if not is_mass_variable(cfg) or cfg.jet_mode != "bjet" or cfg.dilepton_sign != "OS":
+        raise ValueError("--qcd-normalisation-diagnostics requires BJet OS dimuon_mass.")
+    diagnostic_cfg = replace(cfg, qcd_method="data-driven", dy_method="data-driven")
+    report = dict(era=cfg.era, blind=cfg.blind, plot_qcd_method=cfg.qcd_method,
+                  plot_qcd_mc_scale=qcd_factor if cfg.qcd_method == "mc" else None,
+                  subtraction="OS: Top + DY DD + Others; SS: Top + Others",
+                  notes=["Event counts on native bins; no refit or change to prediction.",
+                         "required_* values are closure diagnostics, never applied scale factors.",
+                         "DD/MC = (SS fit/SS MC) * (effective transfer/local MC OS/SS).",
+                         "Low-mass DD/OS residual = SS-fit/SS-residual when anchor inputs match."],
+                  years={})
+    for year in years:
+        filename = process_file(diagnostic_cfg, year, "QCD", -1, "", [])
+        f = ROOT.TFile.Open(filename, "READ")
+        try:
+            if not f or f.IsZombie():
+                raise ValueError(f"Cannot open {filename}")
+            inputs = read_qcd_stat_inputs(f, year, hist_path(cfg, base_region(cfg)))
+            windows, window_source = qcd_transfer_windows(inputs)
+            if cfg.blind and windows[0][0] < cfg.blind_high and windows[0][1] > cfg.blind_low:
+                raise ValueError("QCD diagnostic calibration window intersects the blinded OS-data interval.")
+            histograms = {}
+            for sign in ("OS", "SS"):
+                region_cfg = replace(diagnostic_cfg, dilepton_sign=sign)
+                for proc in ("data", "tt", "ST", "Others", "Top", "QCD", "DY"):
+                    if proc == "DY" and sign == "SS":
+                        continue
+                    if proc == "Top":
+                        source = os.path.join(root_dir_for_year(cfg, year), "NIsoMuon_Top.root")
+                    else:
+                        source_cfg = replace(region_cfg, qcd_method="mc")
+                        source = process_file(source_cfg, year, proc, -1, "", [])
+                    hist, error = read_hist(ROOT, source, hist_path(region_cfg, base_region(region_cfg)))
+                    if error:
+                        raise ValueError(error)
+                    histograms[sign + "_" + proc] = hist
+            transfer = inputs[0]["transfer_statistics"]
+            selected = [windows[0], windows[1]]
+            edges = sorted({windows[1][0], windows[1][1],
+                            *(v for v in (20., 30.) if windows[1][0] < v < windows[1][1])})
+            if len(edges) > 2:
+                selected.extend(zip(edges, edges[1:]))
+            rows = [qcd_normalisation_diagnostic_row(inputs, histograms, *w, cfg) for w in selected]
+            anchor = rows[0]
+            current = dict(data_ss_low=anchor["ss_residual"], mc_ss_low=anchor["qcd_mc_ss"],
+                           mc_os_low=anchor["qcd_mc_os"], mc_ss_high=rows[1]["qcd_mc_ss"],
+                           mc_os_high=rows[1]["qcd_mc_os"])
+            if not anchor["os_data_blinded"]:
+                current["data_os_low"] = anchor["os_residual"]
+            comparisons = {key: dict(stored=transfer["primitive"][key]["value"], current=value,
+                                    difference=value - transfer["primitive"][key]["value"])
+                           for key, value in current.items()}
+            report["years"][year] = dict(windows=windows, window_source=window_source,
+                fit_model=inputs[0]["fit"]["model"], fit_range=inputs[0].get("fit_range"),
+                transfer=transfer, stored_vs_current_anchor_inputs=comparisons, rows=rows)
+            print(f"[qcd-norm-diag] {year}: windows={windows} ({window_source})")
+            fmt = lambda value: "blinded/undefined" if value is None else f"{value:.6g}"
+            for row in rows:
+                print(f"[qcd-norm-diag] {year} {row['low']:g}--{row['high']:g} GeV: "
+                      f"DD={row['qcd_dd']:.6g}, SS-fit/SS-data-sub={fmt(row['ss_fit_over_residual'])}, "
+                      f"SS-fit/SS-MC={fmt(row['ss_fit_over_mc'])}, "
+                      f"T={fmt(row['effective_transfer'])}, local R_MC={fmt(row['mc_os_ss'])}, "
+                      f"DD/MC={fmt(row['dd_over_mc'])}, "
+                      f"OS-residual/DD={fmt(row.get('required_dd_scale'))}")
+            for key, comparison in comparisons.items():
+                if not math.isclose(comparison["stored"], comparison["current"], rel_tol=1e-6, abs_tol=1e-6):
+                    print(f"[qcd-norm-diag] {year}: stored/current {key} mismatch: {comparison}")
+        finally:
+            if f:
+                f.Close()
+    os.makedirs(cfg.output_dir, exist_ok=True)
+    path = os.path.join(cfg.output_dir, f"{cfg.era}_qcd_normalisation_diagnostics_"
+                        f"{'blind' if cfg.blind else 'unblind'}_{cfg.qcd_method}.json")
+    with open(path, "w", encoding="utf-8") as output:
+        json.dump(report, output, indent=2, allow_nan=False)
+        output.write("\n")
+    print(f"[qcd-norm-diag] wrote {path}")
 
 
 def whole_bin_window(hist, low, high):
@@ -375,6 +532,7 @@ class Config:
 
     qcd_method: str = "data-driven"  # data-driven or mc
     qcd_normalise: bool = True         # single (Data - non-QCD MC) / QCD MC factor
+    qcd_normalisation_diagnostics: bool = False
     dy_method: str = "data-driven"   # mc or data-driven
     uncertainty: str = "stat-only"   # stat-only or syst+stat
     draw_systematics: bool = False
@@ -1245,8 +1403,9 @@ def add_qcd_stat_uncertainty(ROOT, cfg, years, by_year, stat, scale, transfers=N
             if transfers is not None:
                 transfers[year] = transfer
             data_low, mc_low, mc_high = qcd_transfer_factors(transfer)
-            print(f"[qcd-transfer-check] {year}: 5--9 GeV R_data={data_low:.6g}, "
-                  f"R_MC={mc_low:.6g}; 11--80 GeV R_MC={mc_high:.6g}, "
+            windows, _ = qcd_transfer_windows(inputs)
+            print(f"[qcd-transfer-check] {year}: {windows[0][0]:g}--{windows[0][1]:g} GeV R_data={data_low:.6g}, "
+                  f"R_MC={mc_low:.6g}; {windows[1][0]:g}--{windows[1][1]:g} GeV R_MC={mc_high:.6g}, "
                   f"T_high={transfer['high_transfer']:.6g} (=R_data*R_MC_high/R_MC_low); "
                   "no additional QCD normalisation")
             native = inputs[1]
@@ -2132,6 +2291,8 @@ def build_plot_inputs(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> P
         cfg, out.bkg, bkg_by_year, out.data, out.warnings, factor=qcd_factor
     )
     out.bkg_total = sum_background_hists(out.bkg, "bkg_total")
+    if cfg.qcd_normalisation_diagnostics:
+        write_qcd_normalisation_diagnostics(ROOT, cfg, years, out.qcd_normalisation_factor)
 
     signal_draw_scale = signal_scale(cfg) * scale
     signal_masses = cfg.signal_masses if (cfg.draw_signal and is_mass_variable(cfg)) else []
@@ -3005,6 +3166,9 @@ No-argument behaviour:
     parser.add_argument("--no-qcd-normalise", "--no-qcd-normalize", dest="qcd_normalise", action="store_false",
                         help="do not apply the single-value QCD MC normalisation")
     parser.set_defaults(qcd_normalise=True)
+    parser.add_argument("--qcd-normalisation-diagnostics", "--qcd-normalization-diagnostics",
+                        action="store_true", dest="qcd_normalisation_diagnostics",
+                        help="BJet OS dimuon_mass: print SS-fit/MC/OS closure and save native-yield JSON; no refit or rescale")
 
     parser.add_argument("--dy-method", default="data-driven", help="mc or data-driven; default: data-driven")
     parser.add_argument("--uncertainty", default="stat-only", help="stat-only or syst+stat; default: stat-only")
@@ -3123,6 +3287,7 @@ def config_from_args(args: argparse.Namespace) -> Config:
         bin_edges=list(args.bin_edges) if args.bin_edges else [],
         qcd_method=canonical_background_method(args.qcd_method, option_name="qcd-method"),
         qcd_normalise=bool(args.qcd_normalise),
+        qcd_normalisation_diagnostics=args.qcd_normalisation_diagnostics,
         dy_method=canonical_background_method(args.dy_method, option_name="dy-method"),
         uncertainty=uncertainty,
         draw_systematics=draw_systematics,

@@ -3141,7 +3141,9 @@ def diagnostic_transfer_statistics(h_ss, h_os, h_qcd_ss, h_qcd_os, h_dy_os, f_dy
     low_variance = low_transfer ** 2 * (relative("data_os_low") + relative("data_ss_low"))
     double_variance = mc_double_ratio ** 2 * sum(relative(name) for name in
         ("mc_os_high", "mc_ss_high", "mc_ss_low", "mc_os_low"))
-    return dict(primitive=primitive, low_transfer=low_transfer,
+    return dict(primitive=primitive, windows=dict(low=list(QCD_TRANSFER_LOW_WINDOW),
+                                                high=list(QCD_TRANSFER_HIGH_WINDOW)),
+                low_transfer=low_transfer,
                 mc_double_ratio=mc_double_ratio, high_transfer=low_transfer * mc_double_ratio,
                 low_variance=low_variance, double_ratio_variance=double_variance,
                 high_variance=mc_double_ratio ** 2 * low_variance + low_transfer ** 2 * double_variance,
