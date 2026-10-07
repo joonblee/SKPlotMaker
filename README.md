@@ -516,6 +516,29 @@ supplied validation plots. Without `--unblind`, high-mass OS observations and
 OS global factors remain hidden. The script opens ROOT files in READ mode,
 does not refit or change templates, and writes no files.
 
+To decompose QCD MC into the individual MuEnriched generated-pT files:
+
+```bash
+python3 qcd_pt_yield_diagnostics.py --era 2016preVFP 2016postVFP 2017 2018
+python3 qcd_pt_yield_diagnostics.py --era 2016postVFP --sample 80To120
+```
+
+This discovers every `Skim_NIsoMuon_QCD_Pt-*_MuEnriched.root` file using the
+same pattern as `hadd.sh`, including low-pT samples. It prints native OS/SS
+weighted yields, stored-Sumw2 statistical errors, effective MC statistics,
+sample fractions, OS/SS ratios and high/low ratios in the production transfer
+windows, 11--15 GeV and its four 1-GeV bins. The sample sum is checked against
+`NIsoMuon_QCD_Inclusive.root` in both yield and Sumw2. `D_without` and `delta_D`
+show how the MC double ratio changes when one sample is excluded; these are
+composition diagnostics, not significance estimates or changes to the estimate.
+`--sample` filters displayed rows only: all files still enter the total and
+inclusive audit. Missing Sumw2 leaves statistical errors unknown. Missing sample
+histograms are reported with unknown yields; an incomplete sum is labelled
+`KNOWN_SUM`, with coverage printed explicitly. All ROOT files are opened in
+READ mode; the script reads no observed data histograms, applies no
+additional normalisation, and writes no files. `--base-dir` and `--trigger`
+select the same input layout as `plotter.py`.
+
 ```bash
 python3 plotter_qcdseparate.py --era 2017 --variable all
 python3 plotter_qcdseparate.py --era Run2 --variable dimuon_mass
