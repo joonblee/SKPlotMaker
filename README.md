@@ -218,6 +218,26 @@ independent eras in quadrature, even in mass `stat-only` mode. It reads only the
 nominal QCD file for this purpose. Final `syst+stat --strict` plots also retain the
 existing Norm/Shape and other background uncertainties.
 
+For each era, the mass plot audits the stored transfer primitives: the 5--9 GeV
+QCD prediction uses `R_data(low)`, and the 11--80 GeV prediction uses
+`R_data(low) * R_MC(high) / R_MC(low)`. These factors are already contained in
+the SS-fit template; the plotter does not apply another normalisation. In
+`syst+stat` mode it checks the QCD Norm pair against the stored log-symmetric
+data/MC factor and the DY central contents/errors against
+`DYAux/LightJetSource * DYAux/NF_aMC`. `--strict` rejects mismatched inputs.
+
+For **blinded QCD-MC mass validation** (`--qcd-method mc --blind`), the separate
+MC scale factor `(Data - selected non-QCD backgrounds) / QCD MC` is calculated
+from native 5--9 GeV bins before display rebinning. Changing `--xmin`, `--xmax`,
+or plotting bin edges cannot bring high-mass OS data into this calibration.
+Asimov/toy displays continue to use factor 1; object-validation and unblinded
+validation retain their existing normalisation prescription.
+
+The mass `syst+stat` band follows the current Combine correlations: PU, muon ID
+and muon scale are coherent within each run; JES, JER and muon trigger remain
+era-specific. Luminosity uses the same multiyear Cholesky components and
+coefficients as `higgs_combine/NIsoMuon/limit_workflow.py`.
+
 Regenerate the individual-era QCD ROOT files for the new derivative storage format
 before rebuilding Combine cards. Older metadata-only ROOT files are rejected:
 

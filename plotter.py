@@ -9,10 +9,10 @@ Revision 2 updates:
     NIsoMuon_DYJets_est.root; no NF-mode DY RunSyst templates are required
   - checks every required systematic variation separately for each applicable
     process and selected era; --strict aborts when any required template is missing
-  - propagates Run-2 correlations explicitly: experimental and data-driven
-    template sources are independent between eras, affected processes within one
-    era move coherently, BTV correlated terms are shared within Run2/Run3,
-    and the luminosity grouping matches the final counting model
+  - matches the counting-model correlations: PU/muon ID/muon scale are shared
+    within each run; JES/JER/muon trigger and data-driven statistics are
+    era-specific; BTV correlated terms are shared within Run2/Run3;
+    luminosity uses the same multiyear Cholesky components as Combine
   - follows the final counting-model theory treatment for tt/ST only:
     symmetric-Hessian PDF, shared alphaS, and separate muF/muR nuisances
   - treats data-driven QCD shape as a symmetric absolute-yield uncertainty
@@ -20,6 +20,10 @@ Revision 2 updates:
     constant NF + NFStat + LightJetStat
   - accepts SS covariance status 2 or 3, including boundary solutions, using
     Minuit2's positive-definite regularisation where needed
+  - audits the stored low-mass data anchor and MC high/low double ratio;
+    fitted QCD is never normalised again by the plotter
+  - derives blinded mass QCD-MC validation normalisation from native 5--9 GeV
+    bins, independently of plotting edges; no high-mass OS data enter this factor
   - keeps event-yield and differential-cross-section normalisations only
   - retains the manual cumulative-TH1 stack used to avoid ROOT THStack painting
     crashes in some CMSSW/PyROOT releases
@@ -67,6 +71,27 @@ QCD_STAT_PATH = "QCDStat/metadata"
 QCD_STAT_TREATMENT = "linear_bound_unknown_nf_fit_correlation"
 QCD_STAT_BASIS = (["CentralYield"] + [f"FitGradient_{i}" for i in range(5)]
                   + ["NFGradient_low_transfer", "NFGradient_mc_double_ratio"])
+QCD_TRANSFER_LOW_WINDOW = (5.0, 9.0)
+
+
+def qcd_transfer_factors(transfer):
+    """Audit the producer's data low-mass anchor and MC transport, without refitting."""
+    primitive = transfer["primitive"]
+    def value(name):
+        result = float(primitive[name]["value"])
+        if not math.isfinite(result) or result <= 0.0:
+            raise ValueError(f"Invalid QCD transfer primitive {name}.")
+        return result
+    data_low = value("data_os_low") / value("data_ss_low")
+    mc_low = value("mc_os_low") / value("mc_ss_low")
+    mc_high = value("mc_os_high") / value("mc_ss_high")
+    double_ratio = mc_high / mc_low
+    for key, expected in (("low_transfer", data_low),
+                          ("mc_double_ratio", double_ratio),
+                          ("high_transfer", data_low * double_ratio)):
+        if not math.isclose(transfer[key], expected, rel_tol=1e-10):
+            raise ValueError(f"QCD {key} disagrees with its data/MC primitive inputs.")
+    return data_low, mc_low, mc_high
 
 def validate_qcd_stat_metadata(metadata, era=None, template_path=None):
     if metadata.get("schema") != QCD_STAT_SCHEMA:
@@ -102,6 +127,7 @@ def validate_qcd_stat_metadata(metadata, era=None, template_path=None):
         raise ValueError("Non-positive QCD transfer factor.")
     if not math.isclose(transfer["high_transfer"], transfer["low_transfer"] * transfer["mc_double_ratio"], rel_tol=1e-10):
         raise ValueError("Inconsistent low/high QCD transfer factors.")
+    qcd_transfer_factors(transfer)
     if metadata.get("basis") != QCD_STAT_BASIS:
         raise ValueError("Missing/obsolete QCD derivative basis; regenerate the SS ROOT file.")
     return metadata
@@ -294,6 +320,16 @@ TT_MASS_FACTORS: Dict[str, Tuple[float, float]] = {
     "Run3": (0.973365, 1.027501),
 }
 
+# Identical coefficients to higgs_combine/NIsoMuon/limit_workflow.py.
+# Each component is coherent across its listed years and MC processes.
+LUMI_NUISANCES: Dict[str, Dict[str, float]] = {
+    "lumi_13TeV_1516_l": {"2016": 1.0118},
+    "lumi_13TeV_151617_l": {"2016": 1.0004, "2017": 1.0055},
+    "lumi_13TeV_15161718_l": {"2016": 1.0035, "2017": 1.0061, "2018": 1.0084},
+    "lumi_1": {"2022": 1.0138, "2023": 1.0017},
+    "lumi_2": {"2023": 1.0127},
+}
+
 
 @dataclass
 class Config:
@@ -390,6 +426,7 @@ class PlotInputs:
     bkg_total: Optional[object] = None
     data: Optional[object] = None
     qcd_normalisation_factor: float = 1.0
+    qcd_transfers: Dict[str, dict] = field(default_factory=dict)
     signals: List[Tuple[float, object]] = field(default_factory=list)
     stat: Uncertainty = field(default_factory=Uncertainty)
     syst: Uncertainty = field(default_factory=Uncertainty)
@@ -1018,6 +1055,11 @@ def zero_uncertainty(nbins: int) -> Uncertainty:
 
 
 
+def qcd_mc_uses_low_mass_anchor(cfg: Config) -> bool:
+    return (use_qcd_mc(cfg) and cfg.qcd_normalise and cfg.blind
+            and cfg.blind_point_mode == "data" and is_mass_variable(cfg))
+
+
 def _hist_integral_for_qcd_normalisation(cfg: Config, h) -> float:
     """Return an integral proportional to event yield over the plotted bins.
 
@@ -1031,14 +1073,22 @@ def _hist_integral_for_qcd_normalisation(cfg: Config, h) -> float:
 
     total = 0.0
     per_width = cfg.divide_by_bin_width and variable_spec(cfg).divide_by_bin_width
+    low_mass_anchor = qcd_mc_uses_low_mass_anchor(cfg)
+    low, high = QCD_TRANSFER_LOW_WINDOW
+    high = min(high, cfg.blind_visible_data_max, cfg.blind_low)
+    if low_mass_anchor:
+        if high <= low:
+            raise ValueError("No open low-mass QCD-MC normalisation window.")
+        effective = whole_bin_window(h, low, high)
+        if not all(math.isclose(a, b, rel_tol=0, abs_tol=1e-8)
+                   for a, b in zip(effective, (low, high))):
+            raise ValueError("QCD-MC normalisation requires native bins covering the low-mass window.")
 
     for ib in range(1, h.GetNbinsX() + 1):
-        if cfg.blind and cfg.blind_point_mode == "data" and is_mass_variable(cfg):
-            # Never use the blinded dimuon-mass interval to derive the QCD NF.
-            # Use exactly the bins that remain visible in make_data_graph().
+        if low_mass_anchor:
             high_edge = h.GetXaxis().GetBinUpEdge(ib)
             low_edge = h.GetXaxis().GetBinLowEdge(ib)
-            if high_edge > cfg.blind_visible_data_max + 1.0e-9 and low_edge < 70.0:
+            if low_edge < low - 1e-9 or high_edge > high + 1e-9:
                 continue
 
         value = float(h.GetBinContent(ib))
@@ -1055,7 +1105,7 @@ def qcd_normalisation_factor(
     bkg: Dict[str, object],
     warnings: List[str],
 ) -> float:
-    """Compute one QCD MC scale factor: (Data - non-QCD MC) / QCD MC."""
+    """Compute one QCD MC scale factor: (Data - selected non-QCD) / QCD MC."""
     if not cfg.qcd_normalise:
         return 1.0
 
@@ -1110,9 +1160,11 @@ def qcd_normalisation_factor(
     factor = max(0.0, numerator / n_qcd)
     print(
         "[INFO] QCD normalisation: "
-        f"(Data - non-QCD MC) / QCD MC = {factor:.6g} "
+        f"(Data - non-QCD) / QCD MC = {factor:.6g} "
         f"(Data={n_data:.6g}, non-QCD={n_nonqcd:.6g}, QCD={n_qcd:.6g})"
     )
+    if qcd_mc_uses_low_mass_anchor(cfg):
+        print(f"[INFO] QCD-MC normalisation window: 5--{min(9.0, cfg.blind_visible_data_max, cfg.blind_low):g} GeV; native bins")
     return factor
 
 
@@ -1122,9 +1174,12 @@ def apply_qcd_normalisation(
     bkg_by_year: Dict[str, Dict[str, object]],
     data,
     warnings: List[str],
+    *,
+    factor: Optional[float] = None,
 ) -> float:
     """Scale nominal QCD MC by one common factor for the selected era group."""
-    factor = qcd_normalisation_factor(cfg, data, bkg, warnings)
+    if factor is None:
+        factor = qcd_normalisation_factor(cfg, data, bkg, warnings)
     if abs(factor - 1.0) < 1.0e-15:
         return factor
 
@@ -1163,7 +1218,7 @@ def bkg_stat_uncertainty(cfg: Config, bkg: Dict[str, object]) -> Uncertainty:
     return Uncertainty(low=err[:], high=err[:])
 
 
-def add_qcd_stat_uncertainty(ROOT, cfg, years, by_year, stat, scale):
+def add_qcd_stat_uncertainty(ROOT, cfg, years, by_year, stat, scale, transfers=None):
     """Propagate each plotting-bin integral; combine independent eras in quadrature."""
     if use_qcd_mc(cfg) or not is_mass_variable(cfg):
         return stat
@@ -1180,6 +1235,14 @@ def add_qcd_stat_uncertainty(ROOT, cfg, years, by_year, stat, scale):
                 raise ValueError("Could not open QCD nominal ROOT file.")
             path = hist_path(cfg, base_region(cfg))
             inputs = read_qcd_stat_inputs(f, year, path)
+            transfer = inputs[0]["transfer_statistics"]
+            if transfers is not None:
+                transfers[year] = transfer
+            data_low, mc_low, mc_high = qcd_transfer_factors(transfer)
+            print(f"[qcd-transfer-check] {year}: 5--9 GeV R_data={data_low:.6g}, "
+                  f"R_MC={mc_low:.6g}; 11--80 GeV R_MC={mc_high:.6g}, "
+                  f"T_high={transfer['high_transfer']:.6g} (=R_data*R_MC_high/R_MC_low); "
+                  "no additional QCD normalisation")
             native = inputs[1]
             for ib in range(1, nominal.GetNbinsX() + 1):
                 axis = nominal.GetXaxis()
@@ -1619,6 +1682,7 @@ def bkg_syst_uncertainty(
     scale: float,
     warnings: List[str],
     qcd_norm_factor: float = 1.0,
+    qcd_transfers: Optional[Dict[str, dict]] = None,
 ) -> Uncertainty:
     n = bkg_total.GetNbinsX()
     down2 = [0.0] * n
@@ -1631,41 +1695,49 @@ def bkg_syst_uncertainty(
     errors: List[str] = []
     exp_processes = background_detector_processes(cfg)
 
-    # JER/JES/PU/muon sources: coherent across affected processes inside one
-    # era, independent between eras.
+    # Match Combine: PU/muon ID/muon scale share a nuisance within each run;
+    # JES/JER/muon trigger remain independent by era. Processes move coherently.
     for syst_name, (down_suffix, up_suffix) in EXP_SYST.items():
         missing_by_proc: Dict[str, Dict[str, List[str]]] = {proc: {} for proc in exp_processes}
-        for year in years:
+        groups = ([[year for year in years if run_group(year) == group]
+                   for group in ("Run2", "Run3")]
+                  if syst_name in {"pu", "mu_id_sf", "mu_scale"}
+                  else [[year] for year in years])
+        for group_years in groups:
+            if not group_years:
+                continue
+            group_label = run_group(group_years[0]) if syst_name in {"pu", "mu_id_sf", "mu_scale"} else group_years[0]
             delta_down_parts: List[object] = []
             delta_up_parts: List[object] = []
-            for proc in exp_processes:
-                nominal = bkg_nom_by_year.get(year, {}).get(proc)
-                h_down = prepare_year_hist(
-                    ROOT, cfg, year, proc, -1.0, edges, scale, warnings,
-                    syst_suffix=down_suffix, report_missing=False,
-                )
-                h_up = prepare_year_hist(
-                    ROOT, cfg, year, proc, -1.0, edges, scale, warnings,
-                    syst_suffix=up_suffix, report_missing=False,
-                )
-                missing = _missing_pair_sides(h_down, h_up)
-                if not nominal:
-                    missing_by_proc[proc][year] = ["Nominal"]
-                    continue
-                if missing:
-                    missing_by_proc[proc][year] = missing
-                h_down = h_down or nominal
-                h_up = h_up or nominal
-                delta_down_parts.append(
-                    make_delta_hist(h_down, nominal, f"{syst_name}_{proc}_{year}_down_delta")
-                )
-                delta_up_parts.append(
-                    make_delta_hist(h_up, nominal, f"{syst_name}_{proc}_{year}_up_delta")
-                )
+            for year in group_years:
+                for proc in exp_processes:
+                    nominal = bkg_nom_by_year.get(year, {}).get(proc)
+                    h_down = prepare_year_hist(
+                        ROOT, cfg, year, proc, -1.0, edges, scale, warnings,
+                        syst_suffix=down_suffix, report_missing=False,
+                    )
+                    h_up = prepare_year_hist(
+                        ROOT, cfg, year, proc, -1.0, edges, scale, warnings,
+                        syst_suffix=up_suffix, report_missing=False,
+                    )
+                    missing = _missing_pair_sides(h_down, h_up)
+                    if not nominal:
+                        missing_by_proc[proc][year] = ["Nominal"]
+                        continue
+                    if missing:
+                        missing_by_proc[proc][year] = missing
+                    h_down = h_down or nominal
+                    h_up = h_up or nominal
+                    delta_down_parts.append(
+                        make_delta_hist(h_down, nominal, f"{syst_name}_{proc}_{year}_down_delta")
+                    )
+                    delta_up_parts.append(
+                        make_delta_hist(h_up, nominal, f"{syst_name}_{proc}_{year}_up_delta")
+                    )
 
             add_delta_pair_shift(
-                sum_hists(delta_down_parts, f"{syst_name}_{year}_down_delta"),
-                sum_hists(delta_up_parts, f"{syst_name}_{year}_up_delta"),
+                sum_hists(delta_down_parts, f"{syst_name}_{group_label}_down_delta"),
+                sum_hists(delta_up_parts, f"{syst_name}_{group_label}_up_delta"),
                 down2,
                 up2,
             )
@@ -1673,7 +1745,7 @@ def bkg_syst_uncertainty(
         for proc in exp_processes:
             _record_pair_status(summary, errors, syst_name, proc, missing_by_proc[proc])
 
-    # L1 ECAL prefiring exists only in 2016pre/postVFP and 2017 and is treated
+    # L1 ECAL/muon prefiring exists in 2016pre/postVFP, 2017 and 2018 and is treated
     # as an era-specific source.
     for year in years:
         if year not in {"2016preVFP", "2016postVFP", "2017", "2018"}:
@@ -1812,6 +1884,17 @@ def bkg_syst_uncertainty(
                 h_down = h_down or nominal
                 h_up = h_up or nominal
 
+                if syst_name == "QCD_norm" and qcd_transfers and year in qcd_transfers and not missing:
+                    data_low, mc_low, _ = qcd_transfer_factors(qcd_transfers[year])
+                    kappa = math.exp(abs(math.log(data_low / mc_low)))
+                    for varied, factor in ((h_down, 1.0 / kappa), (h_up, kappa)):
+                        if any(not math.isclose(varied.GetBinContent(ib), nominal.GetBinContent(ib) * factor,
+                                                rel_tol=1e-5, abs_tol=1e-280)
+                               for ib in range(1, n + 1)):
+                            errors.append(f"QCD_norm/QCD/{year}: templates disagree with the stored data/MC log-symmetric factor; regenerate matching files.")
+                            break
+                    summary.append(f"QCD_norm/QCD/{year}: expected kappa={kappa:.6g} from R_data(low)/R_MC(low)")
+
                 delta_down = make_delta_hist(
                     h_down, nominal, f"{syst_name}_{year}_down_delta"
                 )
@@ -1841,6 +1924,7 @@ def bkg_syst_uncertainty(
             )
             h_amc, err_amc = read_hist(ROOT, filename, DY_AUX_NF_AMC_PATH)
             h_mg, err_mg = read_hist(ROOT, filename, DY_AUX_NF_MG_PATH)
+            source, err_source = read_hist(ROOT, filename, "DYAux/LightJetSource")
 
             if not nominal:
                 nf_errors.append(f"{year}: missing nominal DY")
@@ -1850,6 +1934,12 @@ def bkg_syst_uncertainty(
                 continue
             if err_mg or not h_mg:
                 nf_errors.append(f"{year}: {err_mg or 'missing NF_MG'}")
+                continue
+            if err_source or not source:
+                nf_errors.append(f"{year}: {err_source or 'missing LightJetSource'}")
+                continue
+            if h_amc.GetNbinsX() != 1 or h_mg.GetNbinsX() != 1:
+                nf_errors.append(f"{year}: NF metadata must be single-bin scalars")
                 continue
 
             nf_amc = float(h_amc.GetBinContent(1))
@@ -1861,6 +1951,19 @@ def bkg_syst_uncertainty(
             if nf_mg <= 0.0 or not math.isfinite(nf_mg):
                 nf_errors.append(f"{year}: invalid NF_MG={nf_mg}")
                 continue
+            if not math.isfinite(nf_amc_error):
+                nf_errors.append(f"{year}: invalid NF_aMC statistical error")
+                continue
+
+            source = rebin_hist(source, edges)
+            apply_scale(source, scale * nf_amc)
+            apply_bin_width_normalization(cfg, source)
+            if any(not math.isclose(getter(source, ib), getter(nominal, ib), rel_tol=1e-5, abs_tol=1e-280)
+                   for getter in (lambda h, ib: h.GetBinContent(ib), lambda h, ib: h.GetBinError(ib))
+                   for ib in range(1, n + 1)):
+                nf_errors.append(f"{year}: DY central/LightJetStat disagree with LightJetSource * aMC NF; regenerate matching files")
+                continue
+            summary.append(f"DY_NF_factorisation/DY/{year}: OK (source * aMC NF; LightJetStat retained once)")
 
             # aMC finite-MC statistical uncertainty: independent era by era.
             rel_stat = nf_amc_error / nf_amc
@@ -1930,23 +2033,23 @@ def bkg_syst_uncertainty(
     )
     summary.append("tt_mass/tt: OK (common nuisance, energy-dependent response)")
 
-    # Luminosity: 2016pre/post share one source; 2017 and 2018 are separate;
-    # 2022/2022EE share one source and 2023/2023BPix share one source.
-    for group in sorted({lumi_group(year) for year in years}):
-        parts: List[object] = []
-        rel = 0.0
+    # Lumi POG Cholesky components, with the same coefficients as Combine.
+    for component, coefficients in LUMI_NUISANCES.items():
+        down_parts: List[object] = []
+        up_parts: List[object] = []
         for year in years:
-            if lumi_group(year) != group:
+            kappa = coefficients.get(lumi_group(year))
+            if kappa is None:
                 continue
-            rel = max(rel, lumi_rel_syst(year))
             for proc in background_lumi_processes(cfg):
                 h = bkg_nom_by_year.get(year, {}).get(proc)
                 if h:
-                    parts.append(h)
-        h_group = sum_hists(parts, f"mc_lumi_{group}")
-        if h_group:
-            add_symmetric_hist_shift(h_group, rel, down2, up2)
-            summary.append(f"lumi_{group}/MC: OK")
+                    down_parts.append(_scaled_delta(h, 1.0 / kappa, f"{component}_{proc}_{year}_down"))
+                    up_parts.append(_scaled_delta(h, kappa, f"{component}_{proc}_{year}_up"))
+        if up_parts:
+            add_delta_pair_shift(sum_hists(down_parts, f"mc_{component}_down"),
+                                 sum_hists(up_parts, f"mc_{component}_up"), down2, up2)
+            summary.append(f"{component}/MC: OK (multiyear Cholesky component)")
 
     _finish_syst_audit(
         cfg,
@@ -2002,9 +2105,25 @@ def build_plot_inputs(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> P
 
     # For QCD MC, derive one common normalisation factor for the complete
     # selected era group and apply it to both the combined and per-era QCD
-    # templates.  This is the default for object-validation plots.
+    # templates. For blinded mass validation use native low-mass histograms:
+    # display xmin/xmax/rebinning must not change the calibration.
+    qcd_factor = None
+    if qcd_mc_uses_low_mass_anchor(cfg):
+        native_parts = {proc: [] for proc in (*BKG_PROCESSES, "data")}
+        for year in years:
+            for proc in native_parts:
+                h = load_year_hist(ROOT, cfg, year, proc, -1.0, out.warnings)
+                if not h:
+                    raise RuntimeError(f"{year}: missing {proc} native mass histogram for QCD-MC normalisation.")
+                native_parts[proc].append(h)
+        native_hists = {proc: sum_hists(parts, f"{proc}_qcd_norm_native")
+                        for proc, parts in native_parts.items()}
+        qcd_factor = qcd_normalisation_factor(
+            replace(cfg, divide_by_bin_width=False), native_hists["data"],
+            {proc: native_hists[proc] for proc in BKG_PROCESSES}, out.warnings,
+        )
     out.qcd_normalisation_factor = apply_qcd_normalisation(
-        cfg, out.bkg, bkg_by_year, out.data, out.warnings
+        cfg, out.bkg, bkg_by_year, out.data, out.warnings, factor=qcd_factor
     )
     out.bkg_total = sum_background_hists(out.bkg, "bkg_total")
 
@@ -2036,7 +2155,7 @@ def build_plot_inputs(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> P
     out.signals.sort(key=lambda x: x[0])
 
     out.stat = bkg_stat_uncertainty(cfg, out.bkg)
-    out.stat = add_qcd_stat_uncertainty(ROOT, cfg, years, bkg_by_year, out.stat, scale)
+    out.stat = add_qcd_stat_uncertainty(ROOT, cfg, years, bkg_by_year, out.stat, scale, out.qcd_transfers)
     if cfg.draw_systematics:
         out.syst = bkg_syst_uncertainty(
             ROOT,
@@ -2049,6 +2168,7 @@ def build_plot_inputs(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> P
             scale,
             out.warnings,
             qcd_norm_factor=out.qcd_normalisation_factor,
+            qcd_transfers=out.qcd_transfers,
         )
         out.total = total_uncertainty(out.stat, out.syst)
     else:
@@ -2838,14 +2958,20 @@ Systematic treatment:
   * data-driven QCD: QCD_norm + absolute QCD_shape + QCD_stat from QCDStat/metadata
   * QCD_stat uses the conservative NF-stat + SS-fit-stat linear bound per bin;
     fitted bins are integrated before propagation and eras are independent
-  * data-driven DY: constant NF + DY_NFStat(TFDown/Up) + DY_LightJetStat; no DY_stat
-  * JER/JES/PU/muon and BTV-uncorrelated sources are independent between eras
+  * data-driven DY: constant aMC NF + NFStat/NFModel from DYAux + LightJetStat;
+    no NF-mode DY RunSyst templates or extra DY_stat
+  * PU/muon ID/muon scale share a source within Run2 or Run3
+  * JES/JER/muon trigger and BTV-uncorrelated sources are independent by era
   * L1 prefiring is era-specific for 2016pre/postVFP, 2017, and 2018
   * BTV correlated sources are shared within Run2 and within Run3
   * generator theory is tt/ST only: symmetric-Hessian PDF, shared alphaS,
     and separate process-specific muF/muR nuisances; no 7-point scale envelope
   * generic tt_xsec and ST_xsec nuisances are disabled; tt_mass is retained
-  * 2016pre/post share luminosity; 2022/2022EE share; 2023/2023BPix share
+  * luminosity uses the same Lumi POG multiyear Cholesky components as Combine
+  * fitted QCD uses R_data(low) at 5--9 GeV and R_data(low)*R_MC(high)/R_MC(low)
+    at 11--80 GeV, already applied by the producer; no second normalisation
+  * blinded QCD-MC mass validation uses native 5--9 GeV normalisation bins,
+    independent of the display range and rebinning
   * signal is drawn nominal-only; signal RunXSecSyst is not produced
 
 No-argument behaviour:
