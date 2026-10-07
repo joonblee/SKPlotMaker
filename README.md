@@ -191,9 +191,16 @@ contents and zero TH1 errors are retained. The metadata contain the SS central
 fit covariance in `(log(A), n, k, m0, w)` coordinates and the primitive Sumw2
 transfer statistics, including the shared DY NF-stat contribution.
 
-`qcd_stat_uncertainty.py` must remain beside the producer and `plotter.py`.
-It integrates the fitted function over the requested effective native-bin window
-before propagating its full covariance. This preserves fitted-bin correlations.
+All NF/SS-fit statistical calculations are contained in `qcd_bkg_estimation.py`;
+no separate statistical script or execution is required. Alongside the existing
+templates, each ROOT file stores `QCDStat/CentralYield`, `FitGradient_0` through
+`FitGradient_4`, and `NFGradient_low_transfer`/`NFGradient_mc_double_ratio`.
+These histograms contain native-bin yield derivatives, with covariance and
+transfer variances in `QCDStat/metadata` (`NPS26009_QCDStat_v2`). Consumers sum
+the stored derivatives over their actual window before propagating covariance.
+This preserves fitted-bin and low/high-transfer correlations; summing per-bin
+statistical errors in quadrature would not. `plotter.py` and the Combine workflow
+only read the ROOT information; they do not rebuild or refit the SS function.
 Missing DY NF metadata or unreliable central-fit covariance prevents replacement
 of the production ROOT output.
 
@@ -207,7 +214,8 @@ independent eras in quadrature, even in mass `stat-only` mode. It reads only the
 nominal QCD file for this purpose. Final `syst+stat --strict` plots also retain the
 existing Norm/Shape and other background uncertainties.
 
-Regenerate the individual-era QCD ROOT files before rebuilding Combine cards:
+Regenerate the individual-era QCD ROOT files for the new derivative storage format
+before rebuilding Combine cards. Older metadata-only ROOT files are rejected:
 
 ```bash
 for era in 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix; do
@@ -441,4 +449,3 @@ Run these scripts inside an environment with PyROOT/ROOT available and with acce
 ## Development rule of thumb
 
 When modifying this repository, preserve the physics behaviour first and refactor second.  A small explicit change that keeps histogram names, region definitions, normalisations, fit ranges, blinding, and output conventions intact is preferred to a broad cleanup that silently changes the analysis.
-

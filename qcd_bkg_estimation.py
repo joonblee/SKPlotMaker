@@ -143,12 +143,13 @@ Uncertainty diagnostics (central fits and template contents are unchanged):
       --uncertainty-diagnostics
 These opt-in CSV/JSON diagnostics compare the existing binwise function envelope
 and normalisation modelling variations with first-order NF-stat and fit-stat.
-Every individual-era SS production also writes QCDStat/metadata. The downstream
+Every individual-era SS production also writes covariance and native-bin yield
+derivative histograms under QCDStat/. All statistical calculations are contained
+in this script; downstream consumers sum the saved derivatives over their windows. The downstream
 counting model adds one independent-by-era additive statistical nuisance with
 sigma = sigma_NFstat + sigma_fitStat, a conservative first-order bound for the
 unknown NF/fit cross-correlation. The original norm/shape variations remain.
-This requires qcd_stat_uncertainty.py alongside this script. Missing DY NF-stat
-metadata or unreliable central-fit covariance stops output before replacement.
+No separate statistical script is required. Missing DY NF-stat metadata or unreliable central-fit covariance stops output before replacement.
 The default mass windows are 12, 30 and 70 GeV with a +/-1% half-width:
 11.88--12.12, 29.7--30.3 and 69.3--70.7 GeV. No datacards are required.
 Low (5--9 GeV) and high (11--80 GeV) integrals are also included. Optionally add
@@ -186,10 +187,144 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from qcd_stat_uncertainty import (
-    QCD_STAT_SCHEMA, QCD_STAT_TREATMENT, qcd_window_statistics,
-    validate_qcd_stat_metadata,
+QCD_STAT_SCHEMA = "NPS26009_QCDStat_v2"
+QCD_STAT_PATH = "QCDStat/metadata"
+QCD_STAT_TREATMENT = "linear_bound_unknown_nf_fit_correlation"
+QCD_STAT_BASIS = (["CentralYield"] + [f"FitGradient_{i}" for i in range(5)]
+                  + ["NFGradient_low_transfer", "NFGradient_mc_double_ratio"])
+
+# Positive abscissae and weights of 16-point Gauss-Legendre quadrature.
+_GL16 = (
+    (0.09501250983763744, 0.18945061045506850),
+    (0.28160355077925891, 0.18260341504492359),
+    (0.45801677765722739, 0.16915651939500254),
+    (0.61787624440264375, 0.14959598881657673),
+    (0.75540440835500303, 0.12462897125553387),
+    (0.86563120238783174, 0.09515851168249278),
+    (0.94457502307323258, 0.06225352393864789),
+    (0.98940093499164993, 0.02715245941175410),
 )
+
+
+def validate_qcd_stat_metadata(metadata, era=None, template_path=None):
+    if metadata.get("schema") != QCD_STAT_SCHEMA:
+        raise ValueError("Missing/obsolete QCD statistical metadata; rerun qcd_bkg_estimation.py in ss-data mode.")
+    if metadata.get("treatment") != QCD_STAT_TREATMENT:
+        raise ValueError("Unsupported QCD statistical treatment.")
+    if era is not None and metadata.get("era") != era:
+        raise ValueError("QCD statistical metadata belong to a different era.")
+    if template_path is not None and metadata.get("template_path") != template_path:
+        raise ValueError("QCD statistical metadata belong to a different histogram.")
+    fit = metadata["fit"]
+    if (fit.get("model") != "power_exp_logistic" or fit.get("coordinates") != "log(A),shape"
+            or not fit.get("reliable") or fit.get("covariance_status") != 3
+            or fit.get("boundary_parameters")):
+        raise ValueError("Reliable, interior SS central-fit covariance is required for QCD statistics.")
+    p, c = fit["parameters"], fit["covariance"]
+    if len(p) != 5 or len(c) != 5 or any(len(row) != 5 for row in c):
+        raise ValueError("Invalid QCD fit covariance dimensions.")
+    if not all(math.isfinite(v) for v in p + [v for row in c for v in row]):
+        raise ValueError("Non-finite QCD fit parameters/covariance.")
+    if p[4] <= 0 or any(c[i][i] < 0 for i in range(5)):
+        raise ValueError("Invalid QCD fit width/variance.")
+    if any(not math.isclose(c[i][j], c[j][i], rel_tol=1e-8, abs_tol=1e-15)
+           for i in range(5) for j in range(5)):
+        raise ValueError("Asymmetric QCD fit covariance.")
+    transfer = metadata["transfer_statistics"]
+    if not transfer.get("complete"):
+        raise ValueError("Incomplete QCD transfer statistics; DYAux/NF_aMC is required.")
+    for key in ("low_transfer", "mc_double_ratio", "high_transfer", "low_variance", "double_ratio_variance"):
+        if not math.isfinite(transfer[key]) or transfer[key] < 0:
+            raise ValueError("Invalid QCD transfer statistics.")
+    if transfer["low_transfer"] <= 0 or transfer["mc_double_ratio"] <= 0:
+        raise ValueError("Non-positive QCD transfer factor.")
+    if not math.isclose(transfer["high_transfer"], transfer["low_transfer"] * transfer["mc_double_ratio"], rel_tol=1e-10):
+        raise ValueError("Inconsistent low/high QCD transfer factors.")
+    if metadata.get("basis") != QCD_STAT_BASIS:
+        raise ValueError("Missing/obsolete QCD derivative basis; regenerate the SS ROOT file.")
+    return metadata
+
+
+def _density_gradient(x, p):
+    log_a, n, k, m0, w = p
+    z = (x - m0) / w
+    if z >= 0:
+        e = math.exp(-z)
+        turnon, complement = 1.0 / (1.0 + e), e / (1.0 + e)
+        log_turnon = -math.log1p(e)
+    else:
+        e = math.exp(z)
+        turnon, complement = e / (1.0 + e), 1.0 / (1.0 + e)
+        log_turnon = z - math.log1p(e)
+    log_f = log_a - n * math.log(x) - k * x + log_turnon
+    # Match the producer's 1e-300 density floor, including its derivative.
+    if log_f <= math.log(1e-300):
+        return (1e-300, 0.0, 0.0, 0.0, 0.0, 0.0)
+    f = math.exp(log_f)
+    return (f, f, -math.log(x) * f, -x * f,
+            -complement * f / w, -(x - m0) * complement * f / w ** 2)
+
+
+def _integral_gradient(p, low, high, max_width):
+    if high <= low:
+        return [0.0] * 6
+    parts = max(1, math.ceil((high - low) / max_width))
+    contributions = [[] for _ in range(6)]
+    for part in range(parts):
+        a = low + (high - low) * part / parts
+        b = low + (high - low) * (part + 1) / parts
+        centre, half = (a + b) * 0.5, (b - a) * 0.5
+        for node, weight in _GL16:
+            for sign in (-1, 1):
+                values = _density_gradient(centre + sign * half * node, p)
+                for i, value in enumerate(values):
+                    contributions[i].append(half * weight * value)
+    return [math.fsum(values) for values in contributions]
+
+
+def _window_statistics(metadata, low, high, max_width):
+    fit, transfer = metadata["fit"], metadata["transfer_statistics"]
+    p, covariance = fit["parameters"], fit["covariance"]
+    integrals, gradients = [], []
+    for a, b, factor in ((5.0, 9.0, transfer["low_transfer"]),
+                         (11.0, 80.0, transfer["high_transfer"])):
+        values = _integral_gradient(p, max(low, a), min(high, b), max_width)
+        integrals.append(values[0])
+        gradients.append([factor * g for g in values[1:]])
+    gradient = [math.fsum(g[i] for g in gradients) for i in range(5)]
+    terms = [gradient[i] * covariance[i][j] * gradient[j] for i in range(5) for j in range(5)]
+    variance = math.fsum(terms)
+    if not math.isfinite(variance) or variance < -1e-10 * max(math.fsum(map(abs, terms)), 1e-300):
+        raise ValueError("Invalid propagated QCD fit variance.")
+    t, k = transfer["low_transfer"], transfer["mc_double_ratio"]
+    nf_variance = ((integrals[0] + k * integrals[1]) ** 2 * transfer["low_variance"]
+                   + (t * integrals[1]) ** 2 * transfer["double_ratio_variance"])
+    central = t * integrals[0] + transfer["high_transfer"] * integrals[1]
+    return dict(central=central, sigma_nf_stat=math.sqrt(nf_variance),
+                sigma_fit_stat=math.sqrt(max(variance, 0.0)), gradient=gradient)
+
+
+def qcd_window_statistics(metadata, low, high, nominal=None, validate=True):
+    """Statistics on the supplied effective bin edges, in event-yield units."""
+    if validate:
+        validate_qcd_stat_metadata(metadata)
+    if not (math.isfinite(low) and math.isfinite(high) and low < high):
+        raise ValueError("Invalid QCD statistical window edges.")
+    coarse = _window_statistics(metadata, low, high, 1.0)
+    result = _window_statistics(metadata, low, high, 0.5)
+    for key in ("central", "sigma_fit_stat", "sigma_nf_stat"):
+        if not math.isclose(coarse[key], result[key], rel_tol=1e-5, abs_tol=1e-280):
+            raise ValueError("QCD statistical integration did not converge.")
+    if nominal is not None and not math.isclose(result["central"], nominal, rel_tol=1e-5, abs_tol=1e-280):
+        raise ValueError("QCD statistical metadata disagree with the nominal template; regenerate matching files.")
+    nf, fit = result["sigma_nf_stat"], result["sigma_fit_stat"]
+    result.update(sigma_stat_bound=nf + fit,
+                  stat_quadrature_assuming_independent=math.hypot(nf, fit),
+                  treatment=QCD_STAT_TREATMENT, effective_low=low, effective_high=high)
+    if not all(math.isfinite(result[k]) for k in ("central", "sigma_fit_stat", "sigma_nf_stat", "sigma_stat_bound")):
+        raise ValueError("Non-finite propagated QCD statistics.")
+    return result
+
 
 
 # =============================================================================
@@ -3189,7 +3324,7 @@ def build_qcd_stat_metadata(ROOT, args, selected, transfer_stats):
         raise RuntimeError("QCD statistical covariance is unavailable/unreliable: "
                            + "; ".join(fit["warnings"])
                            + ". The central fit was not changed; existing ROOT files were not overwritten.")
-    metadata = dict(schema=QCD_STAT_SCHEMA, treatment=QCD_STAT_TREATMENT,
+    metadata = dict(schema=QCD_STAT_SCHEMA, treatment=QCD_STAT_TREATMENT, basis=QCD_STAT_BASIS,
                     era=args.year, template_path=hist_path(OS_REGION),
                     fit=dict(model=selected.model.key, **fit),
                     transfer_statistics=transfer_stats,
@@ -3210,6 +3345,57 @@ def build_qcd_stat_metadata(ROOT, args, selected, transfer_stats):
     # Reject non-finite values before replacing an existing ROOT file.
     json.dumps(metadata, allow_nan=False)
     return metadata
+
+
+def build_qcd_stat_basis(metadata, native, main):
+    """Compute all native-bin yield derivatives before replacing the ROOT output.
+
+    Keep the five SS-fit derivatives and two transfer derivatives separate.
+    Consumers sum these over their actual windows before using the covariance,
+    preserving correlations between fitted bins and between low/high transfers.
+    """
+    p = metadata["fit"]["parameters"]
+    transfer = metadata["transfer_statistics"]
+    t, k, th = (transfer[key] for key in ("low_transfer", "mc_double_ratio", "high_transfer"))
+    rows = []
+    axis = native.GetXaxis()
+    for ibin in range(1, native.GetNbinsX() + 1):
+        low, high = axis.GetBinLowEdge(ibin), axis.GetBinUpEdge(ibin)
+        lo = _integral_gradient(p, max(low, 5.0), min(high, 9.0), 0.5)
+        hi = _integral_gradient(p, max(low, 11.0), min(high, 80.0), 0.5)
+        rows.append([t * lo[0] + th * hi[0]]
+                    + [t * lo[i] + th * hi[i] for i in range(1, 6)]
+                    + [lo[0] + k * hi[0], t * hi[0]])
+    if not all(math.isfinite(v) for row in rows for v in row):
+        raise RuntimeError("Non-finite QCD statistical derivative basis; ROOT output was not replaced.")
+    # Independent global integration checks the sum of every native-bin derivative.
+    reference = qcd_window_statistics(metadata, axis.GetXmin(), axis.GetXmax())
+    totals = [math.fsum(row[i] for row in rows) for i in range(8)]
+    for value, expected in zip(totals[:6], [reference["central"]] + reference["gradient"]):
+        if not math.isclose(value, expected, rel_tol=1e-5, abs_tol=1e-280):
+            raise RuntimeError("QCD derivative-bin integration did not converge; ROOT output was not replaced.")
+    for mass in (6.0, 12.0, 30.0, 70.0):
+        ibin = axis.FindFixBin(mass)
+        if 1 <= ibin <= len(rows):
+            nominal = fit_integral_with_transfer(main, native, ibin, t, th)
+            if not math.isclose(rows[ibin - 1][0], nominal, rel_tol=1e-5, abs_tol=1e-280):
+                raise RuntimeError("QCD statistical basis disagrees with the ROOT central function; output was not replaced.")
+    return rows
+
+
+def write_qcd_stat_basis(ROOT, stat_dir, native, metadata, rows):
+    """Write yield-unit derivative histograms and retained covariance into QCDStat/."""
+    stat_dir.cd()
+    ROOT.TObjString(json.dumps(metadata, allow_nan=False)).Write("metadata", ROOT.TObject.kOverwrite)
+    for column, name in enumerate(QCD_STAT_BASIS):
+        hist = native.Clone(name)
+        hist.Reset("ICES")
+        hist.SetDirectory(stat_dir)
+        for ibin, row in enumerate(rows, 1):
+            hist.SetBinContent(ibin, row[column])
+            hist.SetBinError(ibin, 0.0)
+        hist.Write(name, ROOT.TObject.kOverwrite)
+    print("[fit.root] Saved QCDStat/metadata, CentralYield, FitGradient_0..4 and NFGradient_*; NF-stat + SS fit-stat bound")
 
 
 def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, files: Dict[str, object], selected_fits: Sequence[SelectedFit]):
@@ -3355,6 +3541,8 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
         )
         allowed_ranges = (QCD_TRANSFER_LOW_WINDOW, QCD_TRANSFER_HIGH_WINDOW)
 
+        stat_basis = build_qcd_stat_basis(stat_metadata, h_data_os, main)
+
         run_syst = era_dir(args, args.year, "RunSyst")
         run_syst.mkdir(parents=True, exist_ok=True)
         output = run_syst / "NIsoMuon_SS_fit.root"
@@ -3364,9 +3552,7 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
             raise OSError(f"Could not create {output}")
         try:
             stat_dir = root_file.mkdir("QCDStat")
-            stat_dir.cd()
-            ROOT.TObjString(json.dumps(stat_metadata, allow_nan=False)).Write("metadata", ROOT.TObject.kOverwrite)
-            print("[fit.root] Saved QCDStat/metadata: NF-stat + SS fit-stat; conservative linear bound, covariance between them unknown")
+            write_qcd_stat_basis(ROOT, stat_dir, h_data_os, stat_metadata, stat_basis)
             central_name = f"{HIST_NAME}___{OS_REGION}"
             h_central, d_central = make_output_histogram(root_file, h_data_os, OS_REGION, central_name)
             for ibin in range(1, h_central.GetNbinsX() + 1):
