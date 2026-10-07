@@ -498,6 +498,24 @@ python3 sigFit_v2.py --era Run2 --build-interpolation --interpolation-step 1
 
 ## QCD pT-bin and OS/SS diagnostic examples
 
+For a read-only native-yield audit of the four Run-2 eras:
+
+```bash
+python3 qcd_yield_diagnostics.py --unblind
+python3 qcd_yield_diagnostics.py --era 2016preVFP 2016postVFP --unblind
+```
+
+This prints OS/SS Data, tt/ST/Top/Others, DY MC, OS DY DD, raw QCD MC and
+OS QCD DD yields in the stored low/high transfer windows, 11--15 GeV and
+each 1-GeV bin there. It reports residual/MC and OS/SS ratios, SS-fit closure,
+current/stored transfer primitives and separate global validation scale factors.
+`--plot-range 5 120` reproduces the default unblinded QCDMC_norm integration
+range; set it to the actual validation plot range when different. SS estimator
+subtraction excludes DY; SS validation-plot factors include DY MC, as in the
+supplied validation plots. Without `--unblind`, high-mass OS observations and
+OS global factors remain hidden. The script opens ROOT files in READ mode,
+does not refit or change templates, and writes no files.
+
 ```bash
 python3 plotter_qcdseparate.py --era 2017 --variable all
 python3 plotter_qcdseparate.py --era Run2 --variable dimuon_mass
