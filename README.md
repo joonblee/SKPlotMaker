@@ -539,6 +539,50 @@ READ mode; the script reads no observed data histograms, applies no
 additional normalisation, and writes no files. `--base-dir` and `--trigger`
 select the same input layout as `plotter.py`.
 
+To audit the normalisation and selected weights of the 120--170 GeV sample:
+
+```bash
+python3 qcd_sample_weight_audit.py --era 2016preVFP 2016postVFP
+```
+
+The default read-only audit compares current `CommonSampleInfo` values with
+the `xsec`, `sumSign` and `sumW` recorded in matching nominal production
+`run.C`/`run_*.C` files. It prints the current SKFlat branch/commit, file-list
+counts, duplicate inputs and histogram weight moments. `--skflat-dir` defaults
+to `SKFlat_WD` (otherwise the sibling `SKFlatAnalyzer` directory); `--runlog-dir`
+defaults to `SKFlatRunlogDir` or `/data6/Users/<USER>/SKRunlog`. Use `--sample`
+to inspect another pT sample and `--data-version` for a different metadata set.
+Current metadata and candidate run configurations are not automatically
+identified as the inputs of an existing ROOT output. `MCweight()` uses
+`sumSign` with its default `usesign=true`; both normalisation denominators are
+reported. Generated/skim counts, selected histogram fills and effective MC
+statistics are distinct quantities.
+
+Weighted mass histograms do not retain per-window unweighted counts or
+individual event weights. To obtain those quantities, replay one production:
+
+```bash
+python3 qcd_sample_weight_audit.py --era 2016postVFP --replay \
+  --output-dir plots/qcd_weight_audit
+```
+
+If multiple nominal productions are found, specify `--production-tag` using
+the exact tag printed by `candidate-production`. Replay runs all recorded jobs
+on their MC input ntuples with the saved production libraries. It copies and
+renames the current NIsoMuon source into a new audit directory and records
+weights at the existing nominal mass-histogram fill call. Original analyser
+sources, job macros and production ROOT files are never rewritten. Replay
+requires the compatible ROOT/CMSSW environment and can take as long as processing
+the sample; it submits no batch jobs. The new tree contains mass, sign, final
+weight, raw generator weight, MC normalisation, trigger luminosity, the combined
+correction factor and the input-file/local-entry identity. It prints exact
+selected fills, weight distributions and the largest weights per mass window.
+Every reported yield and Sumw2 must close against the existing histogram before
+the replay is labelled validated. A closure failure leaves the association with
+the original production unverified; matching moments alone do not establish
+source-version identity. The audit directory retains copied sources, macros,
+logs, selected-weight ROOT trees and a hashed provenance manifest.
+
 ```bash
 python3 plotter_qcdseparate.py --era 2017 --variable all
 python3 plotter_qcdseparate.py --era Run2 --variable dimuon_mass
