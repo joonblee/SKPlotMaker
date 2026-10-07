@@ -43,6 +43,12 @@ prediction is the background-subtracted light-jet data distribution multiplied
 by the aMC@NLO NF.  The nominal NIsoMuon_DYJets_est.root additionally stores
 the primitive pre-NF light-jet source and NF metadata under DYAux/.
 
+Background subtraction keeps signed Data - QCD MC - Top MC - Others MC bin
+contents and propagated errors in both jet regions. Negative residuals are not
+clipped before rebinning or NF scaling, so positive and negative fluctuations
+can cancel when bins are merged. The saved NF source and central prediction
+retain these signed contents.
+
 Required option
 ---------------
   --era PERIOD      one supported era or Run2/Run3/Run2+3
@@ -551,22 +557,9 @@ def load_subtracted_histogram(ROOT, args, folder: str, hist_name: str) -> Any:
             continue
         h_sub.Add(h_bg, -1.0)
 
-    # In sparse high-mass light-jet data, Data-QCD-Top-Others can become
-    # slightly negative when the observed data count is zero but the
-    # subtracted MC prediction is nonzero.  A negative event yield is not a
-    # physical DY template, so clamp only the central bin content to zero.
-    # Keep the propagated Sumw2 bin uncertainty unchanged so LightJetStat still
-    # reflects the statistical precision of the data-minus-background source.
-    n_clamped = 0
-    for ibin in range(0, h_sub.GetNbinsX() + 2):
-        if float(h_sub.GetBinContent(ibin)) < 0.0:
-            h_sub.SetBinContent(ibin, 0.0)
-            n_clamped += 1
-    if n_clamped:
-        print(
-            f"[INFO] Clamped {n_clamped} negative bin(s) to zero in "
-            f"LightJetSource ({folder}/{hist_name}); bin errors are unchanged."
-        )
+    # Keep signed residuals and their propagated errors in both jet regions.
+    # Clipping negative fine bins here would discard background contributions
+    # in empty data bins and bias the subsequently rebinned yield upwards.
 
     return h_sub
 

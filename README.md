@@ -110,6 +110,14 @@ The current NF workflow is:
 - write the final DY estimate to `NIsoMuon_DYJets_est.root`;
 - keep the primitive light-jet source and NF metadata under `DYAux/` so that `plotter.py` can propagate `LightJetStat`, `NFStat`, and `NFModel` consistently.
 
+In both B-jet and light-jet regions, subtraction is `Data - QCD MC - Top MC -
+Others MC`. Signed bin contents and propagated errors are retained through
+rebinning and NF scaling, including in the saved `DYAux/LightJetSource` and
+central NF prediction. Do not clip negative fine bins before merging them:
+that would discard background contributions in empty data bins and increase
+the merged yield. Negative values cannot be shown on the default log-y axis;
+the stored histogram contents are nevertheless preserved.
+
 The older parameter-dependent transfer-factor method is retained as a cross-check:
 
 ```bash
