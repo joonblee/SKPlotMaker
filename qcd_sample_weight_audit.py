@@ -24,6 +24,7 @@ The ROOT log records each library load, compilation, input-file attachment,
 initialisation and event-loop stage with flushed begin/end messages. While a
 job runs, the terminal prints its PID, elapsed time and latest log line every
 30 seconds. Ctrl-C terminates only this replay's subprocess group.
+The driver invokes each job through ROOT's Macro filename API.
 
 If the archives are unavailable, --replay-current explicitly uses CURRENT
 CommonSampleInfo, ForSNU/SkimTree_NIsoMuon_<sample>.txt, analyser source and
@@ -510,8 +511,8 @@ def replay(ROOT, cfg, jobs, skflat, output_dir, *, libraries=None, work=None, co
                   + cpp_string(work / (CLASS+'.C')) + ', "kO");\n'
                   + '  std::cerr << "[audit-stage] compile result = " << compiled << std::endl;\n'
                   + '  if(!compiled) { gSystem->Exit(72); return; }\n  Int_t error=0;\n  '
-                  + cpp_stage('job macro begin') + '\n  gROOT->ProcessLine('
-                  + cpp_string('.x "' + str(macro) + '"') + ', &error);\n'
+                  + cpp_stage('job macro begin') + '\n  gROOT->Macro('
+                  + cpp_string(macro) + ', &error, kFALSE);\n'
                   + '  std::cerr << "[audit-stage] job macro result = " << error << std::endl;\n'
                   + '  if(error) gSystem->Exit(73);\n}\n')
         driver_path = work / (driver_name + '.C')

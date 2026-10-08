@@ -636,6 +636,10 @@ establish that event processing has started. Ctrl-C stops only the replay's
 own subprocess group, including compiler children. It does not remove audit
 files or terminate other user jobs.
 
+The driver executes the generated job with `gROOT->Macro()` and passes its
+absolute filename directly. A quoted filename inside a `.x` command can instead
+make ROOT report `macro ".../audit_job_0.C" not found` after compilation.
+
 ```bash
 python3 plotter_qcdseparate.py --era 2017 --variable all
 python3 plotter_qcdseparate.py --era Run2 --variable dimuon_mass
