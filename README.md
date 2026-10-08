@@ -191,6 +191,57 @@ normalisation, shape-envelope convention, and QCD-MC objectives are unchanged.
 
 **Do not normally run the commands above in parallel with `&`.**  Each SS fit updates the same `NIsoMuon_SS_fit_anchors.json` catalogue.  Sequential execution avoids concurrent read/modify/write races in that shared file.
 
+#### 2016postVFP SingleMuon F/G/H diagnostics
+
+To inspect and fit each period separately, without changing the full-era QCD
+estimate:
+
+```bash
+for period in F G H; do
+    python3 qcd_bkg_estimation.py --mode ss-data --year 2016postVFP \
+        --data-period "$period" --ss-binning adaptive \
+        --ss-min-effective-count 10 --ss-max-bin-width 5 || break
+done
+```
+
+This reads `Skim_NIsoMuon_SingleMuon_<PERIOD>.root` in the usual
+`NIsoMuon/2016postVFP` input directory instead of `data.root`. It fits
+`SS Data(period) - Top(full era)*L_period/L_MC - Others(full era)*L_period/L_MC`
+over the usual 5--30 GeV range. Data are not scaled. MC contents and errors
+receive the same luminosity factor, so their variances receive its square;
+signed residual bins remain in the fit. MC shapes/SFs are the existing full-era
+ones, with luminosity scaling for this period comparison.
+
+The default recorded luminosities are derived by summing the certified runs in
+the [CMS 2016 per-run luminosity table](https://opendata.cern.ch/record/1059/files/2016lumi.txt)
+(`23v1`, composite normtag; values are in fb^-1):
+
+| Period | Certified runs used | Luminosity [fb^-1] |
+| --- | --- | ---: |
+| F, postVFP only | 278769, 278801, 278802, 278803, 278804, 278805, 278808 | 0.418771191 |
+| G | 278820--280385 | 7.653261226 |
+| H | 281613--284044 | 8.740119303 |
+
+Their sum, 16.812151720 fb^-1, agrees with the actual full-era MC normalisation
+16.812151722482 fb^-1 in SKFlat `Event::GetTriggerLumi("Full")` to the precision
+of the published table. The denominator uses that MC normalisation, rather
+than the rounded 16.8 fb^-1 plot label. F must not use the luminosity of the
+entire Run2016F period, which also includes preVFP data.
+Use `--period-lumi-fb VALUE --mc-lumi-fb VALUE` to supply the actual values if
+your certification/trigger selection or MC production normalisation differs.
+These overrides require `--data-period`.
+
+Each period prints SS Data, luminosity-scaled Top/Others and their residual in
+5--9, 11--15, 5--30 and 11--80 GeV. Fit figures have their own period label and
+luminosity, and filenames end in
+`2016postVFP-SingleMuon_<PERIOD>-AllFits.pdf/.png` in the usual plot directory.
+`--inspect-binning` prints the period inputs/yields and fit-bin diagnostics
+without fitting. This option is restricted to individual 2016postVFP SS-data
+diagnostics: it reads no OS observations, applies no OS transfer factor, and
+does not write production anchors or `NIsoMuon_SS_fit.root` templates.
+It cannot be combined with `--validate-qcd-double-ratio` or
+`--uncertainty-diagnostics`, which are full-era operations.
+
 #### Statistical uncertainty of the QCD prediction
 
 Individual-era `ss-data` production now also writes `QCDStat/metadata` into both

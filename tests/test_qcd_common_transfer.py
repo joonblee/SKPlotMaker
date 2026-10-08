@@ -1,15 +1,17 @@
 """Physics/statistics contract checks without ROOT; run with unittest discovery."""
 import bisect
+from contextlib import ExitStack, redirect_stdout
 import copy
 import importlib.util
 import json
+import io
 import math
 from pathlib import Path
 import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import qcd_common_transfer as c
@@ -45,6 +47,26 @@ class Hist:
     def GetXaxis(self): return Axis()
     def GetBinContent(self, i): return self.values[i-1] if 1 <= i <= 8 else 0.
     def GetBinError(self, i): return math.sqrt(self.variances[i-1])
+
+
+class InputAxis(Axis):
+    def FindBin(self, x): return self.FindFixBin(x)
+
+
+class InputHist(Hist):
+    """Weighted input histogram sufficient for the real component loader."""
+    def GetXaxis(self): return InputAxis()
+    def Clone(self, name): return copy.deepcopy(self)
+    def SetDirectory(self, directory): pass
+    def SetName(self, name): pass
+    def GetSumw2N(self): return len(self.variances)
+    def Scale(self, factor):
+        self.values = [x*factor for x in self.values]
+        self.variances = [x*factor**2 for x in self.variances]
+    def Add(self, other):
+        self.values = [x+y for x, y in zip(self.values, other.values)]
+        self.variances = [x+y for x, y in zip(self.variances, other.variances)]
+    def Integral(self, first, last): return math.fsum(self.values[first-1:last])
 
 
 def hist(low, high, low_var=None, high_var=None):
@@ -106,6 +128,106 @@ def transfer_and_inputs(method="run-common", era="2016postVFP"):
 
 
 class CommonTransferTests(unittest.TestCase):
+    def test_period_luminosities_and_invalid_scope_before_root(self):
+        parser = q.build_parser()
+        for period in "FGH":
+            args = parser.parse_args(["--mode", "ss-data", "--year", "2016postVFP", "--data-period", period])
+            diagnostic = q.data_period_diagnostic(args, q.SS_MODE)
+            self.assertEqual(diagnostic.data_stem, f"Skim_NIsoMuon_SingleMuon_{period}")
+            self.assertAlmostEqual(diagnostic.lumi_fb, q.POSTVFP_DATA_LUMI_FB[period])
+        self.assertAlmostEqual(sum(q.POSTVFP_DATA_LUMI_FB.values()), q.POSTVFP_MC_LUMI_FB, places=8)
+        self.assertNotIn(278770, q.POSTVFP_DATA_RUNS["F"])
+        for argv in (["--mode", "qcd-mc", "--year", "2016postVFP", "--data-period", "G"],
+                     ["--mode", "ss-data", "--year", "2016preVFP", "--data-period", "F"],
+                     ["--mode", "ss-data", "--year", "Run2", "--data-period", "G"],
+                     ["--mode", "ss-data", "--period-lumi-fb", "1"],
+                     ["--mode", "ss-data", "--year", "2016postVFP", "--data-period", "G", "--validate-qcd-double-ratio"],
+                     ["--mode", "ss-data", "--year", "2016postVFP", "--data-period", "G", "--uncertainty-diagnostics"],
+                     ["--mode", "ss-data", "--year", "2016postVFP", "--data-period", "G", "--period-lumi-fb", "20"]):
+            with patch.object(q, "import_root", side_effect=AssertionError("must reject before ROOT")):
+                with self.assertRaises(ValueError): q.run(parser.parse_args(argv))
+
+    def test_period_input_scales_mc_variances_and_preserves_negative_residuals(self):
+        top, others = hist(80., 200., 400., 900.), hist(20., 30., 100., 120.)
+        sources = {"data": InputHist([10.]*8),
+                   "Skim_NIsoMuon_SingleMuon_G": InputHist([0., 10., 0., 1., 5., 0., 0., 0.]),
+                   "NIsoMuon_Top": InputHist(top.values, top.variances),
+                   "NIsoMuon_Others": InputHist(others.values, others.variances)}
+        original = copy.deepcopy(sources)
+        def source(root, path):
+            return SimpleNamespace(Get=lambda name: sources[path.stem], Close=lambda: None)
+        diagnostic = q.DataPeriodDiagnostic("G", 4., 16., "test")
+        with patch.object(q, "open_root_file", side_effect=source) as reader, redirect_stdout(io.StringIO()):
+            result, _, handles = q.build_input_histogram(object(), q.SS_MODE,
+                                      [("2016postVFP", Path("/inputs"))], diagnostic)
+            self.assertEqual([call.args[1].name for call in reader.call_args_list],
+                             ["Skim_NIsoMuon_SingleMuon_G.root", "NIsoMuon_Top.root", "NIsoMuon_Others.root"])
+            for i in range(8):
+                self.assertAlmostEqual(result.values[i], sources[diagnostic.data_stem].values[i]
+                                       -.25*(top.values[i]+others.values[i]))
+                self.assertAlmostEqual(result.variances[i], sources[diagnostic.data_stem].variances[i]
+                                       +.25**2*(top.variances[i]+others.variances[i]))
+            self.assertLess(result.GetBinContent(4), 0.)
+            q.close_files(handles)
+        for key in sources:
+            self.assertEqual(sources[key].values, original[key].values)
+            self.assertEqual(sources[key].variances, original[key].variances)
+        with patch.object(q, "open_root_file", side_effect=source) as reader, redirect_stdout(io.StringIO()):
+            result, _, handles = q.build_input_histogram(object(), q.SS_MODE, [("2016postVFP", Path("/inputs"))])
+            self.assertEqual(reader.call_args_list[0].args[1].name, "data.root")
+            self.assertAlmostEqual(result.values[1], 10.-80.-20.)
+            self.assertAlmostEqual(result.variances[1], 10.+400.+100.)
+            q.close_files(handles)
+
+    def test_period_workflow_never_writes_production_but_full_era_still_does(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for period in (None, "G"):
+                argv = ["--mode", "ss-data", "--year", "2016postVFP", "--transfer-method", "era-specific"]
+                if period: argv += ["--data-period", period]
+                args = q.build_parser().parse_args(argv)
+                density = MagicMock()
+                density.GetBinContent.return_value = 10.
+                fit = SimpleNamespace(function=object(), average_function=object(), fit_function=object(),
+                                      result=object(), accepted=True)
+                with ExitStack() as stack:
+                    mocks = {}
+                    for name, value in dict(import_root=object(), declare_fit_functions=None, configure_minimizer=None,
+                        input_dirs=[("2016postVFP", Path(tmp))], build_input_histogram=(object(), {}, []),
+                        prepare_histograms=SimpleNamespace(counts=object(), density=density),
+                        build_fit_data=SimpleNamespace(data=object(), keepalive=[]), fit_all_models=([fit], [], []),
+                        draw_fit_plot=(Path(tmp)/"fit.pdf", Path(tmp)/"fit.png", []), save_ss_fit_anchors=None,
+                        write_ss_background_root=(Path(tmp)/"output.root", Path(tmp)/"copied.root")).items():
+                        mocks[name] = stack.enter_context(patch.object(q, name, return_value=value))
+                    common = stack.enter_context(patch.object(q, "read_common_qcd_transfer", side_effect=AssertionError("must not derive common transport")))
+                    stack.enter_context(redirect_stdout(io.StringIO()))
+                    self.assertEqual(q.run(args), 0)
+                    common.assert_not_called()
+                    if period:
+                        mocks["save_ss_fit_anchors"].assert_not_called()
+                        mocks["write_ss_background_root"].assert_not_called()
+                        self.assertEqual(mocks["build_input_histogram"].call_args.args[3].period, period)
+                    else:
+                        mocks["save_ss_fit_anchors"].assert_called_once()
+                        mocks["write_ss_background_root"].assert_called_once()
+
+    def test_period_plot_filename_and_header_are_separate(self):
+        root, density = MagicMock(), MagicMock()
+        root.kBlack = 1
+        density.GetNbinsX.return_value = 0
+        with tempfile.TemporaryDirectory() as tmp, patch.object(q, "PLOT_DIR", Path(tmp)):
+            for period in (None, "F", "G", "H"):
+                argv = ["--mode", "ss-data", "--year", "2016postVFP"]
+                if period: argv += ["--data-period", period]
+                args = q.build_parser().parse_args(argv)
+                args._data_period_diagnostic = q.data_period_diagnostic(args, q.SS_MODE)
+                pdf, png, _ = q.draw_fit_plot(root, args, q.SS_MODE, "chi2", density, [], [], [])
+                tag = f"-SingleMuon_{period}" if period else ""
+                self.assertEqual(pdf.name, f"FitPlot_FnVariation-SS_fit_SS_Dimuon_Mass-2016postVFP{tag}-AllFits.pdf")
+                self.assertEqual(png.stem, pdf.stem)
+                if period:
+                    root.TLatex.return_value.DrawLatex.assert_any_call(.935, .935,
+                                              f"{q.POSTVFP_DATA_LUMI_FB[period]:.3f} fb^{{-1}} (13 TeV)")
+
     def test_known_common_fit_and_chi2(self):
         report = c.fit_common_double_ratio(records(), "Run2", WINDOWS)
         self.assertAlmostEqual(report["double_ratio"], .8)

@@ -119,6 +119,14 @@ remains available as `--transfer-method era-specific`. The old option
 metadata retain `mc-double-ratio` for consumer compatibility; do not change
 that identifier as a CLI-only rename.
 
+`--data-period F/G/H` is a separate 2016postVFP SS-only diagnostic. It selects
+one `Skim_NIsoMuon_SingleMuon_<PERIOD>.root`, scales full-era Top/Others by
+period luminosity divided by the luminosity already used in MC weights, and
+saves period-labelled fits. It must not update production anchors/templates or
+read OS observations. F means only the postVFP subset. See the constants and
+luminosity provenance in the producer; do not use rounded plot-label luminosity
+as the MC denominator.
+
 `qcd-mc` is a modelling/cross-check mode.  For the current working convention, when running QCD-MC fits use the log-chi-square objective explicitly:
 
 ```bash

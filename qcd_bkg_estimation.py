@@ -88,6 +88,12 @@ Main optional controls
   --ss-max-bin-width GEV           adaptive width cap, default: 5
   --transfer-method {run-common,era-specific,data-low}
       --qcd-transfer-method and mc-double-ratio remain compatibility aliases
+  --data-period {F,G,H}           2016postVFP SS-only period diagnostic;
+                                 reads Skim_NIsoMuon_SingleMuon_<PERIOD>.root
+  --period-lumi-fb VALUE          override certified period luminosity [fb^-1]
+  --mc-lumi-fb VALUE              override full-era MC normalisation [fb^-1]
+      Period diagnostics scale Top/Others by period/full-era luminosity,
+      save separate PDF/PNG fits, and do not write anchors or OS ROOT templates.
   --validate-qcd-double-ratio     MC-only JSON/CSV/PDF/PNG compatibility report;
                                  no SS fits, anchors or ROOT templates changed
   --qcd-transfer-validation-pmin VALUE   default 0.05; failed common fits stop
@@ -129,6 +135,8 @@ Examples
   python3 qcd_bkg_estimation.py --mode ss-data --year 2018
   python3 qcd_bkg_estimation.py --mode ss-data --year 2016postVFP \
       --transfer-method data-low
+  python3 qcd_bkg_estimation.py --mode ss-data --year 2016postVFP \
+      --data-period G --ss-binning adaptive --ss-min-effective-count 10
   python3 qcd_bkg_estimation.py --mode ss-data --year Run2
   python3 qcd_bkg_estimation.py --mode ss-data --year Run3
   python3 qcd_bkg_estimation.py --mode ss-data --year 2022 \
@@ -422,6 +430,20 @@ PERIOD_LUMI_FB: Dict[str, float] = {
     "Run2+3": 200,
 }
 
+# Recorded luminosity [fb^-1], summed from the CMS per-run 23v1/composite table:
+# https://opendata.cern.ch/record/1059/files/2016lumi.txt
+# F is only the non-HIPM/postVFP subset, NOT the whole Run2016F period.
+POSTVFP_DATA_RUNS = {
+    "F": (278769, 278801, 278802, 278803, 278804, 278805, 278808),
+    "G": (278820, 280385),  # Inclusive range, certified runs only.
+    "H": (281613, 284044),  # Inclusive range, certified runs only.
+}
+POSTVFP_DATA_LUMI_FB = {"F": 0.418771191, "G": 7.653261226, "H": 8.740119303}
+# Actual MC event-weight normalisation from SKFlatAnalyzer/DataFormats/src/Event.C,
+# Event::GetTriggerLumi("Full"), not the rounded 16.8 fb^-1 figure label above.
+POSTVFP_MC_LUMI_FB = 16.812151722482
+POSTVFP_LUMI_SOURCE = "https://opendata.cern.ch/record/1059/files/2016lumi.txt"
+
 SS_REGION = "SS_POGMedium_tight_BJet_NIsoDimuon"
 OS_REGION = "OS_POGMedium_tight_BJet_NIsoDimuon"
 HIST_NAME = "Dilepton_Mass"
@@ -447,6 +469,43 @@ class ModeConfig:
     plot_tag: str
     legend_label: str
     components: Tuple[Tuple[str, float], ...]
+
+
+@dataclass(frozen=True)
+class DataPeriodDiagnostic:
+    period: str
+    lumi_fb: float
+    mc_lumi_fb: float
+    lumi_source: str
+
+    @property
+    def data_stem(self) -> str:
+        return f"Skim_NIsoMuon_SingleMuon_{self.period}"
+
+    @property
+    def mc_scale(self) -> float:
+        return self.lumi_fb / self.mc_lumi_fb
+
+
+def data_period_diagnostic(args, mode) -> Optional[DataPeriodDiagnostic]:
+    """Resolve an SS-only diagnostic before importing ROOT or writing outputs."""
+    period = getattr(args, "data_period", None)
+    period_lumi = getattr(args, "period_lumi_fb", None)
+    mc_lumi = getattr(args, "mc_lumi_fb", None)
+    if period is None:
+        if period_lumi is not None or mc_lumi is not None:
+            raise ValueError("--period-lumi-fb/--mc-lumi-fb require --data-period")
+        return None
+    if mode.key != "ss-data" or args.year != "2016postVFP":
+        raise ValueError("--data-period F/G/H requires --mode ss-data --year 2016postVFP")
+    if args.validate_qcd_double_ratio or args.uncertainty_diagnostics:
+        raise ValueError("--data-period is an SS-only diagnostic; MC-transfer validation and OS-template uncertainty diagnostics require a full-era run")
+    lumi = POSTVFP_DATA_LUMI_FB[period] if period_lumi is None else period_lumi
+    mc = POSTVFP_MC_LUMI_FB if mc_lumi is None else mc_lumi
+    if not (math.isfinite(lumi) and math.isfinite(mc) and 0 < lumi <= mc):
+        raise ValueError("Period/MC luminosities must be finite and satisfy 0 < period <= full-era MC luminosity")
+    source = POSTVFP_LUMI_SOURCE if period_lumi is None else "--period-lumi-fb"
+    return DataPeriodDiagnostic(period, lumi, mc, source)
 
 
 @dataclass(frozen=True)
@@ -1045,6 +1104,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--analyzer", default="NIsoMuon")
     parser.add_argument("--base-dir", default=DEFAULT_BASE_DIR)
+    parser.add_argument("--data-period", choices=tuple(POSTVFP_DATA_LUMI_FB),
+                        help="2016postVFP ss-data diagnostic: select one SingleMuon F/G/H file; scale Top/Others by period/full-era luminosity; save separate fits without replacing production anchors/templates.")
+    parser.add_argument("--period-lumi-fb", type=positive_float,
+                        help="Override period luminosity [fb^-1] for --data-period; defaults to certified CMS run sums (postVFP F subset only).")
+    parser.add_argument("--mc-lumi-fb", type=positive_float,
+                        help="Full-era luminosity [fb^-1] already included in MC weights; --data-period default: 16.812151722482 from SKFlat Event::GetTriggerLumi(Full).")
     parser.add_argument(
         "--transfer-method", "--qcd-transfer-method", dest="qcd_transfer_method",
         type=parse_transfer_method, default="run-common",
@@ -1297,24 +1362,32 @@ def build_input_histogram(
     ROOT,
     mode: ModeConfig,
     directories: Sequence[Tuple[str, Path]],
+    data_period: Optional[DataPeriodDiagnostic] = None,
 ):
     """Build one fit histogram, summing the requested component files over eras."""
     files: Dict[str, object] = {}
     handles: List[object] = []
     combined = None
     path = hist_path(mode.region)
+    diagnostic_pieces = {}
+    if data_period is not None and (mode.key != SS_MODE.key or len(directories) != 1
+                                   or directories[0][0] != "2016postVFP"):
+        raise ValueError("Period diagnostic input must be one 2016postVFP SS selection")
 
     try:
         for era, directory in directories:
             for stem, scale in mode.components:
-                root_file = open_root_file(ROOT, directory / f"{stem}.root")
+                input_stem = data_period.data_stem if data_period and stem == "data" else stem
+                if data_period and stem != "data":
+                    scale *= data_period.mc_scale
+                root_file = open_root_file(ROOT, directory / f"{input_stem}.root")
                 files[f"{era}:{stem}"] = root_file
                 if len(directories) == 1:
                     # Preserve the legacy keys used by the per-era ROOT writer.
                     files[stem] = root_file
                 handles.append(root_file)
 
-                label = f"{era}/{stem}"
+                label = f"{era}/{input_stem}"
                 source = get_required_histogram(root_file, label, path)
                 piece = source.Clone(_NAMES.unique(f"input_{era}_{stem}"))
                 piece.SetDirectory(0)
@@ -1322,6 +1395,9 @@ def build_input_histogram(
                     piece.Sumw2()
                 if scale != 1.0:
                     piece.Scale(scale)
+                if data_period:
+                    diagnostic_pieces[stem] = piece.Clone(_NAMES.unique(f"period_{stem}"))
+                    diagnostic_pieces[stem].SetDirectory(0)
 
                 if combined is None:
                     combined = piece
@@ -1335,6 +1411,16 @@ def build_input_histogram(
             f"[SYSTEM] eras={len(directories)}, components/era={len(mode.components)}, "
             "combined histograms=1"
         )
+        if data_period:
+            for low, high in dict.fromkeys((QCD_TRANSFER_LOW_WINDOW, (11.0, 15.0),
+                                            (SS_MODE.fit_min, SS_MODE.fit_max), QCD_TRANSFER_HIGH_WINDOW)):
+                data = integral_in_window(diagnostic_pieces["data"], low, high)
+                top = -integral_in_window(diagnostic_pieces["NIsoMuon_Top"], low, high)
+                others = -integral_in_window(diagnostic_pieces["NIsoMuon_Others"], low, high)
+                residual = integral_in_window(combined, low, high)
+                print(f"[period-yield] {data_period.period} SS {low:g}--{high:g} GeV: "
+                      f"Data={data:.8g}, scaled-Top={top:.8g}, scaled-Others={others:.8g}, "
+                      f"Data-Top-Others={residual:.8g}")
         return combined, files, handles
     except Exception:
         for handle in handles:
@@ -2862,7 +2948,7 @@ def set_local_cms_style(ROOT) -> None:
     ROOT.gROOT.ForceStyle()
 
 
-def draw_cms_header(ROOT, pad, period: str) -> object:
+def draw_cms_header(ROOT, pad, period: str, lumi_fb: Optional[float] = None) -> object:
     pad.cd()
     latex = ROOT.TLatex()
     latex.SetNDC(True)
@@ -2880,7 +2966,8 @@ def draw_cms_header(ROOT, pad, period: str) -> object:
     latex.SetTextAlign(31)
     latex.SetTextFont(42)
     latex.SetTextSize(0.034)
-    latex.DrawLatex(0.935, 0.935, cms_lumi_label(period))
+    label = cms_lumi_label(period) if lumi_fb is None else f"{lumi_fb:.3f} fb^{{-1}} (13 TeV)"
+    latex.DrawLatex(0.935, 0.935, label)
     return latex
 
 
@@ -2948,7 +3035,12 @@ def draw_fit_plot(
         selected.function.Draw("LSAME")
     upper.SetGridx()
     upper.SetGridy()
-    cms_header = draw_cms_header(ROOT, upper, args.year)
+    diagnostic = getattr(args, "_data_period_diagnostic", None)
+    cms_header = draw_cms_header(ROOT, upper, args.year, diagnostic.lumi_fb if diagnostic else None)
+    if diagnostic:
+        cms_header.SetTextAlign(11)
+        cms_header.SetTextSize(0.032)
+        cms_header.DrawLatex(0.12, 0.88, f"{args.year}, SingleMuon {diagnostic.period}")
 
     latex = ROOT.TLatex()
     latex.SetNDC()
@@ -3031,7 +3123,7 @@ def draw_fit_plot(
         }[objective]
     basename = (
         f"FitPlot_FnVariation-{mode.file_name}_{mode.plot_tag}_Dimuon_Mass-"
-        f"{args.year}-AllFits{objective_suffix}"
+        f"{args.year}{'-SingleMuon_' + diagnostic.period if diagnostic else ''}-AllFits{objective_suffix}"
     )
     pdf = plot_dir / f"{basename}.pdf"
     png = plot_dir / f"{basename}.png"
@@ -3983,6 +4075,8 @@ def close_files(files: Sequence[object]) -> None:
 
 def run(args: argparse.Namespace) -> int:
     mode = canonical_mode(args.mode)
+    diagnostic = data_period_diagnostic(args, mode)
+    args._data_period_diagnostic = diagnostic
     if args.qcd_transfer_method == "data-low" and (mode.key != SS_MODE.key or len(input_dirs(args)) != 1):
         raise ValueError("--transfer-method data-low requires an individual-era ss-data template run; combined periods write only anchors.")
     if not math.isfinite(args.qcd_transfer_validation_pmin) or not 0 < args.qcd_transfer_validation_pmin < 1:
@@ -3999,7 +4093,7 @@ def run(args: argparse.Namespace) -> int:
             raise ValueError("Uncertainty diagnostics require ss-data mode and one individual era")
         args._diagnostic_windows = diagnostic_windows(args)
     ROOT = import_root()
-    if args.validate_qcd_double_ratio or (mode.key == SS_MODE.key and len(input_dirs(args)) == 1
+    if args.validate_qcd_double_ratio or (diagnostic is None and mode.key == SS_MODE.key and len(input_dirs(args)) == 1
                                         and args.qcd_transfer_method == "run-common" and not args.inspect_binning):
         groups = list(dict.fromkeys(transfer_group(era) for era in selected_eras(args.year)))
         args._qcd_common_transfers = {}
@@ -4031,7 +4125,15 @@ def run(args: argparse.Namespace) -> int:
     print(f"[INFO] analyzer        = {args.analyzer}")
     for era, directory in directories:
         print(f"[INFO] input[{era}]     = {directory}")
-    print(f"[INFO] anchor file     = {anchor_file_path(args)}")
+    if diagnostic:
+        print(f"[INFO] data period     = SingleMuon {diagnostic.period}")
+        print(f"[INFO] data file       = {diagnostic.data_stem}.root")
+        print(f"[INFO] period lumi     = {diagnostic.lumi_fb:.9f} fb^-1; source={diagnostic.lumi_source}")
+        print(f"[INFO] full-era MC lumi = {diagnostic.mc_lumi_fb:.12f} fb^-1")
+        print(f"[INFO] MC scale        = {diagnostic.mc_scale:.10g} (=period/full-era lumi); Top and Others")
+        print("[INFO] SS-only period diagnostic: transfer method is not applied; outputs are period-specific fit plots")
+    else:
+        print(f"[INFO] anchor file     = {anchor_file_path(args)}")
     print(f"[INFO] fit range       = [{mode.fit_min:g}, {mode.fit_max:g}] GeV")
     print(f"[INFO] fit objective   = {objective}")
     if mode.key == QCD_MODE.key:
@@ -4068,7 +4170,10 @@ def run(args: argparse.Namespace) -> int:
             )
         )
 
-    source, files, handles = build_input_histogram(ROOT, mode, directories)
+    if diagnostic:
+        source, files, handles = build_input_histogram(ROOT, mode, directories, diagnostic)
+    else:
+        source, files, handles = build_input_histogram(ROOT, mode, directories)
     keepalive: List[object] = []
     try:
         prepared = prepare_histograms(
@@ -4111,7 +4216,9 @@ def run(args: argparse.Namespace) -> int:
         print(f"[SAVE] {pdf}")
         print(f"[SAVE] {png}")
 
-        if mode.key == SS_MODE.key:
+        if diagnostic:
+            print("[INFO] Period diagnostic finished; production SS anchors and OS ROOT templates were not changed.")
+        elif mode.key == SS_MODE.key:
             save_ss_fit_anchors(args, selected, objective)
             if len(directories) == 1:
                 directory = directories[0][1]
@@ -4135,6 +4242,7 @@ def run(args: argparse.Namespace) -> int:
         n_valid = sum(fit.accepted for fit in selected)
         print(
             f"[DONE] mode={mode.display_name}, period={args.year}, "
+            f"{'SingleMuon=' + diagnostic.period + ', ' if diagnostic else ''}"
             f"objective={objective}, accepted={n_valid}/{len(selected)}"
         )
         return 0
