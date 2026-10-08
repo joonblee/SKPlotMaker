@@ -626,6 +626,16 @@ the original production unverified; matching moments alone do not establish
 source-version identity. The audit directory retains copied sources, macros,
 logs, selected-weight ROOT trees and a hashed provenance manifest.
 
+Replay logs include flushed `[audit-stage]` begin/result messages for each
+library load, audit-source compilation, analyser construction, individual
+`AddFile`, initialisation, `Loop` and audit-tree writing. The terminal also
+prints the subprocess PID and a `[replay-running]` heartbeat every 30 seconds
+with elapsed time and the latest log line. Use `tail -f` on the printed job log
+to identify the last stage; `Processing .../audit_driver_*.C...` alone does not
+establish that event processing has started. Ctrl-C stops only the replay's
+own subprocess group, including compiler children. It does not remove audit
+files or terminate other user jobs.
+
 ```bash
 python3 plotter_qcdseparate.py --era 2017 --variable all
 python3 plotter_qcdseparate.py --era Run2 --variable dimuon_mass

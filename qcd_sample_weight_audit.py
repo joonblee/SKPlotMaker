@@ -20,6 +20,10 @@ configuration and saved libraries. Original sources, macros and ROOT outputs
 are never rewritten. Multiple candidate productions require --production-tag.
 Run in the compatible ROOT/CMSSW environment with access to the recorded inputs.
 Replay can take as long as processing the sample; it submits no batch jobs.
+The ROOT log records each library load, compilation, input-file attachment,
+initialisation and event-loop stage with flushed begin/end messages. While a
+job runs, the terminal prints its PID, elapsed time and latest log line every
+30 seconds. Ctrl-C terminates only this replay's subprocess group.
 
 If the archives are unavailable, --replay-current explicitly uses CURRENT
 CommonSampleInfo, ForSNU/SkimTree_NIsoMuon_<sample>.txt, analyser source and
@@ -52,9 +56,11 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 import qcd_pt_yield_diagnostics as d
 
@@ -75,6 +81,10 @@ def digest(path):
 
 def cpp_string(text):
     return json.dumps(str(text), ensure_ascii=True)
+
+
+def cpp_stage(label):
+    return 'std::cerr << ' + cpp_string('[audit-stage] ' + label) + ' << std::endl;'
 
 
 def strip_comments(text):
@@ -309,7 +319,9 @@ def make_replay_job(job, work, index):
     if not function:
         raise ValueError(f"Cannot locate run function: {job['path']}")
     text = original[:function.start()] + original[function.start():].replace(function.group(1), name, 1)
-    text, declarations = re.subn(r"\bNIsoMuon\s+m\s*;", CLASS + " m;", text)
+    text, declarations = re.subn(r"\bNIsoMuon\s+m\s*;",
+                                cpp_stage('constructor begin') + '\n  ' + CLASS + ' m;\n  '
+                                + cpp_stage('constructor done'), text)
     stub = work / f"unused_histogram_output_{index}.root"
     text, setters = re.subn(r'm\.SetOutfilePath\s*\(\s*"(?:\\.|[^"\\])*"\s*\)\s*;',
                            lambda _: 'm.SetOutfilePath(' + cpp_string(stub) + ');', text)
@@ -318,10 +330,68 @@ def make_replay_job(job, work, index):
                            lambda _: 'm.QCDWeightAuditWrite(' + cpp_string(output) + ');', text)
     if (declarations, setters, writers) != (1,1,1) or len(re.findall(r"m\.Loop\s*\(\s*\)", text)) != 1:
         raise ValueError("Unexpected job structure; cannot safely redirect replay output")
-    text = '#include "' + CLASS + '.h"\n' + text
+    # Wrap only the AddFile expression: preserve the original if/exit handling
+    # and invoke AddFile exactly once for each recorded input.
+    def wrap_input(match):
+        filename = json.loads(match.group(1))
+        return ('([&]() { ' + cpp_stage('AddFile begin ' + filename) + ' '
+                + 'bool added = ' + match.group() + '; '
+                + 'std::cerr << ' + cpp_string('[audit-stage] AddFile result ' + filename + ' = ')
+                + ' << added << std::endl; return added; }())')
+    text, attachments = re.subn(r'm\.AddFile\s*\(\s*("(?:\\.|[^"\\])*")\s*\)',wrap_input,text)
+    if attachments != len(job['inputs']):
+        raise ValueError('Cannot instrument all recorded AddFile calls without changing their arguments')
+    for method in ('SetOutfilePath','Init','initializeAnalyzer','initializeAnalyzerTools',
+                   'SwitchToTempDir','Loop','QCDWeightAuditWrite'):
+        pattern = r'm\.' + method + r'\s*\(\s*(?:"(?:\\.|[^"\\])*")?\s*\)\s*;'
+        text = re.sub(pattern,lambda m:'([&]() { ' + cpp_stage(method + ' begin') + ' ' + m.group()
+                      + ' ' + cpp_stage(method + ' done') + ' }());',text)
+    text = '#include <iostream>\n#include "' + CLASS + '.h"\n' + text
     path = work / (name + ".C")
     path.write_text(text)
     return path, output
+
+
+def log_tail(log):
+    try:
+        with log.open('rb') as handle:
+            handle.seek(0,os.SEEK_END)
+            handle.seek(max(0,handle.tell()-2048))
+            lines = handle.read().decode('utf-8',errors='replace').splitlines()
+        return next((line[-240:] for line in reversed(lines) if line.strip()),'log is empty')
+    except OSError as exc:
+        return f'log unavailable: {exc}'
+
+
+def run_root_job(command, work, env, log, heartbeat=30):
+    start = time.monotonic()
+    with log.open('w') as handle:
+        with subprocess.Popen(command,cwd=work,env=env,stdout=handle,stderr=subprocess.STDOUT,
+                              start_new_session=True) as process:
+            print(f'[replay-process] PID={process.pid}; log={log}',flush=True)
+            try:
+                while True:
+                    try:
+                        return process.wait(timeout=heartbeat)
+                    except subprocess.TimeoutExpired:
+                        print(f'[replay-running] PID={process.pid}; elapsed={time.monotonic()-start:.0f}s; '
+                              f'last-log={log_tail(log)}',flush=True)
+            except KeyboardInterrupt:
+                # The new session contains only the ROOT job and its children,
+                # including any compiler; do not touch unrelated user jobs.
+                try:
+                    os.killpg(process.pid,signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(process.pid,signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.wait()
+                raise
 
 
 def make_current_jobs(skflat, work, cfg, current, version, trigger, files_per_job):
@@ -424,24 +494,31 @@ def replay(ROOT, cfg, jobs, skflat, output_dir, *, libraries=None, work=None, co
     for index, job in enumerate(jobs):
         macro, output = make_replay_job(job, work, index)
         driver_name = f"audit_driver_{index}"
-        loads = '\n'.join('  if(gSystem->Load(' + cpp_string(f) + ') < 0) { gSystem->Exit(71); return; }'
-                          for f in library_files)
+        load_names = [str(f) for f in library_files]
         if context and context['mode'] == 'current':
-            loads = '  if(gSystem->Load("libLHAPDF") < 0) { gSystem->Exit(71); return; }\n' + loads
+            load_names.insert(0,'libLHAPDF')
+        loads = '\n'.join('  { ' + cpp_stage('load begin ' + name)
+                          + ' Int_t loaded=gSystem->Load(' + cpp_string(name) + '); '
+                          + 'std::cerr << ' + cpp_string('[audit-stage] load result ' + name + ' = ')
+                          + ' << loaded << std::endl; if(loaded < 0) { gSystem->Exit(71); return; } }'
+                          for name in load_names)
         # Preserve the original external-library directives (e.g. LHAPDF).
         external = '\n'.join(re.findall(r'^\s*R__LOAD_LIBRARY\([^\n]+', Path(job['path']).read_text(), re.M))
-        driver = (external + '\n#include <TSystem.h>\n#include <TROOT.h>\nvoid ' + driver_name + '() {\n' + loads
-                  + '\n  if(!gSystem->CompileMacro(' + cpp_string(work / (CLASS+'.C'))
-                  + ', "kO")) { gSystem->Exit(72); return; }\n  Int_t error=0;\n  gROOT->ProcessLine('
+        driver = (external + '\n#include <iostream>\n#include <TSystem.h>\n#include <TROOT.h>\nvoid ' + driver_name + '() {\n  '
+                  + cpp_stage('driver entered') + '\n' + loads + '\n  '
+                  + cpp_stage('compile begin') + '\n  Int_t compiled=gSystem->CompileMacro('
+                  + cpp_string(work / (CLASS+'.C')) + ', "kO");\n'
+                  + '  std::cerr << "[audit-stage] compile result = " << compiled << std::endl;\n'
+                  + '  if(!compiled) { gSystem->Exit(72); return; }\n  Int_t error=0;\n  '
+                  + cpp_stage('job macro begin') + '\n  gROOT->ProcessLine('
                   + cpp_string('.x "' + str(macro) + '"') + ', &error);\n'
+                  + '  std::cerr << "[audit-stage] job macro result = " << error << std::endl;\n'
                   + '  if(error) gSystem->Exit(73);\n}\n')
         driver_path = work / (driver_name + '.C')
         driver_path.write_text(driver)
         log = work / f'job_{index}.log'
         print(f"[replay-job] {index+1}/{len(jobs)}: {job['path']}; log={log}", flush=True)
-        with log.open('w') as handle:
-            status = subprocess.run([root_binary,'-l','-b','-q',str(driver_path)], cwd=work, env=env,
-                                    stdout=handle, stderr=subprocess.STDOUT).returncode
+        status = run_root_job([root_binary,'-l','-b','-q',str(driver_path)],work,env,log)
         if status != 0 or not output.is_file():
             raise RuntimeError(f"Replay failed (exit={status}); inspect {log}")
         entries = re.findall(r'^\[current-skim-entries\]\s+(\d+)\s*$', log.read_text(), re.M)
@@ -630,6 +707,9 @@ def main(argv=None):
         except (OSError,ValueError,KeyError,TypeError,RuntimeError) as exc:
             sys.stdout.flush()
             print(f'[ERROR] {era}: {exc}',file=sys.stderr,flush=True); status = 1
+        except KeyboardInterrupt:
+            print(f'[INTERRUPTED] {era}: replay interrupted',file=sys.stderr,flush=True)
+            return 130
     return status
 
 
