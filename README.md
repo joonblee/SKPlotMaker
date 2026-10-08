@@ -640,6 +640,36 @@ The driver executes the generated job with `gROOT->Macro()` and passes its
 absolute filename directly. A quoted filename inside a `.x` command can instead
 make ROOT report `macro ".../audit_job_0.C" not found` after compilation.
 
+To locate the selected events, reuse the completed audit without rerunning the
+analyser. `qcd_event_source_trace.py` opens the recorded skim file at its
+zero-based file-local entry and prints `run:lumi:event`, all raw muon
+`pt/eta/phi/charge` values, the raw leading pT, mass, weight and correction:
+
+```bash
+python3 -u qcd_event_source_trace.py \
+  --audit-dir plots/qcd_weight_audit/<completed-audit-directory> \
+  --sign ss --mass-range 11 80
+```
+
+Add `--original-filelist` to locate those events in the original unskimmed
+ntuples, and optionally save a new JSON report:
+
+```bash
+python3 -u qcd_event_source_trace.py \
+  --audit-dir plots/qcd_weight_audit/<completed-audit-directory> \
+  --original-filelist /data6/Users/joonblee/SKFlatAnalyzer/data/Run2UltraLegacy_v3/2016postVFP/Sample/ForSNU/QCD_Pt-120To170_MuEnriched.txt \
+  --output plots/qcd_event_sources_2016postVFP.json
+```
+
+The scanner checks all listed original files using integer `run/lumi/event`
+IDs (including the full 64-bit event number), then compares complete raw muon
+vectors. It keeps every ID collision and reports ambiguous, missing or
+kinematically inconsistent matches. An unreadable file leaves the search
+incomplete. Uniqueness is only within the supplied list. Skim output filenames
+contain job numbers and are not assumed to identify the original file number.
+All ROOT inputs are opened read-only; an existing JSON output is not overwritten.
+Raw leading pT is `max(muon_pt)`, not the selected/corrected leading muon's pT.
+
 ```bash
 python3 plotter_qcdseparate.py --era 2017 --variable all
 python3 plotter_qcdseparate.py --era Run2 --variable dimuon_mass
