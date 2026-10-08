@@ -286,6 +286,28 @@ A missing period data file/histogram is fatal, without falling back to merged
 data. `--qcd-normalisation-diagnostics` is restricted to full-era producer-input
 audits and cannot be combined with `--data-period`.
 
+#### Jet kinematics of previously selected QCD events
+
+For the previously traced `QCD_Pt-120To170_MuEnriched` selected SS events,
+`qcd_selected_jet_diagnostics.py` reads only their recorded file-local entries:
+
+```bash
+python3 -u qcd_selected_jet_diagnostics.py \
+    --source-report plots/qcd_event_sources_2016postVFP.json \
+    --sign ss --mass-range 11 80 2>&1 | tee plots/qcd_selected_jets_postVFP.log
+```
+
+Use `--input original` to inspect the uniquely matched original files instead
+of the skim (default). The existing source-trace JSON is required. Event IDs
+are checked exactly, including the 64-bit event number. All AK4 jets are
+printed with their vector index, stored `jet_pt`, nominal JER factor,
+`jet_pt * jet_smearedRes`, eta/phi, DeepJet (`jet_DeepFlavour`) and tight jet ID
+when present. This follows the nominal MC `AnalyzerCore::GetAllJets()` pT
+convention. Stored `jet_pt` is not an uncorrected raw jet pT. The output contains
+all jets without selection cuts; the old audit did not record selected dimuon
+jet/tag jet indices. Do not interpret the leading stored jet as the selected
+dimuon jet automatically. Inputs, weights and production outputs are unchanged.
+
 #### Statistical uncertainty of the QCD prediction
 
 Individual-era `ss-data` production now also writes `QCDStat/metadata` into both
