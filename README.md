@@ -308,6 +308,26 @@ all jets without selection cuts; the old audit did not record selected dimuon
 jet/tag jet indices. Do not interpret the leading stored jet as the selected
 dimuon jet automatically. Inputs, weights and production outputs are unchanged.
 
+For other eras without a source-trace JSON, read a completed selected-event
+audit directly (one selected audit directory at a time):
+
+```bash
+find plots/qcd_weight_audit -type f -name 'selected_weights_0.root'
+python3 -u qcd_selected_jet_diagnostics.py \
+    --audit-dir plots/qcd_weight_audit/<ERA_AUDIT_DIRECTORY> \
+    --sign ss --mass-range 11 80
+```
+
+The audit directory must contain `manifest.json` and all `selected_weights_*.root`
+outputs. Recorded job counts are checked, and duplicate fills are rejected.
+This reads saved selection results for any era; it does not reconstruct selection
+from a merged histogram or run a new replay. Audit-only mode reads IDs from the
+skim at the recorded entry, without an independent original-file ID match.
+`--input original` therefore still requires a verified source-trace JSON.
+A zero-yield window is reported successfully with zero selected fills, including
+the previously audited 2016preVFP SS 11--80 window. To compare actual jets in that
+era use SS 5--9 or OS 11--80, explicitly choosing `--sign` / `--mass-range`.
+
 #### Statistical uncertainty of the QCD prediction
 
 Individual-era `ss-data` production now also writes `QCDStat/metadata` into both
