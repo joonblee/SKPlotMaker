@@ -308,6 +308,26 @@ ROOT file without another method option. Switching methods regenerates the
 same `NIsoMuon_SS_fit.root` output, including nominal, Norm/Shape and statistical
 basis histograms. `qcd_yield_diagnostics.py` also reports the selected method and
 distinguishes the measured MC double ratio from the applied transport.
+
+To verify that a regenerated template reaches the final plot, use the existing
+`plotter.py ... --qcd-normalisation-diagnostics --strict` command above and check
+`[qcd-transfer-check]` for `method=run-common` and
+`T_high=R_data(low)*D_common`. The individual-era producer log must also end in
+`[SAVE] .../<ERA>/NIsoMuon_SS_fit.root` and `[DONE]` for each era. A validation
+report alone does not replace a template, and regenerating a template does not
+redraw an existing final plot. The `FitPlot_FnVariation-SS_fit_...` figures show
+SS shapes before OS transport, so their normalisation does not acquire the
+common factor. The low window retains its local data factor; only the high
+window receives the common MC double ratio.
+
+A compatible common MC double ratio tests era dependence of MC transport, not
+closure with observed OS residuals. Relative to `data-low`, the high-mass QCD
+yield is multiplied by `D_common` for identical SS shapes and low-data inputs.
+Relative to `mc-double-ratio`, it is multiplied by `D_common/D_era`. The common
+method can therefore change the central yield substantially even when the
+compatibility test passes. Use the read-only yield audit below to check closure
+and stored/current input agreement separately.
+
 `data-low` retains the current low-mass data/MC `QCD_norm`
 modelling comparison in both regions and propagates the common data-ratio
 statistics, without MC transport statistics. Shape fits and mass windows are
@@ -515,6 +535,8 @@ orthogonal validation selection.
 | `hadd.sh` | ROOT-file merger | Converts many analyser outputs into the standard process files expected by the rest of the workflow. Keeps aMC and MG DY samples separate and builds `tt`, `ST`, `Top`, `QCD`, `Others`, and data files. |
 | `dy_bkg_estimation.py` | DY data-driven estimate | Builds the light-jet-data-based DY prediction. NF is the production method; TF is retained for closure/model cross-checks. |
 | `qcd_bkg_estimation.py` | QCD data-driven and MC fits | Fits SS data for the production QCD shape and uncertainties, and fits QCD MC for validation/model studies. |
+| `qcd_common_transfer.py` | Shared QCD transport and statistics | Imported by the estimator and main plotter; fits the common Run-2/Run-3 MC double ratio and preserves its correlation across eras. Required for production. |
+| `qcd_yield_diagnostics.py` | QCD yield and closure audit | Reads component yields, SS-fit closure and stored/current transfer inputs without changing templates. |
 | `NIsoMuon_SS_fit_anchors.json` | QCD fit-anchor catalogue | Stores SS fit results used to initialise/anchor later QCD fits across eras and combined periods. This is shared state, so concurrent writers should be avoided. |
 | `plotter.py` | Main final/validation plotter | Reads nominal and systematic ROOT templates, combines eras, applies blinding, builds uncertainty bands, overlays signals, and produces the standard CMS-style plots. |
 | `plotter_qcdseparate.py` | QCD composition validation | Replaces inclusive QCD with the individual QCD `pT`-binned MuEnriched samples to check which generated `pT` bins dominate a distribution. One common QCD normalisation factor preserves their relative composition. |
@@ -589,7 +611,7 @@ python3 sigFit.py --era Run3
 python3 sigFit_v2.py --era Run2 --build-interpolation --interpolation-step 1
 ```
 
-## QCD pT-bin and OS/SS diagnostic examples
+## QCD yield and OS/SS diagnostic examples
 
 For a read-only native-yield audit of the four Run-2 eras:
 
@@ -608,163 +630,6 @@ subtraction excludes DY; SS validation-plot factors include DY MC, as in the
 supplied validation plots. Without `--unblind`, high-mass OS observations and
 OS global factors remain hidden. The script opens ROOT files in READ mode,
 does not refit or change templates, and writes no files.
-
-To decompose QCD MC into the individual MuEnriched generated-pT files:
-
-```bash
-python3 qcd_pt_yield_diagnostics.py --era 2016preVFP 2016postVFP 2017 2018
-python3 qcd_pt_yield_diagnostics.py --era 2016postVFP --sample 80To120
-```
-
-This discovers every `Skim_NIsoMuon_QCD_Pt-*_MuEnriched.root` file using the
-same pattern as `hadd.sh`, including low-pT samples. It prints native OS/SS
-weighted yields, stored-Sumw2 statistical errors, effective MC statistics,
-sample fractions, OS/SS ratios and high/low ratios in the production transfer
-windows, 11--15 GeV and its four 1-GeV bins. The sample sum is checked against
-`NIsoMuon_QCD_Inclusive.root` in both yield and Sumw2. `D_without` and `delta_D`
-show how the MC double ratio changes when one sample is excluded; these are
-composition diagnostics, not significance estimates or changes to the estimate.
-`--sample` filters displayed rows only: all files still enter the total and
-inclusive audit. Missing Sumw2 leaves statistical errors unknown. Missing sample
-histograms are reported with unknown yields; an incomplete sum is labelled
-`KNOWN_SUM`, with coverage printed explicitly. All ROOT files are opened in
-READ mode; the script reads no observed data histograms, applies no
-additional normalisation, and writes no files. `--base-dir` and `--trigger`
-select the same input layout as `plotter.py`.
-
-To audit the normalisation and selected weights of the 120--170 GeV sample:
-
-```bash
-python3 qcd_sample_weight_audit.py --era 2016preVFP 2016postVFP
-```
-
-The default read-only audit compares current `CommonSampleInfo` values with
-the `xsec`, `sumSign` and `sumW` recorded in matching nominal production
-`run.C`/`run_*.C` files. It prints the current SKFlat branch/commit, file-list
-counts, duplicate inputs and histogram weight moments. `--skflat-dir` defaults
-to `SKFlat_WD` (otherwise the sibling `SKFlatAnalyzer` directory); `--runlog-dir`
-defaults to `SKFlatRunlogDir` or `/data6/Users/<USER>/SKRunlog`. Use `--sample`
-to inspect another pT sample and `--data-version` for a different metadata set.
-Current metadata and candidate run configurations are not automatically
-identified as the inputs of an existing ROOT output. `MCweight()` uses
-`sumSign` with its default `usesign=true`; both normalisation denominators are
-reported. Generated/skim counts, selected histogram fills and effective MC
-statistics are distinct quantities.
-
-If no production is found, inspect discovery separately without ROOT:
-
-```bash
-python3 qcd_sample_weight_audit.py --era 2016preVFP 2016postVFP \
-  --find-production-only --runlog-dir /data6/Users/joonblee/SKRunlog
-```
-
-`production-search` prints the resolved directory, scanned macro count,
-matching jobs and rejection reasons with examples. Matching uses macro contents;
-an archive need not retain the original sample-directory name. Set
-`--runlog-dir` to another saved archive or a specific production/sample directory
-if needed. Linked subdirectories are listed but are not followed recursively;
-select the linked target directly. `--production-tag` only selects an already
-discovered production and cannot resolve an incorrect or missing archive path.
-If the production macros or saved libraries are gone, historical replay cannot
-be performed from the weighted histograms alone.
-
-To audit selected events without a production archive, explicitly use the
-current configuration in the configured SKFlat ROOT/CMSSW environment:
-
-```bash
-python3 -u qcd_sample_weight_audit.py --era 2016preVFP 2016postVFP \
-  --replay-current --output-dir plots/qcd_weight_audit --top 10
-```
-
-This mode uses current `CommonSampleInfo`, the complete
-`ForSNU/SkimTree_NIsoMuon_<sample>.txt` list, current analyser source and current
-compiled libraries (`SKFlat_LIB_PATH`, otherwise `SKFlatAnalyzer/lib`; override
-with `--library-dir`). It requires no archived macros. The reconstructed jobs
-have empty nominal `Userflags`, `IsDATA=false`, `IsFastSim=false`, tree
-`recoTree/SKFlat` and `TriggerInput=HighPtMuon` (override only with
-`--current-trigger`). `--trigger` continues to select the histogram input
-directory; it does not set the analyser trigger. All skim files are processed
-sequentially in groups of `--files-per-job` (default 32), with no event limit.
-The original source and production outputs are preserved and no existing
-libraries are rebuilt. The copied audit source is compiled in a new directory.
-Skim entry counts are reported separately from generated and selected counts.
-The manifest records that this is a current-configuration replay, not historical
-production. Yield and Sumw2 closure against the existing ROOT file is required
-in all reported windows. A mismatch means the current replay does not reproduce
-the existing output; even matching moments do not recover the historical
-configuration or prove event-level identity.
-
-Weighted mass histograms do not retain per-window unweighted counts or
-individual event weights. To obtain those quantities, replay one production:
-
-```bash
-python3 qcd_sample_weight_audit.py --era 2016postVFP --replay \
-  --output-dir plots/qcd_weight_audit
-```
-
-If multiple nominal productions are found, specify `--production-tag` using
-the exact tag printed by `candidate-production`. Replay runs all recorded jobs
-on their MC input ntuples with the saved production libraries. It copies and
-renames the current NIsoMuon source into a new audit directory and records
-weights at the existing nominal mass-histogram fill call. Original analyser
-sources, job macros and production ROOT files are never rewritten. Replay
-requires the compatible ROOT/CMSSW environment and can take as long as processing
-the sample; it submits no batch jobs. The new tree contains mass, sign, final
-weight, raw generator weight, MC normalisation, trigger luminosity, the combined
-correction factor and the input-file/local-entry identity. It prints exact
-selected fills, weight distributions and the largest weights per mass window.
-Every reported yield and Sumw2 must close against the existing histogram before
-the replay is labelled validated. A closure failure leaves the association with
-the original production unverified; matching moments alone do not establish
-source-version identity. The audit directory retains copied sources, macros,
-logs, selected-weight ROOT trees and a hashed provenance manifest.
-
-Replay logs include flushed `[audit-stage]` begin/result messages for each
-library load, audit-source compilation, analyser construction, individual
-`AddFile`, initialisation, `Loop` and audit-tree writing. The terminal also
-prints the subprocess PID and a `[replay-running]` heartbeat every 30 seconds
-with elapsed time and the latest log line. Use `tail -f` on the printed job log
-to identify the last stage; `Processing .../audit_driver_*.C...` alone does not
-establish that event processing has started. Ctrl-C stops only the replay's
-own subprocess group, including compiler children. It does not remove audit
-files or terminate other user jobs.
-
-The driver executes the generated job with `gROOT->Macro()` and passes its
-absolute filename directly. A quoted filename inside a `.x` command can instead
-make ROOT report `macro ".../audit_job_0.C" not found` after compilation.
-
-To locate the selected events, reuse the completed audit without rerunning the
-analyser. `qcd_event_source_trace.py` opens the recorded skim file at its
-zero-based file-local entry and prints `run:lumi:event`, all raw muon
-`pt/eta/phi/charge` values, the raw leading pT, mass, weight and correction:
-
-```bash
-python3 -u qcd_event_source_trace.py \
-  --audit-dir plots/qcd_weight_audit/<completed-audit-directory> \
-  --sign ss --mass-range 11 80
-```
-
-Add `--original-filelist` to locate those events in the original unskimmed
-ntuples, and optionally save a new JSON report:
-
-```bash
-python3 -u qcd_event_source_trace.py \
-  --audit-dir plots/qcd_weight_audit/<completed-audit-directory> \
-  --original-filelist /data6/Users/joonblee/SKFlatAnalyzer/data/Run2UltraLegacy_v3/2016postVFP/Sample/ForSNU/QCD_Pt-120To170_MuEnriched.txt \
-  --output plots/qcd_event_sources_2016postVFP.json
-```
-
-The scanner checks all listed original files using integer `run/lumi/event`
-IDs (including the full 64-bit event number), then compares complete raw muon
-vectors. ID branches may have differently named leaves; the scanner checks each
-branch's single scalar leaf and prints the skim branch/leaf mapping. It rejects
-arrays, multi-leaf ID branches and incompatible types without a lossy conversion.
-It keeps every ID collision and reports ambiguous, missing or
-kinematically inconsistent matches. An unreadable file leaves the search
-incomplete. Uniqueness is only within the supplied list. Skim output filenames
-contain job numbers and are not assumed to identify the original file number.
-All ROOT inputs are opened read-only; an existing JSON output is not overwritten.
-Raw leading pT is `max(muon_pt)`, not the selected/corrected leading muon's pT.
 
 ```bash
 python3 plotter_qcdseparate.py --era 2017 --variable all
