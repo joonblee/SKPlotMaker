@@ -114,7 +114,10 @@ era-local, and use one GLS-fitted MC high/low double ratio per Run 2 or Run 3.
 changing fits, anchors or ROOT templates. Read `qcd_common_transfer.py` before
 changing the common fit/statistics; its MC component is correlated within Run,
 and v3 consumers must preserve that correlation. The previous per-era method
-remains available as `--qcd-transfer-method mc-double-ratio`.
+remains available as `--transfer-method era-specific`. The old option
+`--qcd-transfer-method` and value `mc-double-ratio` remain aliases. Per-era ROOT
+metadata retain `mc-double-ratio` for consumer compatibility; do not change
+that identifier as a CLI-only rename.
 
 `qcd-mc` is a modelling/cross-check mode.  For the current working convention, when running QCD-MC fits use the log-chi-square objective explicitly:
 

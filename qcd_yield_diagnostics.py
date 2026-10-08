@@ -8,6 +8,7 @@ OS subtraction: Data - Top - Others - DY DD.
 SS subtraction: Data - Top - Others (DY MC is printed, not subtracted).
 Calibration windows come from QCDStat metadata/derivatives when available.
 Stored diagnostics distinguish the selected transport from the measured MC ratio.
+The per-era method is displayed as era-specific, including legacy ROOT metadata.
 Also print 11--15 GeV and its four 1-GeV bins. The separate validation-plot
 scale factors use --plot-range (default 5--120 GeV), never the transfer windows.
 No fitting, histogram scaling, template regeneration or output files.
@@ -24,6 +25,7 @@ from pathlib import Path
 
 import plotter as p
 from qcd_bkg_estimation import QCD_TRANSFER_LOW_WINDOW, QCD_TRANSFER_HIGH_WINDOW
+from qcd_common_transfer import transfer_method_label
 
 
 def ratio(numerator, denominator):
@@ -165,7 +167,7 @@ def inspect_era(ROOT, cfg, plot_range):
         applied = ((metadata or {})["transfer_statistics"]["mc_double_ratio"] if method == "run-common" else
                    1.0 if method == "data-low" else double_mc)
         transported = None if r_low is None or applied is None else r_low * applied
-        print(f"\n[transfer/current] method={method}, R_low_data={fmt(r_low)}, R_low_MC={fmt(mc_low)}, "
+        print(f"\n[transfer/current] method={transfer_method_label(method)}, R_low_data={fmt(r_low)}, R_low_MC={fmt(mc_low)}, "
               f"R_high_data={fmt(r_high)}, R_high_MC={fmt(mc_high)}, "
               f"MC-double-ratio={fmt(double_mc)}, applied-transport={fmt(applied)}, T_high={fmt(transported)}, "
               f"T_high/R_high_data={fmt(ratio(transported, r_high))}")
@@ -177,7 +179,7 @@ def inspect_era(ROOT, cfg, plot_range):
                       f"chi2/ndf={common['chi2']:.6g}/{common['ndf']}, p={common['pvalue']:.6g}; "
                       "current transport uses the stored common fit; rerun MC-only validation to audit all current era inputs")
             measured = transfer.get("measured_mc_double_ratio", transfer["mc_double_ratio"])
-            print(f"[transfer/stored] method={transfer.get('method', 'mc-double-ratio')}, "
+            print(f"[transfer/stored] method={transfer_method_label(transfer.get('method', 'mc-double-ratio'))}, "
                   f"R_low_data={fmt(transfer['low_transfer'])}, MC-double-ratio={fmt(measured)}, "
                   f"applied-transport={fmt(transfer['mc_double_ratio'])}, T_high={fmt(transfer['high_transfer'])}")
             for label, key, sign, proc, index in (

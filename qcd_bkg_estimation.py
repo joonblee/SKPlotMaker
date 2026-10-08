@@ -41,9 +41,9 @@ Fit modes and objectives
       Bin-integrated statistical chi-square; produces the central SS-based QCD
       template plus Norm and analytic-function-envelope Shape variations,
       and QCDStat/metadata for statistical yield propagation.
-      --qcd-transfer-method run-common (default) transports era-local R_data(low)
+      --transfer-method run-common (default) transports era-local R_data(low)
       to high mass with a common Run2/Run3 MC double ratio fitted in log space.
-      mc-double-ratio retains the previous per-era MC transport. data-low uses R_data(low) in
+      era-specific retains the previous per-era MC transport. data-low uses R_data(low) in
       both regions, with no MC transport statistical uncertainty. QCD_norm
       retains the low-mass data/MC log-symmetric modelling comparison.
       The method is recorded in ROOT metadata; regenerate individual-era
@@ -86,7 +86,8 @@ Main optional controls
   --ss-binning {auto,regular,legacy,adaptive}
   --ss-min-effective-count VALUE   adaptive target, default: 25
   --ss-max-bin-width GEV           adaptive width cap, default: 5
-  --qcd-transfer-method {run-common,mc-double-ratio,data-low}
+  --transfer-method {run-common,era-specific,data-low}
+      --qcd-transfer-method and mc-double-ratio remain compatibility aliases
   --validate-qcd-double-ratio     MC-only JSON/CSV/PDF/PNG compatibility report;
                                  no SS fits, anchors or ROOT templates changed
   --qcd-transfer-validation-pmin VALUE   default 0.05; failed common fits stop
@@ -127,7 +128,7 @@ Examples
       --validate-qcd-double-ratio
   python3 qcd_bkg_estimation.py --mode ss-data --year 2018
   python3 qcd_bkg_estimation.py --mode ss-data --year 2016postVFP \
-      --qcd-transfer-method data-low
+      --transfer-method data-low
   python3 qcd_bkg_estimation.py --mode ss-data --year Run2
   python3 qcd_bkg_estimation.py --mode ss-data --year Run3
   python3 qcd_bkg_estimation.py --mode ss-data --year 2022 \
@@ -215,6 +216,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from qcd_common_transfer import (
     COMMON_STAT_SCHEMA, COMMON_STAT_TREATMENT, GROUP_ERAS, MC_KEYS,
     fit_common_double_ratio, qcd_stat_components, transfer_group, validate_common_transfer,
+    transfer_method_label,
 )
 
 QCD_STAT_SCHEMA = "NPS26009_QCDStat_v2"
@@ -223,6 +225,14 @@ QCD_STAT_TREATMENT = "linear_bound_unknown_nf_fit_correlation"
 QCD_TRANSFER_METHODS = ("run-common", "mc-double-ratio", "data-low")
 QCD_STAT_BASIS = (["CentralYield"] + [f"FitGradient_{i}" for i in range(5)]
                   + ["NFGradient_low_transfer", "NFGradient_mc_double_ratio"])
+
+
+def parse_transfer_method(value):
+    """Resolve CLI names without changing stored identifiers or physics rules."""
+    method = "mc-double-ratio" if value == "era-specific" else value
+    if method not in QCD_TRANSFER_METHODS:
+        raise argparse.ArgumentTypeError("choose run-common, era-specific or data-low")
+    return method
 
 # Positive abscissae and weights of 16-point Gauss-Legendre quadrature.
 _GL16 = (
@@ -1036,12 +1046,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--analyzer", default="NIsoMuon")
     parser.add_argument("--base-dir", default=DEFAULT_BASE_DIR)
     parser.add_argument(
-        "--qcd-transfer-method", choices=QCD_TRANSFER_METHODS, default="run-common",
+        "--transfer-method", "--qcd-transfer-method", dest="qcd_transfer_method",
+        type=parse_transfer_method, default="run-common",
+        metavar="{run-common,era-specific,data-low}",
         help=("Individual-era SS-data templates: run-common (default) uses era-local "
               "R_data(low) times a common Run2/Run3 MC double ratio, fitted in log space. "
-              "mc-double-ratio uses the same era's MC ratio; data-low uses "
+              "era-specific uses the same era's MC ratio; data-low uses "
               "R_data(low) in both regions, without MC transport statistics. "
-              "QCD_norm keeps the low-mass data/MC modelling comparison."),
+              "QCD_norm keeps the low-mass data/MC modelling comparison. "
+              "Legacy aliases: --qcd-transfer-method and mc-double-ratio."),
     )
     parser.add_argument("--validate-qcd-double-ratio", action="store_true",
                         help="MC-only common-factor compatibility report for the requested Run(s); no SS fits, anchors or ROOT templates written.")
@@ -3747,7 +3760,7 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
         )
         high_recipe = (f"DT(low) * D_common({common_transfer['group']})" if method == "run-common" else
                        "DT(low) * MC(high) / MC(low)" if method == "mc-double-ratio" else "DT(low)")
-        print(f"[fit.root] QCD transfer method = {method}")
+        print(f"[fit.root] QCD transfer method = {transfer_method_label(method)}")
         print(f"[fit.root] High-mass central OS/SS = {high_recipe} = {high_normalisation:g}")
         print(
             "[fit.root] Low-mass Norm lnN vs MC(low): "
@@ -3971,7 +3984,7 @@ def close_files(files: Sequence[object]) -> None:
 def run(args: argparse.Namespace) -> int:
     mode = canonical_mode(args.mode)
     if args.qcd_transfer_method == "data-low" and (mode.key != SS_MODE.key or len(input_dirs(args)) != 1):
-        raise ValueError("--qcd-transfer-method data-low requires an individual-era ss-data template run; combined periods write only anchors.")
+        raise ValueError("--transfer-method data-low requires an individual-era ss-data template run; combined periods write only anchors.")
     if not math.isfinite(args.qcd_transfer_validation_pmin) or not 0 < args.qcd_transfer_validation_pmin < 1:
         raise ValueError("--qcd-transfer-validation-pmin must be between 0 and 1")
     if args.qcd_transfer_log_covariance and args.qcd_transfer_method != "run-common":

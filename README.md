@@ -287,18 +287,21 @@ change. Regenerate the affected ROOT templates after changing these windows.
 The separate `plotter.py` low window governs blinded QCD-MC validation
 normalisation, not the SS-data estimator's factor calculation.
 
-Individual-era SS templates accept `--qcd-transfer-method`:
+Individual-era SS templates accept `--transfer-method`:
 `run-common` (default) uses era-local `R_data(low)` in the low region and
 `R_data(low) * D_common` in the high region. One MC double ratio is fitted for
 the four Run-2 eras and another for the four Run-3 eras. Every era's SS shape
-fit and low-data calibration remain local. `mc-double-ratio` retains the
+fit and low-data calibration remain local. `era-specific` retains the
 previous same-era `R_data(low) * R_MC(high) / R_MC(low)` high factor; `data-low`
-uses `R_data(low)` in both regions:
+uses `R_data(low)` in both regions.
+
+The old option `--qcd-transfer-method` remains an alias, and the old value
+`mc-double-ratio` is an alias for `era-specific`.
 
 ```bash
 python3 qcd_bkg_estimation.py --mode ss-data --year 2016postVFP \
     --ss-binning adaptive --ss-min-effective-count 10 --ss-max-bin-width 5 \
-    --qcd-transfer-method data-low
+    --transfer-method data-low
 python3 plotter.py --era 2016postVFP --unblind --variable dimuon_mass \
     --uncertainty syst+stat --qcd-normalisation-diagnostics --strict
 ```
@@ -323,7 +326,7 @@ window receives the common MC double ratio.
 A compatible common MC double ratio tests era dependence of MC transport, not
 closure with observed OS residuals. Relative to `data-low`, the high-mass QCD
 yield is multiplied by `D_common` for identical SS shapes and low-data inputs.
-Relative to `mc-double-ratio`, it is multiplied by `D_common/D_era`. The common
+Relative to `era-specific`, it is multiplied by `D_common/D_era`. The common
 method can therefore change the central yield substantially even when the
 compatibility test passes. Use the read-only yield audit below to check closure
 and stored/current input agreement separately.
@@ -333,12 +336,14 @@ modelling comparison in both regions and propagates the common data-ratio
 statistics, without MC transport statistics. Shape fits and mass windows are
 unchanged. QCD MC inputs remain required for the modelling comparison and
 diagnostics. Older files without a method field are treated as
-`mc-double-ratio`. For compatibility with derivative-basis consumers, the
-legacy `mc_double_ratio`/`double_ratio_variance` metadata keys contain the
+`era-specific`. The per-era method continues to store `mc-double-ratio` in
+ROOT metadata so existing plotter and Combine consumers remain compatible;
+User-facing logs display `era-specific`. For compatibility with derivative-basis
+consumers, the legacy `mc_double_ratio`/`double_ratio_variance` metadata keys contain the
 applied transport (1/0 in `data-low`); measured MC values are retained separately
 as `measured_mc_double_ratio` and `measured_double_ratio_variance`.
 Run individual eras sequentially; combined periods write only SS anchors.
-Pass `--qcd-transfer-method mc-double-ratio` explicitly to restore the previous
+Pass `--transfer-method era-specific` explicitly to restore the previous
 per-era MC prescription by regenerating that era's template.
 
 #### Common MC transport validation

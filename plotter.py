@@ -68,7 +68,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from qcd_common_transfer import (
     COMMON_STAT_SCHEMA, COMMON_STAT_TREATMENT, combine_qcd_stat_components,
-    qcd_stat_components, validate_common_transfer,
+    qcd_stat_components, validate_common_transfer, transfer_method_label,
 )
 
 
@@ -327,7 +327,7 @@ def write_qcd_normalisation_diagnostics(ROOT, cfg, years, qcd_factor):
             report["years"][year] = dict(windows=windows, window_source=window_source,
                 fit_model=inputs[0]["fit"]["model"], fit_range=inputs[0].get("fit_range"),
                 transfer=transfer, stored_vs_current_anchor_inputs=comparisons, rows=rows)
-            print(f"[qcd-norm-diag] {year}: method={transfer.get('method', 'mc-double-ratio')}, "
+            print(f"[qcd-norm-diag] {year}: method={transfer_method_label(transfer.get('method', 'mc-double-ratio'))}, "
                   f"windows={windows} ({window_source})")
             fmt = lambda value: "undefined(non-positive denominator)" if value is None else f"{value:.6g}"
             for row in rows:
@@ -1438,7 +1438,7 @@ def add_qcd_stat_uncertainty(ROOT, cfg, years, by_year, stat, scale, transfers=N
                       "R_data*R_MC_high/R_MC_low" if method == "mc-double-ratio" else "R_data(low)")
             print(f"[qcd-transfer-check] {year}: {windows[0][0]:g}--{windows[0][1]:g} GeV R_data={data_low:.6g}, "
                   f"R_MC={mc_low:.6g}; {windows[1][0]:g}--{windows[1][1]:g} GeV R_MC={mc_high:.6g}, "
-                  f"T_high={transfer['high_transfer']:.6g} (={recipe}); method={method}; "
+                  f"T_high={transfer['high_transfer']:.6g} (={recipe}); method={transfer_method_label(method)}; "
                   "no additional QCD normalisation")
             native = inputs[1]
             for ib in range(1, nominal.GetNbinsX() + 1):

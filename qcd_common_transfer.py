@@ -17,6 +17,11 @@ GROUP_ERAS = {
 MC_KEYS = ("mc_os_low", "mc_ss_low", "mc_os_high", "mc_ss_high")
 
 
+def transfer_method_label(method):
+    """Public name; retain the legacy per-era identifier in ROOT metadata."""
+    return "era-specific" if method == "mc-double-ratio" else method
+
+
 def transfer_group(era):
     for group, eras in GROUP_ERAS.items():
         if era in eras:
