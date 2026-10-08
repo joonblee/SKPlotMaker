@@ -10,6 +10,8 @@ needed. Default selection: SS, 11 <= dimuon mass < 80 GeV. The stored input_file
 and zero-based file-local entry locate the skim event. Reads integer run/lumi/
 event IDs and ALL raw muon pt/eta/phi/charge values from that entry. Raw leading
 pt is max(muon_pt), not necessarily the selected/corrected analyser muon's pt.
+ID types are checked on each branch's single scalar leaf; its name may differ
+from the branch name. Skim ID branch/leaf mappings are printed for inspection.
 
 With --original-filelist, scans ALL listed original ntuples for exact integer
 run:lumi:event matches and compares the complete raw muon vectors. Scanning
@@ -103,11 +105,23 @@ def enable_branches(tree, names):
 
 def validate_id_types(tree):
     require_branches(tree, ID_TYPES)
+    schema = {}
     for name, expected in ID_TYPES.items():
-        leaf = tree.GetLeaf(name)
-        actual = str(leaf.GetTypeName()) if leaf else 'no scalar leaf'
+        # SKFlat branch and leaf names need not match. Resolve within the branch
+        # rather than looking for an unrelated same-named leaf in the tree.
+        leaves = tree.GetBranch(name).GetListOfLeaves()
+        count = int(leaves.GetEntries()) if leaves else 0
+        if count != 1:
+            found = [str(leaves.At(index).GetName()) for index in range(count)]
+            raise ValueError(f'{name} leaves={found}; expected one scalar {expected} leaf')
+        leaf = leaves.At(0)
+        leaf_name, actual = str(leaf.GetName()), str(leaf.GetTypeName())
+        if leaf.GetLeafCount() or int(leaf.GetLenStatic()) != 1:
+            raise ValueError(f'{name} leaf={leaf_name} is an array; expected scalar {expected}')
         if actual != expected:
-            raise ValueError(f'{name} type={actual}; expected {expected}; no lossy ID conversion')
+            raise ValueError(f'{name} leaf={leaf_name} type={actual}; expected {expected}; no lossy ID conversion')
+        schema[name] = dict(leaf=leaf_name, type=actual)
+    return schema
 
 
 def event_key(row):
@@ -176,7 +190,8 @@ def enrich_skim_entries(ROOT, records, tree_name):
     for filename, rows in groups.items():
         handle, tree = open_tree(ROOT, filename, tree_name)
         try:
-            validate_id_types(tree)
+            schema = validate_id_types(tree)
+            emit('skim-id-schema', dict(input_file=filename, branches=schema))
             enable_branches(tree, (*ID_TYPES, *MUON_BRANCHES))
             for row in rows:
                 row.update(read_event(tree, row['local_entry']))

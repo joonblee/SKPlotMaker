@@ -663,7 +663,10 @@ python3 -u qcd_event_source_trace.py \
 
 The scanner checks all listed original files using integer `run/lumi/event`
 IDs (including the full 64-bit event number), then compares complete raw muon
-vectors. It keeps every ID collision and reports ambiguous, missing or
+vectors. ID branches may have differently named leaves; the scanner checks each
+branch's single scalar leaf and prints the skim branch/leaf mapping. It rejects
+arrays, multi-leaf ID branches and incompatible types without a lossy conversion.
+It keeps every ID collision and reports ambiguous, missing or
 kinematically inconsistent matches. An unreadable file leaves the search
 incomplete. Uniqueness is only within the supplied list. Skim output filenames
 contain job numbers and are not assumed to identify the original file number.
