@@ -29,6 +29,9 @@ Revision 2 updates:
   - keeps event-yield and differential-cross-section normalisations only
   - retains the manual cumulative-TH1 stack used to avoid ROOT THStack painting
     crashes in some CMSSW/PyROOT releases
+  - --data-period F/G/H selects 2016postVFP SingleMuon data and scales full-era
+    predictions and their uncertainties by certified period/full-era luminosity;
+    DD predictions reuse the full-era estimates, without a period-specific refit
 
 Run with no arguments to print the detailed instructions:
 
@@ -69,6 +72,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from qcd_common_transfer import (
     COMMON_STAT_SCHEMA, COMMON_STAT_TREATMENT, combine_qcd_stat_components,
     qcd_stat_components, validate_common_transfer, transfer_method_label,
+    POSTVFP_DATA_LUMI_FB, POSTVFP_MC_LUMI_FB, POSTVFP_LUMI_SOURCE,
 )
 
 
@@ -528,6 +532,9 @@ class Config:
     base_dir: str = "/data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon"
     era: str = "Run2"
     trigger: str = ""
+    data_period: Optional[str] = None
+    period_lumi_fb: Optional[float] = None
+    mc_lumi_fb: Optional[float] = None
 
     variable: str = "dimuon_mass"
 
@@ -899,6 +906,40 @@ def lumi_pb_for_years(years: Sequence[str]) -> float:
     return sum(lumi_fb(year) * 1000.0 for year in years)
 
 
+def validate_data_period(cfg: Config) -> None:
+    """Validate the diagnostic selection before opening ROOT or data files."""
+    if not cfg.data_period:
+        if cfg.period_lumi_fb is not None or cfg.mc_lumi_fb is not None:
+            raise ValueError("Luminosity overrides require --data-period.")
+        return
+    if cfg.era != "2016postVFP" or cfg.data_period not in POSTVFP_DATA_LUMI_FB:
+        raise ValueError("--data-period F/G/H requires --era 2016postVFP.")
+    lumi = selected_period_lumi_fb(cfg)
+    mc_lumi = POSTVFP_MC_LUMI_FB if cfg.mc_lumi_fb is None else cfg.mc_lumi_fb
+    if not (math.isfinite(lumi) and math.isfinite(mc_lumi) and 0 < lumi <= mc_lumi):
+        raise ValueError("Period/MC luminosities must be finite and 0 < period <= MC.")
+    if cfg.qcd_normalisation_diagnostics:
+        raise ValueError("--qcd-normalisation-diagnostics audits full-era producer inputs; "
+                         "run it without --data-period.")
+
+
+def selected_period_lumi_fb(cfg: Config) -> float:
+    return (POSTVFP_DATA_LUMI_FB[cfg.data_period] if cfg.period_lumi_fb is None
+            else cfg.period_lumi_fb)
+
+
+def period_prediction_scale(cfg: Config, year: str) -> float:
+    if not cfg.data_period:
+        return 1.0
+    if year != "2016postVFP":
+        raise ValueError("Period prediction scaling is only defined for 2016postVFP.")
+    return selected_period_lumi_fb(cfg) / (POSTVFP_MC_LUMI_FB if cfg.mc_lumi_fb is None else cfg.mc_lumi_fb)
+
+
+def plot_era_tag(cfg: Config) -> str:
+    return f"{cfg.era}_SingleMuon_{cfg.data_period}" if cfg.data_period else cfg.era
+
+
 def lumi_label(era: str, lumi_pb: float) -> str:
     canonical = canonical_era(era)
     if canonical in {"full", "Run2+3"}:
@@ -999,7 +1040,8 @@ def process_file(
     if process == "data":
         if is_syst:
             return ""
-        return os.path.join(nominal_dir, "data.root")
+        name = f"Skim_NIsoMuon_SingleMuon_{cfg.data_period}.root" if cfg.data_period else "data.root"
+        return os.path.join(nominal_dir, name)
 
     if process == "sig":
         sig = find_signal_file(
@@ -1084,7 +1126,7 @@ def load_year_hist(
     if not filename:
         return None
     region = syst_region(cfg, syst_suffix) if syst_suffix else base_region(cfg)
-    return open_hist(
+    h = open_hist(
         ROOT,
         cfg,
         filename,
@@ -1092,6 +1134,12 @@ def load_year_hist(
         warnings,
         report_missing=report_missing,
     )
+    if h and process != "data":
+        apply_scale(h, period_prediction_scale(cfg, year))
+    # A missing period data file must not fall back to merged data or Asimov.
+    if not h and process == "data" and cfg.data_period:
+        raise RuntimeError(f"Missing period data histogram: {filename}:{hist_path(cfg, region)}")
+    return h
 
 def sum_hists(hists: Iterable[object], name_prefix: str):
     out = None
@@ -1449,7 +1497,9 @@ def add_qcd_stat_uncertainty(ROOT, cfg, years, by_year, stat, scale, transfers=N
                 low_eff, high_eff = whole_bin_window(native, low, high)
                 if not (math.isclose(low_eff, low, abs_tol=1e-8) and math.isclose(high_eff, high, abs_tol=1e-8)):
                     raise ValueError("QCD plotting edges must coincide with native template bin edges.")
-                factor = scale / axis.GetBinWidth(ib) if per_width else scale
+                factor = scale * period_prediction_scale(cfg, year)
+                if per_width:
+                    factor /= axis.GetBinWidth(ib)
                 result = qcd_root_window_statistics(inputs, low_eff, high_eff,
                                                     float(nominal.GetBinContent(ib)) / factor)
                 bin_results[ib - 1][year] = dict(result,
@@ -2156,7 +2206,7 @@ def bkg_syst_uncertainty(
                 continue
 
             source = rebin_hist(source, edges)
-            apply_scale(source, scale * nf_amc)
+            apply_scale(source, scale * nf_amc * period_prediction_scale(cfg, year))
             apply_bin_width_normalization(cfg, source)
             if any(not math.isclose(getter(source, ib), getter(nominal, ib), rel_tol=1e-5, abs_tol=1e-280)
                    for getter in (lambda h, ib: h.GetBinContent(ib), lambda h, ib: h.GetBinError(ib))
@@ -2271,9 +2321,12 @@ def total_uncertainty(stat: Uncertainty, syst: Uncertainty) -> Uncertainty:
 
 def build_plot_inputs(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> PlotInputs:
     years = years_for_era(cfg.era)
-    lumi_pb = lumi_pb_for_years(years)
+    lumi_pb = selected_period_lumi_fb(cfg) * 1000.0 if cfg.data_period else lumi_pb_for_years(years)
     scale = plot_scale(cfg, norm, lumi_pb)
     out = PlotInputs(years=years, lumi_pb=lumi_pb)
+    if cfg.data_period and (not use_qcd_mc(cfg) or not use_dy_mc(cfg)):
+        print("[period-DD] QCD/DY DD use luminosity-scaled full-era templates and uncertainties; "
+              "full-era transfer/NF retained; no period-specific fit or calibration.")
 
     bkg_by_year: Dict[str, Dict[str, object]] = {year: {} for year in years}
     for year in years:
@@ -2704,13 +2757,18 @@ def draw_cms_labels(ROOT, cfg: Config, lumi_pb: float) -> None:
     latex.SetTextFont(42)
     latex.SetTextSize(0.040)
     latex.SetTextAlign(31)
-    latex.DrawLatex(0.95, 0.925, lumi_label(cfg.era, lumi_pb))
+    label = f"{lumi_pb / 1000.0:.3f} fb^{{-1}} (13 TeV)" if cfg.data_period else lumi_label(cfg.era, lumi_pb)
+    latex.DrawLatex(0.95, 0.925, label)
 
     latex.SetTextAlign(13)
     latex.SetTextSize(0.040)
     jet_text = "b-jet" if cfg.jet_mode == "bjet" else "light-jet"
     sign_text = canonical_dilepton_sign(cfg.dilepton_sign)
-    latex.DrawLatex(0.155, 0.85, f"{cfg.era}, {sign_text}, {jet_text}")
+    era_text = f"{cfg.era}, SingleMuon {cfg.data_period}" if cfg.data_period else cfg.era
+    latex.DrawLatex(0.155, 0.85, f"{era_text}, {sign_text}, {jet_text}")
+    if cfg.data_period and (not use_qcd_mc(cfg) or not use_dy_mc(cfg)):
+        latex.SetTextSize(0.030)
+        latex.DrawLatex(0.155, 0.805, "DD: full-era estimate scaled by luminosity")
 
 
 def print_warnings(cfg: Config, norm: str, warnings: Sequence[str]) -> None:
@@ -3023,7 +3081,7 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> str:
 
     out_base = os.path.join(
         cfg.output_dir,
-        f"{cfg.era}_{spec.key}_{norm}_{data_tag}{jet_tag}{sign_tag}{qcd_tag}{dy_tag}{syst_tag}{rebin_tag}{x_range_tag}",
+        f"{plot_era_tag(cfg)}_{spec.key}_{norm}_{data_tag}{jet_tag}{sign_tag}{qcd_tag}{dy_tag}{syst_tag}{rebin_tag}{x_range_tag}",
     )
     for ext in cfg.extensions:
         canvas.SaveAs(f"{out_base}.{ext}")
@@ -3083,6 +3141,7 @@ def apply_variable_blinding_mode(cfg: Config) -> Config:
 
 
 def run(cfg: Config) -> List[str]:
+    validate_data_period(cfg)
     ROOT = import_root()
     ROOT.gROOT.SetBatch(True)
     set_readable_cms_style(ROOT)
@@ -3094,6 +3153,13 @@ def run(cfg: Config) -> List[str]:
     cfg.dy_method = canonical_background_method(cfg.dy_method, option_name="dy-method")
     cfg.uncertainty, cfg.draw_systematics = canonical_uncertainty(cfg.uncertainty)
     years_for_era(cfg.era)
+    if cfg.data_period:
+        source = POSTVFP_LUMI_SOURCE if cfg.period_lumi_fb is None else "--period-lumi-fb"
+        mc_lumi = POSTVFP_MC_LUMI_FB if cfg.mc_lumi_fb is None else cfg.mc_lumi_fb
+        print(f"[period] {cfg.era} SingleMuon {cfg.data_period}: "
+              f"data=Skim_NIsoMuon_SingleMuon_{cfg.data_period}.root; "
+              f"lumi={selected_period_lumi_fb(cfg):.9g} fb^-1; MC lumi={mc_lumi:.12g} fb^-1; "
+              f"prediction scale={period_prediction_scale(cfg, cfg.era):.9g}; source={source}")
 
     if cfg.draw_systematics and (cfg.jet_mode != "bjet" or cfg.dilepton_sign != "OS"):
         raise ValueError(
@@ -3192,6 +3258,12 @@ No-argument behaviour:
     )
 
     parser.add_argument("--era", choices=list(ERA_GROUPS.keys()), required=True)
+    parser.add_argument("--data-period", choices=tuple(POSTVFP_DATA_LUMI_FB),
+                        help="2016postVFP SingleMuon F/G/H comparison; full-era predictions scaled by period luminosity")
+    parser.add_argument("--period-lumi-fb", type=float, default=None,
+                        help="override certified period luminosity [fb^-1]; requires --data-period")
+    parser.add_argument("--mc-lumi-fb", type=float, default=None,
+                        help="override full-era luminosity already applied to MC [fb^-1]; requires --data-period")
     parser.add_argument("--variable", default="dimuon_mass", help="dimuon_mass, jet0/1_{pt,eta,phi}, mu_lead/sub_{pt,eta,phi}, or all")
     parser.add_argument("--data-mode", default="unblind", help="blind, blind_asimov, blind_toy, or unblind; default: unblind")
     parser.add_argument("--blind", dest="data_mode", action="store_const", const="blind", help="alias for --data-mode blind")
@@ -3296,10 +3368,13 @@ def config_from_args(args: argparse.Namespace) -> Config:
             "Use --ratio-ymin/--ratio-ymax or --ratio-min/--ratio-max."
         )
 
-    return Config(
+    cfg = Config(
         base_dir=args.base_dir,
         era=args.era,
         trigger=args.trigger,
+        data_period=args.data_period,
+        period_lumi_fb=args.period_lumi_fb,
+        mc_lumi_fb=args.mc_lumi_fb,
         variable=canonical_variable(args.variable),
         muon_id=args.muon_id,
         jet_id=args.jet_id,
@@ -3350,6 +3425,8 @@ def config_from_args(args: argparse.Namespace) -> Config:
         verbose_warnings=args.verbose_warnings,
         verbose_systematics=args.verbose_systematics,
     )
+    validate_data_period(cfg)
+    return cfg
 
 def print_instructions() -> None:
     parser = make_parser()

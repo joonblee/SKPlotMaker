@@ -51,6 +51,7 @@ class Hist:
 
 class InputAxis(Axis):
     def FindBin(self, x): return self.FindFixBin(x)
+    def GetBinWidth(self, i): return self.edges[i]-self.edges[i-1]
 
 
 class InputHist(Hist):
@@ -128,6 +129,110 @@ def transfer_and_inputs(method="run-common", era="2016postVFP"):
 
 
 class CommonTransferTests(unittest.TestCase):
+    def test_plotter_period_scope_file_selection_and_scaling(self):
+        parser = p.make_parser()
+        for period in "FGH":
+            cfg = p.config_from_args(parser.parse_args(["--era", "2016postVFP", "--data-period", period]))
+            self.assertEqual(p.selected_period_lumi_fb(cfg), q.POSTVFP_DATA_LUMI_FB[period])
+            self.assertEqual(Path(p.process_file(cfg, cfg.era, "data", -1., "", [])).name,
+                             f"Skim_NIsoMuon_SingleMuon_{period}.root")
+            self.assertEqual(p.plot_era_tag(cfg), f"2016postVFP_SingleMuon_{period}")
+        for argv in (["--era", "2017", "--data-period", "G"],
+                     ["--era", "2016postVFP", "--mc-lumi-fb", "16"],
+                     ["--era", "2016postVFP", "--data-period", "F", "--period-lumi-fb", "nan"],
+                     ["--era", "2016postVFP", "--data-period", "F", "--mc-lumi-fb", "0"],
+                     ["--era", "2016postVFP", "--data-period", "G", "--qcd-normalisation-diagnostics"]):
+            with patch.object(p, "import_root") as root, self.assertRaises(ValueError):
+                p.main(argv)
+            root.assert_not_called()
+        cfg = p.Config(era="2016postVFP", data_period="G", period_lumi_fb=4., mc_lumi_fb=16.)
+        source = InputHist([40.]*8, [9.]*8)
+        with patch.object(p, "open_hist", side_effect=lambda *a, **k: source.Clone("loaded")), \
+             patch.object(p, "find_signal_file", return_value="/nominal/signal.root"):
+            for proc in (*p.BKG_PROCESSES, "data", "sig"):
+                for suffix in (("",) if proc == "data" else ("", "Syst_JESUp")):
+                    h = p.load_year_hist(None, cfg, cfg.era, proc, 20., [], suffix)
+                    self.assertEqual(h.values, [40. if proc == "data" else 10.]*8)
+                    self.assertEqual(h.variances, [9. if proc == "data" else 9./16.]*8)
+            # Default full-era data/predictions remain unchanged.
+            full_cfg = p.Config(era=cfg.era)
+            self.assertEqual(p.load_year_hist(None, full_cfg, cfg.era, "tt", -1., []).values, source.values)
+        self.assertEqual(source.values, [40.]*8)
+        with patch.object(p, "open_hist", return_value=None), self.assertRaises(RuntimeError):
+            p.load_year_hist(None, cfg, cfg.era, "data", -1., [])
+
+    def test_plotter_period_mc_anchor_and_xsec_use_period_data(self):
+        cfg = p.Config(era="2016postVFP", data_period="G", period_lumi_fb=4., mc_lumi_fb=16.,
+                       qcd_method="mc", dy_method="mc", blind=True, divide_by_bin_width=False)
+        # Full-era QCD=100, each other background=10; period Data=30.
+        # After scaling: (30 - 4*2.5) / 25 = 0.8, including native blinded anchor.
+        def opened(root, config, filename, path, warnings, **kwargs):
+            value = 30. if "SingleMuon_G" in filename else 100. if "QCD_Inclusive" in filename else 10.
+            return InputHist([value]*8, [value]*8)
+        with patch.object(p, "open_hist", side_effect=opened), \
+             patch.object(p, "rebin_hist", side_effect=lambda h, edges: h.Clone("rebinned")), \
+             redirect_stdout(io.StringIO()):
+            events = p.build_plot_inputs(None, cfg, "events", Axis.edges)
+            xsec = p.build_plot_inputs(None, cfg, "xsec", Axis.edges)
+        self.assertEqual(events.lumi_pb, 4000.)
+        self.assertAlmostEqual(events.qcd_normalisation_factor, .8)
+        self.assertAlmostEqual(xsec.qcd_normalisation_factor, .8)
+        self.assertEqual(events.data.values, [30.]*8)
+        self.assertAlmostEqual(events.data.GetBinError(1), math.sqrt(30.))
+        self.assertAlmostEqual(xsec.data.GetBinContent(1), 30./4000.)
+        self.assertAlmostEqual(events.bkg_total.GetBinContent(1), 30.)
+        self.assertAlmostEqual(xsec.bkg_total.GetBinContent(1), 30./4000.)
+        latex = MagicMock()
+        p.draw_cms_labels(SimpleNamespace(TLatex=lambda: latex, kBlack=1), cfg, events.lumi_pb)
+        strings = [a.args[-1] for a in latex.DrawLatex.call_args_list]
+        self.assertIn("4.000 fb^{-1} (13 TeV)", strings)
+        self.assertIn("2016postVFP, SingleMuon G, OS, b-jet", strings)
+
+    def test_plotter_period_dd_statistics_retain_full_era_metadata(self):
+        for method in ("run-common", "mc-double-ratio", "data-low"):
+            _, _, inputs = transfer_and_inputs(method)
+            cfg = p.Config(era="2016postVFP", data_period="F", period_lumi_fb=4., mc_lumi_fb=16.,
+                           divide_by_bin_width=False)
+            native = inputs[1]
+            nominal = InputHist([native.GetBinContent(i)/4. for i in range(1, 9)], [0.]*8)
+            root_file = SimpleNamespace(IsZombie=lambda: False, Close=lambda: None)
+            root = SimpleNamespace(TFile=SimpleNamespace(Open=lambda *a: root_file))
+            with patch.object(p, "read_qcd_stat_inputs", return_value=inputs), redirect_stdout(io.StringIO()):
+                result = p.add_qcd_stat_uncertainty(root, cfg, [cfg.era], {cfg.era: {"QCD": nominal}},
+                                                  p.Uncertainty([0.]*8, [0.]*8), 1.)
+            expected = p.qcd_root_window_statistics(inputs, 11., 15.)
+            self.assertAlmostEqual(result.low[3], expected["sigma_stat_bound"]/4.)
+            # The stored full-era central is still checked rather than bypassed.
+            bad = copy.deepcopy(nominal)
+            bad.values[3] *= 1.1
+            with patch.object(p, "read_qcd_stat_inputs", return_value=inputs), \
+                 redirect_stdout(io.StringIO()), self.assertRaises(RuntimeError):
+                p.add_qcd_stat_uncertainty(root, cfg, [cfg.era], {cfg.era: {"QCD": bad}},
+                                          p.Uncertainty([0.]*8, [0.]*8), 1.)
+
+    def test_plotter_period_dy_factorisation_and_nf_uncertainties(self):
+        cfg = p.Config(era="2016postVFP", data_period="H", period_lumi_fb=4., mc_lumi_fb=16.,
+                       qcd_method="mc", divide_by_bin_width=False, draw_systematics=True, strict=True)
+        source = InputHist([20.]*8, [4.]*8)
+        nominal = source.Clone("DY")
+        nominal.Scale(.2*.25)
+        def read(root, filename, path):
+            if path == "DYAux/LightJetSource":
+                return source.Clone("source"), None
+            value = .2 if path == p.DY_AUX_NF_AMC_PATH else .22
+            return SimpleNamespace(GetNbinsX=lambda: 1, GetBinContent=lambda i: value,
+                                   GetBinError=lambda i: .01), None
+        with patch.object(p, "read_hist", side_effect=read), \
+             patch.object(p, "rebin_hist", side_effect=lambda h, edges: h.Clone("rebinned")), \
+             patch.object(p, "background_detector_processes", return_value=[]), \
+             patch.object(p, "background_lumi_processes", return_value=[]), \
+             patch.object(p, "_generator_theory_uncertainty"), redirect_stdout(io.StringIO()) as log:
+            result = p.bkg_syst_uncertainty(None, cfg, [cfg.era], {"DY": nominal},
+                                          {cfg.era: {"DY": nominal}}, nominal, Axis.edges, 1., [])
+        self.assertIn("DY_NF_factorisation/DY/2016postVFP: OK", log.getvalue())
+        self.assertAlmostEqual(result.high[3], math.sqrt(.05**2 + .1**2))
+        self.assertEqual(source.values, [20.]*8)
+
     def test_period_luminosities_and_invalid_scope_before_root(self):
         parser = q.build_parser()
         for period in "FGH":

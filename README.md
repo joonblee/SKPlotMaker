@@ -242,6 +242,50 @@ does not write production anchors or `NIsoMuon_SS_fit.root` templates.
 It cannot be combined with `--validate-qcd-double-ratio` or
 `--uncertainty-diagnostics`, which are full-era operations.
 
+`plotter.py` also accepts `--data-period F/G/H`, with the same luminosities and
+`--period-lumi-fb` / `--mc-lumi-fb` overrides. For SS mass comparisons:
+
+```bash
+for period in F G H; do
+    python3 plotter.py --era 2016postVFP --data-period "$period" \
+        --variable dimuon_mass --dimuon-sign ss --unblind \
+        --qcd-method mc --dy-method mc --uncertainty stat --strict || break
+done
+```
+
+For OS comparisons with the existing data-driven estimates:
+
+```bash
+for period in F G H; do
+    python3 plotter.py --era 2016postVFP --data-period "$period" \
+        --variable dimuon_mass --blind --uncertainty syst+stat --strict || break
+done
+```
+
+Use `--unblind` only when deliberately inspecting OS observations in the search
+window. The existing blinding and QCD-MC normalisation prescriptions are retained;
+QCD-MC normalisation uses the selected period data after all predictions are
+luminosity-scaled. `--no-qcd-normalise` preserves absolute MC normalisation for
+comparisons of rates per unit luminosity.
+
+Period data counts/errors are not luminosity-scaled in event plots. Full-era
+MC, signal and DD template contents/errors, and their systematic responses,
+are multiplied by `L_period/L_MC`. For `xsec` plots the usual additional division
+by the selected period luminosity applies. DD statistical uncertainties remain
+those of the full-era estimate times this scale; they are not statistics of a
+new period-specific fit. QCD transfer and DY NF metadata remain full-era, and
+their consistency checks are retained. This tests whether the existing era
+prediction describes each period, assuming full-era shapes/SFs and rates per
+unit luminosity. It does **not** derive F/G/H-specific QCD or DY estimates or
+consume the SS-only diagnostic fits above. The log and DD plots state this
+assumption. No production inputs are written.
+
+Plots use the period luminosity and `SingleMuon F/G/H` label, and filenames start
+with `2016postVFP_SingleMuon_<PERIOD>_`, so they do not overwrite full-era figures.
+A missing period data file/histogram is fatal, without falling back to merged
+data. `--qcd-normalisation-diagnostics` is restricted to full-era producer-input
+audits and cannot be combined with `--data-period`.
+
 #### Statistical uncertainty of the QCD prediction
 
 Individual-era `ss-data` production now also writes `QCDStat/metadata` into both

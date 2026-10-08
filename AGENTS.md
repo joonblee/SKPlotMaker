@@ -127,6 +127,14 @@ read OS observations. F means only the postVFP subset. See the constants and
 luminosity provenance in the producer; do not use rounded plot-label luminosity
 as the MC denominator.
 
+`plotter.py --era 2016postVFP --data-period F/G/H` reads period data and scales
+full-era predictions (MC, DD and signal) and their uncertainties by the same
+luminosity ratio. Shared luminosity constants/provenance live in
+`qcd_common_transfer.py`. DD predictions are explicit full-era baselines scaled
+by luminosity, not period-specific refits; preserve this log/plot disclosure.
+Keep QCDStat and DYAux consistency checks with the scaling included, and never
+scale period data counts in event plots. Period output names must remain distinct.
+
 `qcd-mc` is a modelling/cross-check mode.  For the current working convention, when running QCD-MC fits use the log-chi-square objective explicitly:
 
 ```bash

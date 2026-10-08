@@ -224,7 +224,8 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from qcd_common_transfer import (
     COMMON_STAT_SCHEMA, COMMON_STAT_TREATMENT, GROUP_ERAS, MC_KEYS,
     fit_common_double_ratio, qcd_stat_components, transfer_group, validate_common_transfer,
-    transfer_method_label,
+    transfer_method_label, POSTVFP_DATA_RUNS, POSTVFP_DATA_LUMI_FB,
+    POSTVFP_MC_LUMI_FB, POSTVFP_LUMI_SOURCE,
 )
 
 QCD_STAT_SCHEMA = "NPS26009_QCDStat_v2"
@@ -430,19 +431,7 @@ PERIOD_LUMI_FB: Dict[str, float] = {
     "Run2+3": 200,
 }
 
-# Recorded luminosity [fb^-1], summed from the CMS per-run 23v1/composite table:
-# https://opendata.cern.ch/record/1059/files/2016lumi.txt
-# F is only the non-HIPM/postVFP subset, NOT the whole Run2016F period.
-POSTVFP_DATA_RUNS = {
-    "F": (278769, 278801, 278802, 278803, 278804, 278805, 278808),
-    "G": (278820, 280385),  # Inclusive range, certified runs only.
-    "H": (281613, 284044),  # Inclusive range, certified runs only.
-}
-POSTVFP_DATA_LUMI_FB = {"F": 0.418771191, "G": 7.653261226, "H": 8.740119303}
-# Actual MC event-weight normalisation from SKFlatAnalyzer/DataFormats/src/Event.C,
-# Event::GetTriggerLumi("Full"), not the rounded 16.8 fb^-1 figure label above.
-POSTVFP_MC_LUMI_FB = 16.812151722482
-POSTVFP_LUMI_SOURCE = "https://opendata.cern.ch/record/1059/files/2016lumi.txt"
+# Period luminosities/provenance are shared with plotter in qcd_common_transfer.py.
 
 SS_REGION = "SS_POGMedium_tight_BJet_NIsoDimuon"
 OS_REGION = "OS_POGMedium_tight_BJet_NIsoDimuon"

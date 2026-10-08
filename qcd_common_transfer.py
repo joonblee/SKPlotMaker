@@ -8,6 +8,18 @@ import hashlib
 import json
 import math
 
+# Shared certified luminosities for the estimator and period validation plots.
+# F includes only the non-HIPM/postVFP subset of Run2016F.
+POSTVFP_DATA_RUNS = {
+    "F": (278769, 278801, 278802, 278803, 278804, 278805, 278808),
+    "G": (278820, 280385),  # Inclusive range, certified runs only.
+    "H": (281613, 284044),
+}
+POSTVFP_DATA_LUMI_FB = {"F": 0.418771191, "G": 7.653261226, "H": 8.740119303}
+# SKFlatAnalyzer Event::GetTriggerLumi("Full"), already applied in MC weights.
+POSTVFP_MC_LUMI_FB = 16.812151722482
+POSTVFP_LUMI_SOURCE = "https://opendata.cern.ch/record/1059/files/2016lumi.txt"
+
 COMMON_STAT_SCHEMA = "NPS26009_QCDStat_v3"
 COMMON_STAT_TREATMENT = "local_nf_fit_bound_plus_shared_mc_transport"
 GROUP_ERAS = {
