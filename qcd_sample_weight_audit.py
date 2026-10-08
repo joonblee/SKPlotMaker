@@ -3,6 +3,7 @@
 
   python3 qcd_sample_weight_audit.py --era 2016preVFP 2016postVFP
   python3 qcd_sample_weight_audit.py --era 2016postVFP --replay
+  python3 qcd_sample_weight_audit.py --era 2016preVFP 2016postVFP --replay-current
 
 Default: read sample histograms, current CommonSampleInfo/ForSNU lists and
 production run.C/run_*.C configurations. Default sample: 120To170. No files
@@ -19,6 +20,16 @@ configuration and saved libraries. Original sources, macros and ROOT outputs
 are never rewritten. Multiple candidate productions require --production-tag.
 Run in the compatible ROOT/CMSSW environment with access to the recorded inputs.
 Replay can take as long as processing the sample; it submits no batch jobs.
+
+If the archives are unavailable, --replay-current explicitly uses CURRENT
+CommonSampleInfo, ForSNU/SkimTree_NIsoMuon_<sample>.txt, analyser source and
+compiled libraries. Nominal Userflags are empty; --current-trigger defaults to
+HighPtMuon. All listed skim files are processed, in groups of --files-per-job.
+No historical configuration is inferred and no archive search is required.
+Use the configured SKFlat ROOT/CMSSW environment. Current libraries are never
+rebuilt; copied audit source is compiled only inside a NEW audit directory.
+Yield/Sumw2 closure is required in this mode too. Even successful closure does
+not recover the historical production metadata or prove event-level identity.
 
 The audit tree stores exact selected histogram fills, raw gen_weight,
 MCweight(), trigger luminosity, final weight, correction factor and file/entry.
@@ -313,7 +324,55 @@ def make_replay_job(job, work, index):
     return path, output
 
 
-def replay(ROOT, cfg, jobs, skflat, output_dir):
+def make_current_jobs(skflat, work, cfg, current, version, trigger, files_per_job):
+    if current is None:
+        raise ValueError('--replay-current needs current CommonSampleInfo metadata')
+    for key in ('xsec','sumSign','sumW'):
+        if not math.isfinite(current[key]) or current[key] <= 0:
+            raise ValueError(f'Invalid current {key}: {current[key]}')
+    if files_per_job <= 0:
+        raise ValueError('--files-per-job must be positive')
+    alias = current['alias']
+    filelist = skflat / 'data' / version / cfg.era / 'Sample/ForSNU' / ('SkimTree_NIsoMuon_' + alias + '.txt')
+    inputs = [line.split('#',1)[0].strip() for line in filelist.read_text().splitlines()]
+    inputs = [name for name in inputs if name]
+    if not inputs or len(inputs) != len(set(inputs)):
+        raise ValueError(f'Current skim list is empty or contains duplicate inputs: {filelist}')
+    if any(not name.endswith('.root') or not re.search(r'(?:^|[/_])MC(?:[/_.]|$)', name) for name in inputs):
+        raise ValueError(f'Current skim list contains unsupported or non-MC paths: {filelist}')
+    jobs = []
+    for index, first in enumerate(range(0,len(inputs),files_per_job)):
+        path = work / f'run_{index}.C'
+        lines = [f'void run_{index}() {{', '  NIsoMuon m;',
+                 '  m.SetTreeName("recoTree/SKFlat");', '  m.LogEvery = 100000;',
+                 '  m.IsDATA = false;', '  m.IsFastSim = false;',
+                 '  m.MCSample = ' + cpp_string(alias) + ';',
+                 '  m.SetEra(' + cpp_string(cfg.era) + ');',
+                 '  m.TriggerInput = ' + cpp_string(trigger) + ';', '  m.Userflags = {};']
+        lines += [f'  m.{key} = {current[key]!r};' for key in ('xsec','sumSign','sumW')]
+        lines += ['  if(!m.AddFile(' + cpp_string(name) + ')) exit(EIO);'
+                  for name in inputs[first:first+files_per_job]]
+        lines += ['  m.SetOutfilePath(' + cpp_string(work / f'unused_current_{index}.root') + ');',
+                  '  m.Init();', '  m.initializeAnalyzer();', '  m.initializeAnalyzerTools();',
+                  '  m.SwitchToTempDir();',
+                  '  std::cout << "[current-skim-entries] " << m.fChain->GetEntries() << std::endl;',
+                  '  m.Loop();', '  m.WriteHist();', '}']
+        path.write_text('// Generated from CURRENT configuration, not historical production.\n'
+                        '#include <cerrno>\n#include <cstdlib>\n#include <iostream>\n' + '\n'.join(lines) + '\n')
+        job = read_job(path, cfg.era, alias)
+        if job is None:
+            raise ValueError(f'Generated nominal MC job failed validation: {path}')
+        jobs.append(job)
+    context = dict(mode='current', metadata=current, data_version=version, trigger=trigger,
+                   userflags=[], filelist=str(filelist), filelist_sha256=digest(filelist),
+                   files_per_job=files_per_job, historical_configuration='unknown')
+    print(f'[replay-current] skim list={filelist}; files={len(inputs)}; jobs={len(jobs)}; '
+          f'trigger={trigger}; Userflags=[]', flush=True)
+    print('[replay-provenance] CURRENT configuration; historical production settings remain unknown', flush=True)
+    return jobs, context
+
+
+def replay(ROOT, cfg, jobs, skflat, output_dir, *, libraries=None, work=None, context=None):
     root_binary = shutil.which("root")
     if not root_binary:
         raise OSError("ROOT executable not found; use the compatible ROOT/CMSSW environment")
@@ -326,25 +385,49 @@ def replay(ROOT, cfg, jobs, skflat, output_dir):
                for k in ('xsec','sumSign','sumW')) for job in jobs):
         raise ValueError("Recorded QCD normalisation contains non-literal, non-finite or non-positive values")
     group = Path(jobs[0]['group'])
-    libraries = next((ancestor / 'lib' for ancestor in group.parents if (ancestor / 'lib').is_dir()), None)
+    archived = libraries is None
+    if archived:
+        libraries = next((ancestor / 'lib' for ancestor in group.parents if (ancestor / 'lib').is_dir()), None)
+    else:
+        libraries = Path(libraries).expanduser().resolve()
     if libraries is None or not list(libraries.glob('*.so')):
-        raise OSError(f"Saved production libraries not found above {group}; no silent substitution")
-    work = Path(tempfile.mkdtemp(prefix=f"{cfg.era}_", dir=output_dir)).resolve()
+        description = f'saved production libraries above {group}' if archived else f'current compiled libraries at {libraries}'
+        raise OSError(f'Missing {description}; no library rebuild or silent substitution')
+    work = work or Path(tempfile.mkdtemp(prefix=f"{cfg.era}_", dir=output_dir)).resolve()
     provenance = make_source(skflat, work, cfg)
     manifest = dict(era=cfg.era, source=provenance, jobs=jobs, libraries=str(libraries),
-                    library_sha256={f.name:digest(f) for f in libraries.glob('*.so')})
+                    library_sha256={f.name:digest(f) for f in libraries.glob('*.so')},
+                    configuration=context or dict(mode='archived'))
     (work / 'manifest.json').write_text(json.dumps(manifest, indent=2))
-    print(f"[replay] NEW audit directory={work}; jobs={len(jobs)}; current source SHA256={provenance['source_sha256']}")
+    print(f"[replay] NEW audit directory={work}; jobs={len(jobs)}; libraries={libraries}; "
+          f"current source SHA256={provenance['source_sha256']}", flush=True)
     env = os.environ.copy()
     env['LD_LIBRARY_PATH'] = str(libraries) + ':' + env.get('LD_LIBRARY_PATH', '')
-    include_paths = [str(work), *(str(skflat / directory / 'include') for directory in ('DataFormats','AnalyzerTools','Analyzers'))]
+    include_paths = [str(work), *(str(skflat / directory / 'include') for directory in ('DataFormats','AnalyzerTools','Analyzers')),
+                     str(skflat / 'external/GEScaleSyst')]
+    for variable in ('CMSSW_BASE','CMSSW_RELEASE_BASE'):
+        if env.get(variable) and env.get('SCRAM_ARCH'):
+            directory = Path(env[variable]) / 'external' / env['SCRAM_ARCH'] / 'include'
+            if directory.is_dir():
+                include_paths.append(str(directory))
+    if env.get('CORRECTIONLIB_INCLUDE'):
+        include_paths.append(env['CORRECTIONLIB_INCLUDE'])
     env['ROOT_INCLUDE_PATH'] = ':'.join(include_paths + [env.get('ROOT_INCLUDE_PATH','')])
+    if context and context['mode'] == 'current':
+        env.update(SKFlat_WD=str(skflat), SKFlat_LIB_PATH=str(libraries), SKFlatV=context['data_version'],
+                   DATA_DIR=str(skflat / 'data' / context['data_version']))
     records = []
+    # Load project dependencies before Analyzers; its shared library can contain
+    # unresolved references to DataFormats/AnalyzerTools/GEScaleSyst.
+    priority = {'libDataFormats.so':0, 'libGEScaleSyst.so':1, 'libAnalyzerTools.so':2, 'libAnalyzers.so':4}
+    library_files = sorted(libraries.glob('*.so'),key=lambda f:(priority.get(f.name,3),f.name))
     for index, job in enumerate(jobs):
         macro, output = make_replay_job(job, work, index)
         driver_name = f"audit_driver_{index}"
         loads = '\n'.join('  if(gSystem->Load(' + cpp_string(f) + ') < 0) { gSystem->Exit(71); return; }'
-                          for f in sorted(libraries.glob('*.so')))
+                          for f in library_files)
+        if context and context['mode'] == 'current':
+            loads = '  if(gSystem->Load("libLHAPDF") < 0) { gSystem->Exit(71); return; }\n' + loads
         # Preserve the original external-library directives (e.g. LHAPDF).
         external = '\n'.join(re.findall(r'^\s*R__LOAD_LIBRARY\([^\n]+', Path(job['path']).read_text(), re.M))
         driver = (external + '\n#include <TSystem.h>\n#include <TROOT.h>\nvoid ' + driver_name + '() {\n' + loads
@@ -361,6 +444,9 @@ def replay(ROOT, cfg, jobs, skflat, output_dir):
                                     stdout=handle, stderr=subprocess.STDOUT).returncode
         if status != 0 or not output.is_file():
             raise RuntimeError(f"Replay failed (exit={status}); inspect {log}")
+        entries = re.findall(r'^\[current-skim-entries\]\s+(\d+)\s*$', log.read_text(), re.M)
+        if entries:
+            print(f'[replay-input] job={index+1}; skim entries={entries[-1]}; these are not generated/selected counts', flush=True)
         root_file = d.open_file(ROOT, output)
         try:
             tree = root_file.Get('QCDWeightAudit')
@@ -436,13 +522,26 @@ def main(argv=None):
                         help='print metadata and production discovery only; does not require ROOT')
     parser.add_argument('--production-tag',help='exact timestamp/analyser directory name or exact sample-directory path')
     parser.add_argument('--replay',action='store_true',help='run recorded MC jobs on input ntuples into a NEW audit directory')
+    parser.add_argument('--replay-current',action='store_true',
+                        help='use CURRENT metadata, skim list, nominal analyser and libraries; no archive needed')
+    parser.add_argument('--current-trigger',default='HighPtMuon',
+                        help='TriggerInput for --replay-current only; default: HighPtMuon')
+    parser.add_argument('--files-per-job',type=int,default=32,
+                        help='skim files per --replay-current job; all files are processed; default: 32')
+    parser.add_argument('--library-dir',help='current compiled library directory for --replay-current; default: SKFlat_LIB_PATH or SKFlatAnalyzer/lib')
     parser.add_argument('--output-dir',help='parent for NEW replay directories; default: system temporary directory')
     parser.add_argument('--top',type=int,default=3,help='largest absolute weights printed per sign/window; default: 3')
     args = parser.parse_args(argv)
     if args.top < 0:
         parser.error('--top must be non-negative')
-    if args.find_production_only and args.replay:
-        parser.error('--find-production-only cannot be combined with --replay')
+    if sum((args.find_production_only,args.replay,args.replay_current)) > 1:
+        parser.error('--find-production-only, --replay and --replay-current cannot be combined')
+    if args.files_per_job <= 0:
+        parser.error('--files-per-job must be positive')
+    if args.replay_current and args.production_tag:
+        parser.error('--production-tag cannot select a historical production in --replay-current')
+    if args.library_dir and not args.replay_current:
+        parser.error('--library-dir requires --replay-current; archived replay uses saved libraries')
     try:
         years = list(dict.fromkeys(year for era in args.era for year in d.p.years_for_era(era)))
         if not args.find_production_only:
@@ -452,7 +551,7 @@ def main(argv=None):
         print(f'[ERROR] {exc}',file=sys.stderr); return 1
     skflat = Path(args.skflat_dir).expanduser().resolve()
     sample = d.canonical_sample(args.sample)
-    if args.output_dir and args.replay:
+    if args.output_dir and (args.replay or args.replay_current):
         Path(args.output_dir).mkdir(parents=True,exist_ok=True)
     status = 0
     for era in years:
@@ -475,7 +574,7 @@ def main(argv=None):
             alias = 'QCD_Pt-' + sample_label + '_MuEnriched'
             if current:
                 alias = current['alias']
-            groups = show_productions(find_jobs(args.runlog_dir,era,alias),current)
+            groups = {} if args.replay_current else show_productions(find_jobs(args.runlog_dir,era,alias),current)
             if args.find_production_only:
                 if not groups:
                     status = 1
@@ -502,19 +601,29 @@ def main(argv=None):
                       f'Sumw2={d.fmt(None if count is None else count.variance)}, '
                       f'N_eff={d.fmt(None if count is None else count.effective)}, Sumw2/sumw={d.fmt(effective_weight)}')
             print('[unweighted-count] Per-window selected fills and individual weights are unavailable from weighted histograms alone')
-            if not args.replay:
+            if not (args.replay or args.replay_current):
                 continue
-            candidates = {group:jobs for group,jobs in groups.items() if not args.production_tag
-                          or args.production_tag in (group,Path(group).parent.name)}
-            if len(candidates)!=1:
-                if not groups:
-                    raise ValueError('No nominal production found; inspect production-search output and '
-                                     'set --runlog-dir to the saved archive. --production-tag only selects '
-                                     'among discovered productions; it cannot locate missing macros.')
-                raise ValueError(f'Replay needs exactly one production; found {len(candidates)}. '
-                                 'Use --production-tag with a candidate-production tag printed above.')
-            jobs = next(iter(candidates.values()))
-            records, work = replay(ROOT,cfg,jobs,skflat,args.output_dir)
+            if args.replay_current:
+                work = Path(tempfile.mkdtemp(prefix=f'{era}_current_',dir=args.output_dir)).resolve()
+                print(f'[replay-current] NEW audit directory={work}',flush=True)
+                jobs, context = make_current_jobs(skflat,work,cfg,current,args.data_version,
+                                                  args.current_trigger,args.files_per_job)
+                context['skflat_commit'] = sha.stdout.strip() or 'unknown'
+                library_dir = args.library_dir or os.getenv('SKFlat_LIB_PATH') or str(skflat / 'lib')
+                records, work = replay(ROOT,cfg,jobs,skflat,args.output_dir,
+                                       libraries=library_dir,work=work,context=context)
+            else:
+                candidates = {group:jobs for group,jobs in groups.items() if not args.production_tag
+                              or args.production_tag in (group,Path(group).parent.name)}
+                if len(candidates)!=1:
+                    if not groups:
+                        raise ValueError('No nominal production found; inspect production-search output and '
+                                         'set --runlog-dir to the saved archive, or explicitly use --replay-current. '
+                                         '--production-tag only selects among discovered productions.')
+                    raise ValueError(f'Replay needs exactly one production; found {len(candidates)}. '
+                                     'Use --production-tag with a candidate-production tag printed above.')
+                jobs = next(iter(candidates.values()))
+                records, work = replay(ROOT,cfg,jobs,skflat,args.output_dir)
             if not report_events(records,histograms,windows,args.top):
                 status = 1
             print(f'[audit-files] {work}')

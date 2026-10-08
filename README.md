@@ -575,6 +575,32 @@ discovered production and cannot resolve an incorrect or missing archive path.
 If the production macros or saved libraries are gone, historical replay cannot
 be performed from the weighted histograms alone.
 
+To audit selected events without a production archive, explicitly use the
+current configuration in the configured SKFlat ROOT/CMSSW environment:
+
+```bash
+python3 -u qcd_sample_weight_audit.py --era 2016preVFP 2016postVFP \
+  --replay-current --output-dir plots/qcd_weight_audit --top 10
+```
+
+This mode uses current `CommonSampleInfo`, the complete
+`ForSNU/SkimTree_NIsoMuon_<sample>.txt` list, current analyser source and current
+compiled libraries (`SKFlat_LIB_PATH`, otherwise `SKFlatAnalyzer/lib`; override
+with `--library-dir`). It requires no archived macros. The reconstructed jobs
+have empty nominal `Userflags`, `IsDATA=false`, `IsFastSim=false`, tree
+`recoTree/SKFlat` and `TriggerInput=HighPtMuon` (override only with
+`--current-trigger`). `--trigger` continues to select the histogram input
+directory; it does not set the analyser trigger. All skim files are processed
+sequentially in groups of `--files-per-job` (default 32), with no event limit.
+The original source and production outputs are preserved and no existing
+libraries are rebuilt. The copied audit source is compiled in a new directory.
+Skim entry counts are reported separately from generated and selected counts.
+The manifest records that this is a current-configuration replay, not historical
+production. Yield and Sumw2 closure against the existing ROOT file is required
+in all reported windows. A mismatch means the current replay does not reproduce
+the existing output; even matching moments do not recover the historical
+configuration or prove event-level identity.
+
 Weighted mass histograms do not retain per-window unweighted counts or
 individual event weights. To obtain those quantities, replay one production:
 
