@@ -20,7 +20,7 @@ Revision 2 updates:
     constant NF + NFStat + LightJetStat
   - accepts SS covariance status 2 or 3, including boundary solutions, using
     Minuit2's positive-definite regularisation where needed
-  - audits the stored low-mass data anchor and MC high/low double ratio;
+  - audits the stored low-mass data anchor and selected MC transport or data-low method;
     fitted QCD is never normalised again by the plotter
   - --qcd-normalisation-diagnostics reports native-bin SS-fit closure, mass-dependent
     MC OS/SS ratios and OS residuals in JSON, without refitting or rescaling DD QCD
@@ -77,7 +77,10 @@ QCD_TRANSFER_LOW_WINDOW = (5.0, 9.0)
 
 
 def qcd_transfer_factors(transfer):
-    """Audit the producer's data low-mass anchor and MC transport, without refitting."""
+    """Audit the producer's selected transport; missing method means the default."""
+    method = transfer.get("method", "mc-double-ratio")
+    if method not in ("mc-double-ratio", "data-low"):
+        raise ValueError(f"Unsupported QCD transfer method: {method}")
     primitive = transfer["primitive"]
     def value(name):
         result = float(primitive[name]["value"])
@@ -88,11 +91,17 @@ def qcd_transfer_factors(transfer):
     mc_low = value("mc_os_low") / value("mc_ss_low")
     mc_high = value("mc_os_high") / value("mc_ss_high")
     double_ratio = mc_high / mc_low
+    applied_ratio = double_ratio if method == "mc-double-ratio" else 1.0
     for key, expected in (("low_transfer", data_low),
-                          ("mc_double_ratio", double_ratio),
-                          ("high_transfer", data_low * double_ratio)):
+                          ("mc_double_ratio", applied_ratio),
+                          ("high_transfer", data_low * applied_ratio)):
         if not math.isclose(transfer[key], expected, rel_tol=1e-10):
             raise ValueError(f"QCD {key} disagrees with its data/MC primitive inputs.")
+    if method == "data-low" and transfer["double_ratio_variance"] != 0.0:
+        raise ValueError("Data-low QCD transfer must not include MC transport variance.")
+    if "measured_mc_double_ratio" in transfer and not math.isclose(
+            transfer["measured_mc_double_ratio"], double_ratio, rel_tol=1e-10):
+        raise ValueError("QCD measured MC double ratio disagrees with its primitive inputs.")
     return data_low, mc_low, mc_high
 
 def validate_qcd_stat_metadata(metadata, era=None, template_path=None):
@@ -214,11 +223,14 @@ def qcd_normalisation_diagnostic_row(inputs, histograms, low, high, cfg):
     count = lambda key: qcd_diagnostic_count(histograms[key], low, high)
     ratio = lambda a, b: a / b if b > 0 else None
     dd = qcd_diagnostic_count(inputs[1], low, high)
-    # dY/dt = I_low + k I_high, dY/dk = t I_high.
-    fit_high = qcd_diagnostic_count(inputs[2][-1], low, high) / transfer["low_transfer"]
-    fit_low = (qcd_diagnostic_count(inputs[2][-2], low, high)
-               - transfer["mc_double_ratio"] * fit_high)
-    fit = fit_low + fit_high
+    if transfer.get("method", "mc-double-ratio") == "data-low":
+        fit = dd / transfer["low_transfer"]
+    else:
+        # dY/dt = I_low + k I_high, dY/dk = t I_high.
+        fit_high = qcd_diagnostic_count(inputs[2][-1], low, high) / transfer["low_transfer"]
+        fit_low = (qcd_diagnostic_count(inputs[2][-2], low, high)
+                   - transfer["mc_double_ratio"] * fit_high)
+        fit = fit_low + fit_high
     ss_data, ss_top, ss_others = count("SS_data"), count("SS_Top"), count("SS_Others")
     ss_residual = ss_data - ss_top - ss_others
     mc_ss, mc_os = count("SS_QCD"), count("OS_QCD")
@@ -305,7 +317,8 @@ def write_qcd_normalisation_diagnostics(ROOT, cfg, years, qcd_factor):
             report["years"][year] = dict(windows=windows, window_source=window_source,
                 fit_model=inputs[0]["fit"]["model"], fit_range=inputs[0].get("fit_range"),
                 transfer=transfer, stored_vs_current_anchor_inputs=comparisons, rows=rows)
-            print(f"[qcd-norm-diag] {year}: windows={windows} ({window_source})")
+            print(f"[qcd-norm-diag] {year}: method={transfer.get('method', 'mc-double-ratio')}, "
+                  f"windows={windows} ({window_source})")
             fmt = lambda value: "undefined(non-positive denominator)" if value is None else f"{value:.6g}"
             for row in rows:
                 os_residual = "blinded" if row["os_data_blinded"] else fmt(row["os_residual"])
@@ -1410,9 +1423,11 @@ def add_qcd_stat_uncertainty(ROOT, cfg, years, by_year, stat, scale, transfers=N
                 transfers[year] = transfer
             data_low, mc_low, mc_high = qcd_transfer_factors(transfer)
             windows, _ = qcd_transfer_windows(inputs)
+            method = transfer.get("method", "mc-double-ratio")
+            recipe = "R_data*R_MC_high/R_MC_low" if method == "mc-double-ratio" else "R_data(low)"
             print(f"[qcd-transfer-check] {year}: {windows[0][0]:g}--{windows[0][1]:g} GeV R_data={data_low:.6g}, "
                   f"R_MC={mc_low:.6g}; {windows[1][0]:g}--{windows[1][1]:g} GeV R_MC={mc_high:.6g}, "
-                  f"T_high={transfer['high_transfer']:.6g} (=R_data*R_MC_high/R_MC_low); "
+                  f"T_high={transfer['high_transfer']:.6g} (={recipe}); method={method}; "
                   "no additional QCD normalisation")
             native = inputs[1]
             for ib in range(1, nominal.GetNbinsX() + 1):

@@ -41,6 +41,12 @@ Fit modes and objectives
       Bin-integrated statistical chi-square; produces the central SS-based QCD
       template plus Norm and analytic-function-envelope Shape variations,
       and QCDStat/metadata for statistical yield propagation.
+      --qcd-transfer-method mc-double-ratio (default) transports R_data(low)
+      to high mass with R_MC(high)/R_MC(low). data-low uses R_data(low) in
+      both regions, with no MC transport statistical uncertainty. QCD_norm
+      retains the low-mass data/MC log-symmetric modelling comparison.
+      The method is recorded in ROOT metadata; regenerate individual-era
+      templates to switch methods. Combined periods write only SS anchors.
       Covariance status 2 or 3 is used, including boundary solutions. Where
       needed, Minuit2 regularises the covariance to be positive definite;
       the returned matrix and status are saved without changing the fit.
@@ -79,6 +85,7 @@ Main optional controls
   --ss-binning {auto,regular,legacy,adaptive}
   --ss-min-effective-count VALUE   adaptive target, default: 25
   --ss-max-bin-width GEV           adaptive width cap, default: 5
+  --qcd-transfer-method {mc-double-ratio,data-low}
   --inspect-binning               print fit-bin statistics and exit
   --fit-max-attempts N
   --fit-attempt-details
@@ -110,6 +117,8 @@ in the input ROOT files.
 Examples
 --------
   python3 qcd_bkg_estimation.py --mode ss-data --year 2018
+  python3 qcd_bkg_estimation.py --mode ss-data --year 2016postVFP \
+      --qcd-transfer-method data-low
   python3 qcd_bkg_estimation.py --mode ss-data --year Run2
   python3 qcd_bkg_estimation.py --mode ss-data --year Run3
   python3 qcd_bkg_estimation.py --mode ss-data --year 2022 \
@@ -193,6 +202,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 QCD_STAT_SCHEMA = "NPS26009_QCDStat_v2"
 QCD_STAT_PATH = "QCDStat/metadata"
 QCD_STAT_TREATMENT = "linear_bound_unknown_nf_fit_correlation"
+QCD_TRANSFER_METHODS = ("mc-double-ratio", "data-low")
 QCD_STAT_BASIS = (["CentralYield"] + [f"FitGradient_{i}" for i in range(5)]
                   + ["NFGradient_low_transfer", "NFGradient_mc_double_ratio"])
 
@@ -234,6 +244,9 @@ def validate_qcd_stat_metadata(metadata, era=None, template_path=None):
            for i in range(5) for j in range(5)):
         raise ValueError("Asymmetric QCD fit covariance.")
     transfer = metadata["transfer_statistics"]
+    method = transfer.get("method", "mc-double-ratio")
+    if method not in QCD_TRANSFER_METHODS:
+        raise ValueError(f"Unsupported QCD transfer method: {method}")
     if not transfer.get("complete"):
         raise ValueError("Incomplete QCD transfer statistics; DYAux/NF_aMC is required.")
     for key in ("low_transfer", "mc_double_ratio", "high_transfer", "low_variance", "double_ratio_variance"):
@@ -243,6 +256,9 @@ def validate_qcd_stat_metadata(metadata, era=None, template_path=None):
         raise ValueError("Non-positive QCD transfer factor.")
     if not math.isclose(transfer["high_transfer"], transfer["low_transfer"] * transfer["mc_double_ratio"], rel_tol=1e-10):
         raise ValueError("Inconsistent low/high QCD transfer factors.")
+    if method == "data-low" and (transfer["mc_double_ratio"] != 1.0
+                                  or transfer["double_ratio_variance"] != 0.0):
+        raise ValueError("Data-low QCD transfer requires fixed unit transport and zero MC transport variance.")
     if metadata.get("basis") != QCD_STAT_BASIS:
         raise ValueError("Missing/obsolete QCD derivative basis; regenerate the SS ROOT file.")
     return metadata
@@ -997,6 +1013,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--analyzer", default="NIsoMuon")
     parser.add_argument("--base-dir", default=DEFAULT_BASE_DIR)
+    parser.add_argument(
+        "--qcd-transfer-method", choices=QCD_TRANSFER_METHODS, default="mc-double-ratio",
+        help=("Individual-era SS-data templates: mc-double-ratio (default) uses "
+              "R_data(low)*R_MC(high)/R_MC(low) at high mass; data-low uses "
+              "R_data(low) in both regions, without MC transport statistics. "
+              "QCD_norm keeps the low-mass data/MC modelling comparison."),
+    )
     parser.add_argument(
         "--no-prefer-full-run-anchor", dest="prefer_full_run_anchor",
         action="store_false",
@@ -3102,8 +3125,11 @@ def diagnostic_count_variance(hist, low: float, high: float) -> Tuple[float, flo
     return value, variance
 
 
-def diagnostic_transfer_statistics(h_ss, h_os, h_qcd_ss, h_qcd_os, h_dy_os, f_dy) -> dict:
+def diagnostic_transfer_statistics(h_ss, h_os, h_qcd_ss, h_qcd_os, h_dy_os, f_dy,
+                                   method="mc-double-ratio") -> dict:
     """First-order propagation of independent primitive Sumw2 inputs."""
+    if method not in QCD_TRANSFER_METHODS:
+        raise ValueError(f"Unsupported QCD transfer method: {method}")
     primitive = {}
     for name, hist, window in (
         ("data_ss_low", h_ss, QCD_TRANSFER_LOW_WINDOW),
@@ -3137,11 +3163,17 @@ def diagnostic_transfer_statistics(h_ss, h_os, h_qcd_ss, h_qcd_os, h_dy_os, f_dy
     get = lambda name: primitive[name]["value"]
     relative = lambda name: primitive[name]["variance"] / get(name) ** 2
     low_transfer = get("data_os_low") / get("data_ss_low")
-    mc_double_ratio = get("mc_os_high") * get("mc_ss_low") / (get("mc_ss_high") * get("mc_os_low"))
+    measured_double_ratio = get("mc_os_high") * get("mc_ss_low") / (get("mc_ss_high") * get("mc_os_low"))
     low_variance = low_transfer ** 2 * (relative("data_os_low") + relative("data_ss_low"))
-    double_variance = mc_double_ratio ** 2 * sum(relative(name) for name in
+    measured_double_variance = measured_double_ratio ** 2 * sum(relative(name) for name in
         ("mc_os_high", "mc_ss_high", "mc_ss_low", "mc_os_low"))
-    return dict(primitive=primitive, windows=dict(low=list(QCD_TRANSFER_LOW_WINDOW),
+    # These legacy keys describe the APPLIED transport in downstream statistics.
+    # Preserve the measured MC ratio separately when it is not applied.
+    mc_double_ratio = measured_double_ratio if method == "mc-double-ratio" else 1.0
+    double_variance = measured_double_variance if method == "mc-double-ratio" else 0.0
+    return dict(method=method, measured_mc_double_ratio=measured_double_ratio,
+                measured_double_ratio_variance=measured_double_variance,
+                primitive=primitive, windows=dict(low=list(QCD_TRANSFER_LOW_WINDOW),
                                                 high=list(QCD_TRANSFER_HIGH_WINDOW)),
                 low_transfer=low_transfer,
                 mc_double_ratio=mc_double_ratio, high_transfer=low_transfer * mc_double_ratio,
@@ -3386,7 +3418,8 @@ def build_qcd_stat_basis(metadata, native, main):
                                 min(high, QCD_TRANSFER_HIGH_WINDOW[1]), 0.5)
         rows.append([t * lo[0] + th * hi[0]]
                     + [t * lo[i] + th * hi[i] for i in range(1, 6)]
-                    + [lo[0] + k * hi[0], t * hi[0]])
+                    + [lo[0] + k * hi[0],
+                       t * hi[0] if transfer.get("method", "mc-double-ratio") == "mc-double-ratio" else 0.0])
     if not all(math.isfinite(v) for row in rows for v in row):
         raise RuntimeError("Non-finite QCD statistical derivative basis; ROOT output was not replaced.")
     # Independent global integration checks the sum of every native-bin derivative.
@@ -3492,12 +3525,13 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
         mc_low_ratio = mc_os_low / mc_ss_low
         mc_high_ratio = mc_os_high / mc_ss_high
 
-        # Piecewise OS/SS transfer prescription:
-        #   low mass (5--9 GeV): use the data-measured OS/SS ratio directly;
-        #   high mass (11--80 GeV): transport that data calibration with the
-        #   QCD-MC high/low double ratio.
+        # Low mass uses the data-measured OS/SS ratio. At high mass, the default
+        # transports that calibration with the QCD-MC double ratio; data-low
+        # applies the same data ratio directly.
         low_normalisation = dt_low_ratio
-        high_normalisation = dt_low_ratio * mc_high_ratio / mc_low_ratio
+        method = args.qcd_transfer_method
+        high_normalisation = (dt_low_ratio * mc_high_ratio / mc_low_ratio
+                              if method == "mc-double-ratio" else dt_low_ratio)
         for label, value in (
             ("low-mass QCD OS/SS transfer factor", low_normalisation),
             ("high-mass corrected QCD OS/SS transfer factor", high_normalisation),
@@ -3505,13 +3539,13 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
             if value <= 0.0 or not math.isfinite(value):
                 raise RuntimeError(f"Invalid {label}: {value}")
 
-        # QCD_norm is symmetric in log space.  In each mass region, one
-        # 1-sigma direction reaches the corresponding uncorrected QCD-MC
-        # OS/SS ratio.  With the present double-ratio construction the low-
-        # and high-mass fractional kappas are algebraically identical, but
-        # they are calculated separately here to keep the prescription clear.
+        # QCD_norm is symmetric in log space and retains the low-mass data/MC
+        # calibration comparison. In the default double-ratio method this
+        # also reaches the uncorrected high-mass MC ratio; in data-low its
+        # fractional kappa is carried unchanged to high mass.
         low_log_kappa = abs(math.log(low_normalisation / mc_low_ratio))
-        high_log_kappa = abs(math.log(high_normalisation / mc_high_ratio))
+        high_log_kappa = (abs(math.log(high_normalisation / mc_high_ratio))
+                          if method == "mc-double-ratio" else low_log_kappa)
         low_norm_kappa = math.exp(low_log_kappa)
         high_norm_kappa = math.exp(high_log_kappa)
         low_norm_down = 1.0 / low_norm_kappa
@@ -3524,7 +3558,7 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
         high_transfer_up = high_normalisation * high_norm_up
 
         transfer_stats = diagnostic_transfer_statistics(
-            h_ss, h_os, h_qcd_ss, h_qcd_os, h_dy_os, f_dy_est
+            h_ss, h_os, h_qcd_ss, h_qcd_os, h_dy_os, f_dy_est, method=method
         )
         stat_metadata = build_qcd_stat_metadata(
             ROOT, args, selected_by_key[SS_NOMINAL_MODEL], transfer_stats
@@ -3546,17 +3580,16 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
             "[fit.root] Low-mass central OS/SS = DT(low) = "
             f"{low_normalisation:g}"
         )
-        print(
-            "[fit.root] High-mass central OS/SS = DT(low) * MC(high) / MC(low) = "
-            f"{high_normalisation:g}"
-        )
+        high_recipe = "DT(low) * MC(high) / MC(low)" if method == "mc-double-ratio" else "DT(low)"
+        print(f"[fit.root] QCD transfer method = {method}")
+        print(f"[fit.root] High-mass central OS/SS = {high_recipe} = {high_normalisation:g}")
         print(
             "[fit.root] Low-mass Norm lnN vs MC(low): "
             f"kappa={low_norm_kappa:g}, Down={low_transfer_down:g} "
             f"({low_norm_down:g}), Up={low_transfer_up:g} ({low_norm_up:g})"
         )
         print(
-            "[fit.root] High-mass Norm lnN vs MC(high): "
+            f"[fit.root] High-mass Norm lnN vs {'MC(high)' if method == 'mc-double-ratio' else 'MC(low) calibration'}: "
             f"kappa={high_norm_kappa:g}, Down={high_transfer_down:g} "
             f"({high_norm_down:g}), Up={high_transfer_up:g} ({high_norm_up:g})"
         )
@@ -3771,6 +3804,8 @@ def close_files(files: Sequence[object]) -> None:
 
 def run(args: argparse.Namespace) -> int:
     mode = canonical_mode(args.mode)
+    if args.qcd_transfer_method != "mc-double-ratio" and (mode.key != SS_MODE.key or len(input_dirs(args)) != 1):
+        raise ValueError("--qcd-transfer-method data-low requires an individual-era ss-data template run; combined periods write only anchors.")
     objective = resolve_objective(args.fit_objective, mode)
     if (args.diagnostic_cards or args.diagnostic_output) and not args.uncertainty_diagnostics:
         raise ValueError("--diagnostic-cards/output requires --uncertainty-diagnostics")

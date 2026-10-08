@@ -281,6 +281,37 @@ change. Regenerate the affected ROOT templates after changing these windows.
 The separate `plotter.py` low window governs blinded QCD-MC validation
 normalisation, not the SS-data estimator's factor calculation.
 
+Individual-era SS templates accept `--qcd-transfer-method`:
+`mc-double-ratio` (default) uses `R_data(low)` in the low region and
+`R_data(low) * R_MC(high) / R_MC(low)` in the high region. `data-low` applies
+`R_data(low)` in both regions:
+
+```bash
+python3 qcd_bkg_estimation.py --mode ss-data --year 2016postVFP \
+    --ss-binning adaptive --ss-min-effective-count 10 --ss-max-bin-width 5 \
+    --qcd-transfer-method data-low
+python3 plotter.py --era 2016postVFP --unblind --variable dimuon_mass \
+    --uncertainty syst+stat --qcd-normalisation-diagnostics --strict
+```
+
+The method is recorded under `QCDStat/metadata`; the plotter reads it from the
+ROOT file without another method option. Switching methods regenerates the
+same `NIsoMuon_SS_fit.root` output, including nominal, Norm/Shape and statistical
+basis histograms. `qcd_yield_diagnostics.py` also reports the selected method and
+distinguishes the measured MC double ratio from the applied transport.
+`data-low` retains the current low-mass data/MC `QCD_norm`
+modelling comparison in both regions and propagates the common data-ratio
+statistics, without MC transport statistics. Shape fits and mass windows are
+unchanged. QCD MC inputs remain required for the modelling comparison and
+diagnostics. Older files without a method field are treated as
+`mc-double-ratio`. For compatibility with derivative-basis consumers, the
+legacy `mc_double_ratio`/`double_ratio_variance` metadata keys contain the
+applied transport (1/0 in `data-low`); measured MC values are retained separately
+as `measured_mc_double_ratio` and `measured_double_ratio_variance`.
+Run individual eras sequentially; combined periods write only SS anchors.
+Omit the new option, or pass `--qcd-transfer-method mc-double-ratio`, to restore
+the default prescription by regenerating that era's template.
+
 The QCD-MC fit excludes `9 < m(mumu) < 11 GeV`.  The OS/SS transfer diagnostics use `5 < m(mumu) < 9 GeV` as the low-mass region and `11 < m(mumu) < 80 GeV` as the high-mass region.
 
 To diagnose a low QCD data-driven yield using existing ROOT files:
