@@ -558,6 +558,23 @@ identified as the inputs of an existing ROOT output. `MCweight()` uses
 reported. Generated/skim counts, selected histogram fills and effective MC
 statistics are distinct quantities.
 
+If no production is found, inspect discovery separately without ROOT:
+
+```bash
+python3 qcd_sample_weight_audit.py --era 2016preVFP 2016postVFP \
+  --find-production-only --runlog-dir /data6/Users/joonblee/SKRunlog
+```
+
+`production-search` prints the resolved directory, scanned macro count,
+matching jobs and rejection reasons with examples. Matching uses macro contents;
+an archive need not retain the original sample-directory name. Set
+`--runlog-dir` to another saved archive or a specific production/sample directory
+if needed. Linked subdirectories are listed but are not followed recursively;
+select the linked target directly. `--production-tag` only selects an already
+discovered production and cannot resolve an incorrect or missing archive path.
+If the production macros or saved libraries are gone, historical replay cannot
+be performed from the weighted histograms alone.
+
 Weighted mass histograms do not retain per-window unweighted counts or
 individual event weights. To obtain those quantities, replay one production:
 

@@ -8,6 +8,9 @@ Default: read sample histograms, current CommonSampleInfo/ForSNU lists and
 production run.C/run_*.C configurations. Default sample: 120To170. No files
 are changed. Current metadata is NOT assumed to be the metadata used in an
 existing ROOT output. All matching nominal productions are listed separately.
+Macro discovery matches file contents, not sample-directory names. The search
+root, macro counts and rejection reasons are printed. --find-production-only
+performs this discovery without ROOT or reading any histogram.
 
 --replay creates a separate audit directory, copies/renames the CURRENT
 NIsoMuon source, and records weights at its existing Dilepton_Mass FillHist
@@ -69,45 +72,85 @@ def strip_comments(text):
     return re.sub(pattern, lambda m: m.group() if m.group().startswith('"') else ' ', text, flags=re.S)
 
 
-def read_job(path, era, alias):
+def inspect_job(path, era, alias):
     text = strip_comments(path.read_text())
-    if not re.search(r"\bNIsoMuon\s+m\s*;", text):
-        return None
     def string_field(pattern):
         match = re.search(pattern + r'\s*\(?("(?:\\.|[^"\\])*")', text)
         return json.loads(match.group(1)) if match else None
-    if string_field(r"m\.MCSample\s*=") != alias or string_field(r"m\.SetEra") != era:
-        return None
+    declaration = re.search(r"\b(\w+)\s+m\s*;", text)
+    info = dict(sample=string_field(r"m\.MCSample\s*="),
+                era=string_field(r"m\.SetEra"),
+                analyser=declaration.group(1) if declaration else None,
+                sample_hint=alias in text or alias in path.parts)
+    if info['sample'] != alias:
+        return None, 'sample mismatch or unsupported assignment', info
+    if info['analyser'] != 'NIsoMuon':
+        return None, 'analyser mismatch or unsupported declaration', info
+    if info['era'] != era:
+        return None, 'era mismatch or unsupported SetEra', info
     if not re.search(r"m\.IsDATA\s*=\s*false\s*;", text):
-        return None
+        return None, 'IsDATA is not explicitly false', info
     flag_match = re.search(r"m\.Userflags\s*=\s*\{(.*?)\}\s*;", text, re.S)
     flags = re.findall(r'"([^"\\]*)"', flag_match.group(1)) if flag_match else []
+    info['flags'] = flags
     if NOMINAL_EXCLUSIONS.intersection(flags):
-        return None
+        return None, 'non-nominal Userflags', info
     values = {}
     for key in ("xsec", "sumSign", "sumW"):
         match = re.search(r"m\." + key + r"\s*=\s*(" + NUMBER + r")\s*;", text)
         values[key] = float(match.group(1)) if match else None
     inputs = [json.loads(s) for s in re.findall(r'm\.AddFile\s*\(\s*("(?:\\.|[^"\\])*")', text)]
     group = path.parent.parent if re.fullmatch(r"job_\d+", path.parent.name) else path.parent
-    return dict(path=str(path), group=str(group), values=values, flags=flags, inputs=inputs,
-                limits=re.findall(r"m\.(?:MaxEvent|SkipEvent)\s*=[^;]+;", text), sha256=digest(path))
+    job = dict(path=str(path), group=str(group), values=values, flags=flags, inputs=inputs,
+               limits=re.findall(r"m\.(?:MaxEvent|SkipEvent)\s*=[^;]+;", text), sha256=digest(path))
+    return job, 'matched', info
+
+
+def read_job(path, era, alias):
+    return inspect_job(path, era, alias)[0]
 
 
 def find_jobs(root, era, alias):
     jobs = []
-    if not root or not Path(root).is_dir():
+    root = Path(root).expanduser().resolve() if root else None
+    print(f"[production-search] root={root}; era={era}; sample={alias}", flush=True)
+    if root is None or not root.is_dir():
+        print('[production-search] Directory does not exist; set --runlog-dir to the saved runlog directory', flush=True)
         return jobs
-    for directory, subdirs, filenames in os.walk(root):
+    counts, rejected, symlinks, errors = Counter(macros=0), [], [], []
+    for directory, subdirs, filenames in os.walk(root, onerror=lambda exc: errors.append(str(exc))):
         subdirs[:] = [x for x in subdirs if x not in {"lib", "output", "www", ".git"}]
         folder = Path(directory)
-        if alias not in folder.parts:
-            continue
+        # Do not follow links recursively (archives may contain cycles); a linked
+        # target can be selected directly with --runlog-dir.
+        symlinks.extend(str(folder / x) for x in subdirs if (folder / x).is_symlink())
         for name in filenames:
-            if name == "run.C" or re.fullmatch(r"run_\d+\.C", name):
-                job = read_job(folder / name, era, alias)
-                if job:
-                    jobs.append(job)
+            if not re.fullmatch(r"run(?:_[A-Za-z0-9_]+|\d+)?\.C", name):
+                continue
+            counts['macros'] += 1
+            path = folder / name
+            try:
+                job, reason, info = inspect_job(path, era, alias)
+            except (OSError, UnicodeError, ValueError) as exc:
+                counts['unreadable macro'] += 1
+                errors.append(f'{path}: {exc}')
+                continue
+            counts[reason] += 1
+            if job:
+                jobs.append(job)
+            elif info['sample_hint'] and len(rejected) < 5:
+                rejected.append(dict(path=str(path), reason=reason,
+                                     **{k:v for k,v in info.items() if k!='sample_hint'}))
+            if counts['macros'] % 5000 == 0:
+                print(f"[production-search-progress] macros={counts['macros']}; matched={len(jobs)}", flush=True)
+    print('[production-search-summary] ' + json.dumps(dict(counts)), flush=True)
+    for item in rejected:
+        print('[production-rejected-example] ' + json.dumps(item), flush=True)
+    for error in errors[:5]:
+        print(f'[production-search-error] {error}', flush=True)
+    if symlinks:
+        print(f'[production-search] skipped linked directories={len(symlinks)}; examples={symlinks[:3]}; '
+              'select their target with --runlog-dir if needed', flush=True)
     return sorted(jobs, key=lambda j: j["path"])
 
 
@@ -251,7 +294,7 @@ def make_replay_job(job, work, index):
     if any(token in original for token in ('gSystem->Exec', 'system(', 'TFile(')):
         raise ValueError("Unexpected file/system operation in production macro; manual review required")
     name = f"audit_job_{index}"
-    function = re.search(r"\bvoid\s+(run(?:_\d+)?)\s*\(\s*\)", original)
+    function = re.search(r"\bvoid\s+(run[A-Za-z0-9_]*)\s*\(\s*\)", original)
     if not function:
         raise ValueError(f"Cannot locate run function: {job['path']}")
     text = original[:function.start()] + original[function.start():].replace(function.group(1), name, 1)
@@ -387,7 +430,10 @@ def main(argv=None):
     parser.add_argument('--trigger',default='')
     parser.add_argument('--skflat-dir',default=os.getenv('SKFlat_WD',str(Path(__file__).resolve().parent.parent/'SKFlatAnalyzer')))
     parser.add_argument('--data-version',default='Run2UltraLegacy_v3')
-    parser.add_argument('--runlog-dir',default=os.getenv('SKFlatRunlogDir',f'/data6/Users/{getpass.getuser()}/SKRunlog'))
+    parser.add_argument('--runlog-dir',default=os.getenv('SKFlatRunlogDir') or f'/data6/Users/{getpass.getuser()}/SKRunlog',
+                        help='saved runlog root or a specific production/sample directory; supports ~')
+    parser.add_argument('--find-production-only',action='store_true',
+                        help='print metadata and production discovery only; does not require ROOT')
     parser.add_argument('--production-tag',help='exact timestamp/analyser directory name or exact sample-directory path')
     parser.add_argument('--replay',action='store_true',help='run recorded MC jobs on input ntuples into a NEW audit directory')
     parser.add_argument('--output-dir',help='parent for NEW replay directories; default: system temporary directory')
@@ -395,34 +441,45 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.top < 0:
         parser.error('--top must be non-negative')
+    if args.find_production_only and args.replay:
+        parser.error('--find-production-only cannot be combined with --replay')
     try:
-        import ROOT
-        ROOT.gROOT.SetBatch(True)
         years = list(dict.fromkeys(year for era in args.era for year in d.p.years_for_era(era)))
+        if not args.find_production_only:
+            import ROOT
+            ROOT.gROOT.SetBatch(True)
     except (ImportError,ValueError) as exc:
         print(f'[ERROR] {exc}',file=sys.stderr); return 1
     skflat = Path(args.skflat_dir).expanduser().resolve()
     sample = d.canonical_sample(args.sample)
-    if args.output_dir:
+    if args.output_dir and args.replay:
         Path(args.output_dir).mkdir(parents=True,exist_ok=True)
     status = 0
     for era in years:
         try:
             cfg = d.p.Config(era=era,base_dir=args.base_dir,trigger=args.trigger)
             directory = Path(d.p.root_dir_for_year(cfg,era))
-            files = [f for f in directory.glob('Skim_NIsoMuon_QCD_Pt-*_MuEnriched.root')
-                     if d.canonical_sample(d.sample_name(f))==sample]
-            if len(files)!=1:
-                raise ValueError(f'Expected one sample ROOT file in {directory}; found {len(files)}')
-            print(f'\n[era] {era}; ROOT input={files[0]}; metadata repo={skflat}',flush=True)
+            if args.find_production_only:
+                print(f'\n[era] {era}; production discovery only; metadata repo={skflat}',flush=True)
+            else:
+                files = [f for f in directory.glob('Skim_NIsoMuon_QCD_Pt-*_MuEnriched.root')
+                         if d.canonical_sample(d.sample_name(f))==sample]
+                if len(files)!=1:
+                    raise ValueError(f'Expected one sample ROOT file in {directory}; found {len(files)}')
+                print(f'\n[era] {era}; ROOT input={files[0]}; metadata repo={skflat}',flush=True)
             git = subprocess.run(['git','-C',str(skflat),'rev-parse','--abbrev-ref','HEAD'],capture_output=True,text=True)
             sha = subprocess.run(['git','-C',str(skflat),'rev-parse','HEAD'],capture_output=True,text=True)
             print(f'[current-repository] branch={git.stdout.strip() or "unknown"}; commit={sha.stdout.strip() or "unknown"}')
             current = read_current_metadata(skflat,era,sample,args.data_version)
-            alias = 'QCD_Pt-' + d.sample_name(files[0]) + '_MuEnriched'
+            sample_label = sample.replace('to','To').replace('inf','Inf') if args.find_production_only else d.sample_name(files[0])
+            alias = 'QCD_Pt-' + sample_label + '_MuEnriched'
             if current:
                 alias = current['alias']
             groups = show_productions(find_jobs(args.runlog_dir,era,alias),current)
+            if args.find_production_only:
+                if not groups:
+                    status = 1
+                continue
             low_high, origin = d.production_windows(ROOT,directory,cfg)
             if any(len(w)!=2 or w[0]>=w[1] or not all(math.isfinite(v) for v in w) for w in low_high):
                 raise ValueError('Invalid recorded windows')
@@ -450,6 +507,10 @@ def main(argv=None):
             candidates = {group:jobs for group,jobs in groups.items() if not args.production_tag
                           or args.production_tag in (group,Path(group).parent.name)}
             if len(candidates)!=1:
+                if not groups:
+                    raise ValueError('No nominal production found; inspect production-search output and '
+                                     'set --runlog-dir to the saved archive. --production-tag only selects '
+                                     'among discovered productions; it cannot locate missing macros.')
                 raise ValueError(f'Replay needs exactly one production; found {len(candidates)}. '
                                  'Use --production-tag with a candidate-production tag printed above.')
             jobs = next(iter(candidates.values()))
@@ -458,6 +519,7 @@ def main(argv=None):
                 status = 1
             print(f'[audit-files] {work}')
         except (OSError,ValueError,KeyError,TypeError,RuntimeError) as exc:
+            sys.stdout.flush()
             print(f'[ERROR] {era}: {exc}',file=sys.stderr,flush=True); status = 1
     return status
 
