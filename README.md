@@ -199,12 +199,14 @@ contents and zero TH1 errors are retained. The metadata contain the SS central
 fit covariance in `(log(A), n, k, m0, w)` coordinates and the primitive Sumw2
 transfer statistics, including the shared DY NF-stat contribution.
 
-All NF/SS-fit statistical calculations are contained in `qcd_bkg_estimation.py`;
-no separate statistical script or execution is required. Alongside the existing
+SS-fit yield statistics are calculated in `qcd_bkg_estimation.py`; the ROOT-free
+`qcd_common_transfer.py` contains common-transport fitting/validation and
+cross-era statistical rules. No separate statistical execution is required. Alongside the existing
 templates, each ROOT file stores `QCDStat/CentralYield`, `FitGradient_0` through
 `FitGradient_4`, and `NFGradient_low_transfer`/`NFGradient_mc_double_ratio`.
 These histograms contain native-bin yield derivatives, with covariance and
-transfer variances in `QCDStat/metadata` (`NPS26009_QCDStat_v2`). Consumers sum
+transfer variances in `QCDStat/metadata` (`NPS26009_QCDStat_v3` for common
+transport, `NPS26009_QCDStat_v2` for legacy methods). Consumers sum
 the stored derivatives over their actual window before propagating covariance.
 This preserves fitted-bin and low/high-transfer correlations; summing per-bin
 statistical errors in quadrature would not. `plotter.py` and the Combine workflow
@@ -216,19 +218,23 @@ flag and boundary parameters are recorded in ROOT and the diagnostic reports.
 Missing DY NF metadata or unavailable/non-finite statistical propagation
 prevents replacement of the production ROOT output.
 
-NF-stat and SS-fit-stat share SS events. Their cross-covariance has not been
-calculated, so one statistical nuisance uses the conservative first-order bound
-`sigma_stat = sigma_NFstat + sigma_SSfitStat`. It is not an independent quadrature
+Low-data NF-stat and SS-fit-stat share SS events. Their cross-covariance has not been
+calculated, so run-common transport uses the era-local conservative bound
+`sigma_local = sigma_lowNFstat + sigma_SSfitStat`, plus the independent MC
+transport component. The MC component is shared within each Run; the local
+bounds combine in quadrature across eras. Legacy methods retain the full
+`sigma_stat = sigma_NFstat + sigma_SSfitStat` bound. It is not an independent quadrature
 of those two terms or a demonstrated confidence-interval coverage prescription.
 The existing NF-modelling and functional-form uncertainties remain separate.
-`plotter.py` includes this statistical bound per plotting-bin integral, combining
-independent eras in quadrature, even in mass `stat-only` mode. It reads only the
+`plotter.py` includes these statistics per plotting-bin integral, summing common
+MC responses before squaring, even in mass `stat-only` mode. It reads only the
 nominal QCD file for this purpose. Final `syst+stat --strict` plots also retain the
 existing Norm/Shape and other background uncertainties.
 
 For each era, the mass plot audits the stored transfer primitives: the 5--9 GeV
 QCD prediction uses `R_data(low)`, and the 11--80 GeV prediction uses
-`R_data(low) * R_MC(high) / R_MC(low)`. These factors are already contained in
+`R_data(low) * D_common(Run2 or Run3)` by default. Legacy methods remain explicit
+options below. These factors are already contained in
 the SS-fit template; the plotter does not apply another normalisation. In
 `syst+stat` mode it checks the QCD Norm pair against the stored log-symmetric
 data/MC factor and the DY central contents/errors against
@@ -282,9 +288,12 @@ The separate `plotter.py` low window governs blinded QCD-MC validation
 normalisation, not the SS-data estimator's factor calculation.
 
 Individual-era SS templates accept `--qcd-transfer-method`:
-`mc-double-ratio` (default) uses `R_data(low)` in the low region and
-`R_data(low) * R_MC(high) / R_MC(low)` in the high region. `data-low` applies
-`R_data(low)` in both regions:
+`run-common` (default) uses era-local `R_data(low)` in the low region and
+`R_data(low) * D_common` in the high region. One MC double ratio is fitted for
+the four Run-2 eras and another for the four Run-3 eras. Every era's SS shape
+fit and low-data calibration remain local. `mc-double-ratio` retains the
+previous same-era `R_data(low) * R_MC(high) / R_MC(low)` high factor; `data-low`
+uses `R_data(low)` in both regions:
 
 ```bash
 python3 qcd_bkg_estimation.py --mode ss-data --year 2016postVFP \
@@ -309,8 +318,61 @@ legacy `mc_double_ratio`/`double_ratio_variance` metadata keys contain the
 applied transport (1/0 in `data-low`); measured MC values are retained separately
 as `measured_mc_double_ratio` and `measured_double_ratio_variance`.
 Run individual eras sequentially; combined periods write only SS anchors.
-Omit the new option, or pass `--qcd-transfer-method mc-double-ratio`, to restore
-the default prescription by regenerating that era's template.
+Pass `--qcd-transfer-method mc-double-ratio` explicitly to restore the previous
+per-era MC prescription by regenerating that era's template.
+
+#### Common MC transport validation
+
+Run this before regenerating the templates:
+
+```bash
+python3 qcd_bkg_estimation.py --mode ss-data --year Run2+3 \
+    --validate-qcd-double-ratio
+```
+
+This reads only `NIsoMuon_QCD_Inclusive.root` OS/SS histograms in each era,
+using `QCD_TRANSFER_LOW_WINDOW` and `QCD_TRANSFER_HIGH_WINDOW`. It writes
+`plots/QCDDoubleRatioValidation_Run2.{json,csv,pdf,png}` and the corresponding
+Run3 files. It never reads observed OS data or changes SS fits, anchors or
+production ROOT templates. `--year Run2`, `Run3` or one individual era selects
+its Run; `Run2+3` validates the two Runs separately.
+
+The estimator is a constant GLS fit to era `log(D)` values, with first-order
+variance `sum(Sumw2 / yield**2)` over the four disjoint MC primitives. It is
+not the double ratio of merged era histograms, whose low/high era mixture can
+change. Reports contain each ratio and log-normal 1-sigma interval, all four
+primitive yields/Sumw2/effective counts, leave-one-out pulls, global chi-square,
+ndf and p-value. Pulls include the covariance between an era and the fit to the
+other eras. Being statistically compatible does not establish equality; the
+test includes no detector/generator modelling uncertainty. Sparse effective
+counts trigger an approximation warning. Validation-only exits 2 on a failed
+compatibility test; it does not inflate errors or tune the central factor.
+
+All four era files and stored Sumw2 are required: missing inputs are errors,
+not grounds to silently omit an era. MC statistical independence across eras
+is the default assumption. If event samples are reused/correlated, supply a
+statistical covariance JSON with `--qcd-transfer-log-covariance PATH`. Its format
+is `{ "Run2": { "eras": [...], "log_covariance": [[...], ...] }, "Run3": ... }`,
+in the era order recorded in the reports; diagonal entries must match the
+primitive Sumw2 propagation. The covariance must be positive definite and must
+come from an actual shared-sample calculation, not arbitrary error inflation.
+
+Individual-era default production automatically repeats this validation before
+fitting. A p-value below `--qcd-transfer-validation-pmin` (default 0.05) stops
+production before changing fits/anchors/templates. An explicit
+`--allow-incompatible-qcd-transfer` overrides the check and retains the failure
+in the report/metadata. Validation-only still returns 2 on failure.
+
+After validation, regenerate all affected era templates sequentially with the
+usual adaptive-binning commands. A common-fit input fingerprint is stored in
+each ROOT file; plotting/card generation rejects mixed common/legacy templates
+or different common fits within one Run. The plotter reads the method directly.
+`QCD_norm` still uses each era's low-data/low-MC comparison; no modelling
+uncertainty is inferred from noisy era-to-era scatter. Update the
+`higgs_combine` and `combine_review` consumers and rebuild cards for v3: their
+era-local statistical Gaussian and shared `QCD_MCTransferStat_Run2/Run3`
+Gaussian preserve the common MC covariance. Older consumers reject v3 instead
+of silently treating the common factor as independent across eras.
 
 The QCD-MC fit excludes `9 < m(mumu) < 11 GeV`.  The OS/SS transfer diagnostics use `5 < m(mumu) < 9 GeV` as the low-mass region and `11 < m(mumu) < 80 GeV` as the high-mass region.
 

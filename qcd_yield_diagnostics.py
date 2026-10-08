@@ -162,7 +162,8 @@ def inspect_era(ROOT, cfg, plot_range):
         _, r_high, mc_high = records[1]
         double_mc = ratio(mc_high, mc_low)
         method = (metadata or {}).get("transfer_statistics", {}).get("method", "mc-double-ratio")
-        applied = 1.0 if method == "data-low" else double_mc
+        applied = ((metadata or {})["transfer_statistics"]["mc_double_ratio"] if method == "run-common" else
+                   1.0 if method == "data-low" else double_mc)
         transported = None if r_low is None or applied is None else r_low * applied
         print(f"\n[transfer/current] method={method}, R_low_data={fmt(r_low)}, R_low_MC={fmt(mc_low)}, "
               f"R_high_data={fmt(r_high)}, R_high_MC={fmt(mc_high)}, "
@@ -170,6 +171,11 @@ def inspect_era(ROOT, cfg, plot_range):
               f"T_high/R_high_data={fmt(ratio(transported, r_high))}")
         if metadata is not None:
             transfer = metadata["transfer_statistics"]
+            if method == "run-common":
+                common = transfer["common_transfer"]
+                print(f"[transfer/common] group={common['group']}, D={common['double_ratio']:.6g}, "
+                      f"chi2/ndf={common['chi2']:.6g}/{common['ndf']}, p={common['pvalue']:.6g}; "
+                      "current transport uses the stored common fit; rerun MC-only validation to audit all current era inputs")
             measured = transfer.get("measured_mc_double_ratio", transfer["mc_double_ratio"])
             print(f"[transfer/stored] method={transfer.get('method', 'mc-double-ratio')}, "
                   f"R_low_data={fmt(transfer['low_transfer'])}, MC-double-ratio={fmt(measured)}, "

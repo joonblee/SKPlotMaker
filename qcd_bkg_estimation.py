@@ -41,8 +41,9 @@ Fit modes and objectives
       Bin-integrated statistical chi-square; produces the central SS-based QCD
       template plus Norm and analytic-function-envelope Shape variations,
       and QCDStat/metadata for statistical yield propagation.
-      --qcd-transfer-method mc-double-ratio (default) transports R_data(low)
-      to high mass with R_MC(high)/R_MC(low). data-low uses R_data(low) in
+      --qcd-transfer-method run-common (default) transports era-local R_data(low)
+      to high mass with a common Run2/Run3 MC double ratio fitted in log space.
+      mc-double-ratio retains the previous per-era MC transport. data-low uses R_data(low) in
       both regions, with no MC transport statistical uncertainty. QCD_norm
       retains the low-mass data/MC log-symmetric modelling comparison.
       The method is recorded in ROOT metadata; regenerate individual-era
@@ -85,7 +86,13 @@ Main optional controls
   --ss-binning {auto,regular,legacy,adaptive}
   --ss-min-effective-count VALUE   adaptive target, default: 25
   --ss-max-bin-width GEV           adaptive width cap, default: 5
-  --qcd-transfer-method {mc-double-ratio,data-low}
+  --qcd-transfer-method {run-common,mc-double-ratio,data-low}
+  --validate-qcd-double-ratio     MC-only JSON/CSV/PDF/PNG compatibility report;
+                                 no SS fits, anchors or ROOT templates changed
+  --qcd-transfer-validation-pmin VALUE   default 0.05; failed common fits stop
+                                        production before replacing templates
+  --qcd-transfer-log-covariance JSON     optional statistical log(D) covariance
+  --allow-incompatible-qcd-transfer     explicit override; failure still reported
   --inspect-binning               print fit-bin statistics and exit
   --fit-max-attempts N
   --fit-attempt-details
@@ -116,6 +123,8 @@ in the input ROOT files.
 
 Examples
 --------
+  python3 qcd_bkg_estimation.py --mode ss-data --year Run2+3 \
+      --validate-qcd-double-ratio
   python3 qcd_bkg_estimation.py --mode ss-data --year 2018
   python3 qcd_bkg_estimation.py --mode ss-data --year 2016postVFP \
       --qcd-transfer-method data-low
@@ -156,11 +165,12 @@ Uncertainty diagnostics (central fits and template contents are unchanged):
 These opt-in CSV/JSON diagnostics compare the existing binwise function envelope
 and normalisation modelling variations with first-order NF-stat and fit-stat.
 Every individual-era SS production also writes covariance and native-bin yield
-derivative histograms under QCDStat/. All statistical calculations are contained
-in this script; downstream consumers sum the saved derivatives over their windows. The downstream
-counting model adds one independent-by-era additive statistical nuisance with
-sigma = sigma_NFstat + sigma_fitStat, a conservative first-order bound for the
-unknown NF/fit cross-correlation. The original norm/shape variations remain.
+derivative histograms under QCDStat/. The ROOT-free qcd_common_transfer.py module
+contains the common-factor fit and cross-era statistical rules; downstream
+consumers sum saved derivatives over their actual windows. Run-common transport
+uses an era-local low-NF + SS-fit linear bound, plus an independent MC component
+correlated within each Run. Legacy methods retain sigma_NFstat + sigma_fitStat.
+The original norm/shape variations remain.
 No separate statistical script is required. Missing DY NF-stat metadata or unreliable central-fit covariance stops output before replacement.
 The default mass windows are 12, 30 and 70 GeV with a +/-1% half-width:
 11.88--12.12, 29.7--30.3 and 69.3--70.7 GeV. No datacards are required.
@@ -173,8 +183,11 @@ log(A) for SS chi-square fits. NF-stat uses histogram Sumw2 plus the shared DY
 NF-stat contribution in DYAux/NF_aMC. Primitive OS/SS inputs and disjoint MC
 windows are treated as independent. NF-stat and SS-fit-stat share SS data;
 their cross-covariance is not computed. The independence-assuming quadrature
-and their linear sum bound are reported; the bound supplies the new QCD_stat
-nuisance. These first-order Gaussian estimates are not coverage tests.
+and their linear sum bound are reported. The run-common counting model separates
+the local bound from a shared MC nuisance. These first-order Gaussian estimates
+are not coverage tests. The common fit assumes independent per-era MC statistics
+unless an explicit statistical log(D) covariance is supplied. Its compatibility
+test includes no detector/generator modelling uncertainty and does not prove equality.
 Unreliable covariance, boundaries and derivative results are flagged.
 Fit-stat derivatives use a fresh analytic TF1, not Clone(): ROOT cannot clone
 the callable of a C++-function TF1. An amplitude-response check and a comparison
@@ -199,10 +212,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+from qcd_common_transfer import (
+    COMMON_STAT_SCHEMA, COMMON_STAT_TREATMENT, GROUP_ERAS, MC_KEYS,
+    fit_common_double_ratio, qcd_stat_components, transfer_group, validate_common_transfer,
+)
+
 QCD_STAT_SCHEMA = "NPS26009_QCDStat_v2"
 QCD_STAT_PATH = "QCDStat/metadata"
 QCD_STAT_TREATMENT = "linear_bound_unknown_nf_fit_correlation"
-QCD_TRANSFER_METHODS = ("mc-double-ratio", "data-low")
+QCD_TRANSFER_METHODS = ("run-common", "mc-double-ratio", "data-low")
 QCD_STAT_BASIS = (["CentralYield"] + [f"FitGradient_{i}" for i in range(5)]
                   + ["NFGradient_low_transfer", "NFGradient_mc_double_ratio"])
 
@@ -220,9 +238,12 @@ _GL16 = (
 
 
 def validate_qcd_stat_metadata(metadata, era=None, template_path=None):
-    if metadata.get("schema") != QCD_STAT_SCHEMA:
+    common_method = metadata.get("transfer_statistics", {}).get("method") == "run-common"
+    schema = COMMON_STAT_SCHEMA if common_method else QCD_STAT_SCHEMA
+    treatment = COMMON_STAT_TREATMENT if common_method else QCD_STAT_TREATMENT
+    if metadata.get("schema") != schema:
         raise ValueError("Missing/obsolete QCD statistical metadata; rerun qcd_bkg_estimation.py in ss-data mode.")
-    if metadata.get("treatment") != QCD_STAT_TREATMENT:
+    if metadata.get("treatment") != treatment:
         raise ValueError("Unsupported QCD statistical treatment.")
     if era is not None and metadata.get("era") != era:
         raise ValueError("QCD statistical metadata belong to a different era.")
@@ -259,6 +280,8 @@ def validate_qcd_stat_metadata(metadata, era=None, template_path=None):
     if method == "data-low" and (transfer["mc_double_ratio"] != 1.0
                                   or transfer["double_ratio_variance"] != 0.0):
         raise ValueError("Data-low QCD transfer requires fixed unit transport and zero MC transport variance.")
+    if common_method:
+        validate_common_transfer(transfer, metadata.get("era"))
     if metadata.get("basis") != QCD_STAT_BASIS:
         raise ValueError("Missing/obsolete QCD derivative basis; regenerate the SS ROOT file.")
     return metadata
@@ -317,11 +340,11 @@ def _window_statistics(metadata, low, high, max_width):
     if not math.isfinite(variance) or variance < -1e-10 * max(math.fsum(map(abs, terms)), 1e-300):
         raise ValueError("Invalid propagated QCD fit variance.")
     t, k = transfer["low_transfer"], transfer["mc_double_ratio"]
-    nf_variance = ((integrals[0] + k * integrals[1]) ** 2 * transfer["low_variance"]
-                   + (t * integrals[1]) ** 2 * transfer["double_ratio_variance"])
     central = t * integrals[0] + transfer["high_transfer"] * integrals[1]
-    return dict(central=central, sigma_nf_stat=math.sqrt(nf_variance),
-                sigma_fit_stat=math.sqrt(max(variance, 0.0)), gradient=gradient)
+    fit_sigma = math.sqrt(max(variance, 0.0))
+    return dict(central=central, sigma_fit_stat=fit_sigma, gradient=gradient,
+                **qcd_stat_components(transfer, integrals[0] + k * integrals[1],
+                                      t * integrals[1], fit_sigma))
 
 
 def qcd_window_statistics(metadata, low, high, nominal=None, validate=True):
@@ -338,9 +361,8 @@ def qcd_window_statistics(metadata, low, high, nominal=None, validate=True):
     if nominal is not None and not math.isclose(result["central"], nominal, rel_tol=1e-5, abs_tol=1e-280):
         raise ValueError("QCD statistical metadata disagree with the nominal template; regenerate matching files.")
     nf, fit = result["sigma_nf_stat"], result["sigma_fit_stat"]
-    result.update(sigma_stat_bound=nf + fit,
-                  stat_quadrature_assuming_independent=math.hypot(nf, fit),
-                  treatment=QCD_STAT_TREATMENT, effective_low=low, effective_high=high)
+    result.update(stat_quadrature_assuming_independent=math.hypot(nf, fit),
+                  treatment=metadata["treatment"], effective_low=low, effective_high=high)
     if not all(math.isfinite(result[k]) for k in ("central", "sigma_fit_stat", "sigma_nf_stat", "sigma_stat_bound")):
         raise ValueError("Non-finite propagated QCD statistics.")
     return result
@@ -1014,12 +1036,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--analyzer", default="NIsoMuon")
     parser.add_argument("--base-dir", default=DEFAULT_BASE_DIR)
     parser.add_argument(
-        "--qcd-transfer-method", choices=QCD_TRANSFER_METHODS, default="mc-double-ratio",
-        help=("Individual-era SS-data templates: mc-double-ratio (default) uses "
-              "R_data(low)*R_MC(high)/R_MC(low) at high mass; data-low uses "
+        "--qcd-transfer-method", choices=QCD_TRANSFER_METHODS, default="run-common",
+        help=("Individual-era SS-data templates: run-common (default) uses era-local "
+              "R_data(low) times a common Run2/Run3 MC double ratio, fitted in log space. "
+              "mc-double-ratio uses the same era's MC ratio; data-low uses "
               "R_data(low) in both regions, without MC transport statistics. "
               "QCD_norm keeps the low-mass data/MC modelling comparison."),
     )
+    parser.add_argument("--validate-qcd-double-ratio", action="store_true",
+                        help="MC-only common-factor compatibility report for the requested Run(s); no SS fits, anchors or ROOT templates written.")
+    parser.add_argument("--qcd-transfer-log-covariance", type=Path,
+                        help="Optional JSON statistical covariance of era log(D): {Run2: {eras: [...], log_covariance: [[...]]}, ...}; diagonal must match Sumw2.")
+    parser.add_argument("--qcd-transfer-validation-pmin", type=float, default=0.05,
+                        help="Minimum common-fit chi-square p-value; default: %(default)s (first-order MC statistics only).")
+    parser.add_argument("--allow-incompatible-qcd-transfer", action="store_true",
+                        help="Explicitly allow common transport despite failed statistical compatibility; the failure remains recorded/reported.")
     parser.add_argument(
         "--no-prefer-full-run-anchor", dest="prefer_full_run_anchor",
         action="store_false",
@@ -3125,8 +3156,118 @@ def diagnostic_count_variance(hist, low: float, high: float) -> Tuple[float, flo
     return value, variance
 
 
+def read_common_qcd_transfer(ROOT, args, group):
+    """Read all four era MC inputs, never observed OS data or fitted templates."""
+    windows = dict(low=list(QCD_TRANSFER_LOW_WINDOW), high=list(QCD_TRANSFER_HIGH_WINDOW))
+    records = {}
+    for era in GROUP_ERAS[group]:
+        path = era_dir(args, era) / "NIsoMuon_QCD_Inclusive.root"
+        root_file = open_root_file(ROOT, path)
+        try:
+            primitive = {}
+            for sign, region in (("os", OS_REGION), ("ss", SS_REGION)):
+                hist = root_file.Get(hist_path(region))
+                if not hist or not hasattr(hist, "GetNbinsX") or hist.GetSumw2N() == 0:
+                    raise ValueError(f"{path}: missing QCD {sign} histogram or stored Sumw2")
+                axis = hist.GetXaxis()
+                for name, (low, high) in windows.items():
+                    first, last = diagnostic_bin_range(hist, low, high)
+                    if not (math.isclose(axis.GetBinLowEdge(first), low, abs_tol=1e-8, rel_tol=0)
+                            and math.isclose(axis.GetBinUpEdge(last), high, abs_tol=1e-8, rel_tol=0)):
+                        raise ValueError(f"{path}: QCD {sign} window {low}--{high} is not on native bin edges")
+                    value, variance = diagnostic_count_variance(hist, low, high)
+                    primitive[f"mc_{sign}_{name}"] = dict(value=value, variance=variance)
+            records[era] = dict(primitive=primitive, source_file=str(path),
+                                os_path=hist_path(OS_REGION), ss_path=hist_path(SS_REGION))
+        finally:
+            root_file.Close()
+    covariance = None
+    if args.qcd_transfer_log_covariance:
+        supplied = json.loads(args.qcd_transfer_log_covariance.read_text())[group]
+        if supplied["eras"] != list(GROUP_ERAS[group]):
+            raise ValueError(f"{group}: covariance era order must be {list(GROUP_ERAS[group])}")
+        covariance = supplied["log_covariance"]
+    return fit_common_double_ratio(records, group, windows, covariance, args.qcd_transfer_validation_pmin)
+
+
+def write_common_qcd_validation(ROOT, common):
+    """Statistical compatibility table, JSON/CSV and a reproducible ROOT plot."""
+    group = common["group"]
+    status = "COMPATIBLE (MC statistics only)" if common["compatible"] else "INCOMPATIBLE (MC statistics only)"
+    print(f"[qcd-double-ratio] {group}: D_common={common['double_ratio']:.6g} "
+          f"-{common['error_low']:.6g}/+{common['error_high']:.6g}; "
+          f"chi2/ndf={common['chi2']:.6g}/{common['ndf']}, p={common['pvalue']:.6g}, "
+          f"pmin={common['pmin']:g}: {status}")
+    print("[qcd-double-ratio] GLS in log(D); errors from weighted Sumw2. "
+          "Leave-one-out pulls avoid comparing an era with itself in the fitted mean.")
+    rows = []
+    for era in common["eras"]:
+        row = common["rows"][era]
+        print(f"[qcd-double-ratio] {era}: D={row['double_ratio']:.6g} "
+              f"-{row['error_low']:.6g}/+{row['error_high']:.6g}; "
+              f"leave-one-out pull={row['leave_one_out_pull']:+.4g}; "
+              f"within 1sigma={row['within_1sigma']}, 2sigma={row['within_2sigma']}")
+        print("[qcd-double-ratio]   N_eff: " + ", ".join(
+            f"{key}={row['effective_counts'][key]:.5g}" for key in MC_KEYS))
+        flat = dict(era=era, **{key: value for key, value in row.items() if key != "effective_counts"})
+        for key in MC_KEYS:
+            flat.update({key: common["records"][era]["primitive"][key]["value"],
+                         key + "_variance": common["records"][era]["primitive"][key]["variance"],
+                         key + "_effective_count": row["effective_counts"][key]})
+        rows.append(flat)
+    if any(min(row["effective_counts"].values()) < 10 for row in common["rows"].values()):
+        print("[WARNING] Sparse MC: the log-Gaussian compatibility approximation may be inaccurate; this is not a coverage test.")
+    if not common["compatible"]:
+        print("[WARNING] Common QCD transport fails the requested MC-statistical compatibility threshold.")
+    PLOT_DIR.mkdir(parents=True, exist_ok=True)
+    output = PLOT_DIR / f"QCDDoubleRatioValidation_{group}"
+    output.with_suffix(".json").write_text(json.dumps(common, indent=2, allow_nan=False) + "\n")
+    with output.with_suffix(".csv").open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    # A horizontal 1-sigma band for the common fit and one point per era.
+    canvas = ROOT.TCanvas(_NAMES.unique("common_qcd_canvas"), "QCD MC double-ratio validation", 900, 620)
+    canvas.SetLeftMargin(0.20)
+    canvas.SetTopMargin(0.16)
+    canvas.SetBottomMargin(0.14)
+    xmax = 1.25 * max([row["double_ratio"] + row["error_high"] for row in rows]
+                      + [common["double_ratio"] + common["error_high"]])
+    frame = ROOT.TH2D(_NAMES.unique("common_qcd_frame"), "", 100, 0, xmax, 4, 0.5, 4.5)
+    frame.SetDirectory(0)
+    frame.SetStats(False)
+    frame.GetXaxis().SetTitle("D = R^{MC}_{high} / R^{MC}_{low}")
+    for i, era in enumerate(common["eras"], 1):
+        frame.GetYaxis().SetBinLabel(i, era)
+    frame.Draw("AXIS")
+    band = ROOT.TBox(common["double_ratio"] - common["error_low"], 0.5,
+                     common["double_ratio"] + common["error_high"], 4.5)
+    band.SetFillColorAlpha(ROOT.kAzure - 9, 0.5)
+    band.Draw()
+    line = ROOT.TLine(common["double_ratio"], 0.5, common["double_ratio"], 4.5)
+    line.SetLineColor(ROOT.kBlue + 1)
+    line.SetLineStyle(2)
+    line.Draw()
+    graph = ROOT.TGraphAsymmErrors(len(rows))
+    for i, row in enumerate(rows):
+        graph.SetPoint(i, row["double_ratio"], i + 1)
+        graph.SetPointError(i, row["error_low"], row["error_high"], 0, 0)
+    graph.SetMarkerStyle(20)
+    graph.SetLineWidth(2)
+    graph.Draw("P SAME")
+    text = ROOT.TLatex()
+    text.SetNDC(True)
+    text.SetTextSize(0.033)
+    text.DrawLatex(0.20, 0.94, f"{group} QCD MC: common log-ratio fit, statistical errors")
+    text.DrawLatex(0.20, 0.89, f"#chi^{{2}}/ndf = {common['chi2']:.2f}/{common['ndf']}, p = {common['pvalue']:.3g}")
+    for suffix in (".pdf", ".png"):
+        canvas.SaveAs(str(output.with_suffix(suffix)))
+    canvas.Close()
+    print(f"[qcd-double-ratio] wrote {output}.json/.csv/.pdf/.png")
+
+
 def diagnostic_transfer_statistics(h_ss, h_os, h_qcd_ss, h_qcd_os, h_dy_os, f_dy,
-                                   method="mc-double-ratio") -> dict:
+                                   method="mc-double-ratio", common_transfer=None) -> dict:
     """First-order propagation of independent primitive Sumw2 inputs."""
     if method not in QCD_TRANSFER_METHODS:
         raise ValueError(f"Unsupported QCD transfer method: {method}")
@@ -3169,9 +3310,14 @@ def diagnostic_transfer_statistics(h_ss, h_os, h_qcd_ss, h_qcd_os, h_dy_os, f_dy
         ("mc_os_high", "mc_ss_high", "mc_ss_low", "mc_os_low"))
     # These legacy keys describe the APPLIED transport in downstream statistics.
     # Preserve the measured MC ratio separately when it is not applied.
-    mc_double_ratio = measured_double_ratio if method == "mc-double-ratio" else 1.0
-    double_variance = measured_double_variance if method == "mc-double-ratio" else 0.0
-    return dict(method=method, measured_mc_double_ratio=measured_double_ratio,
+    if method == "run-common":
+        if common_transfer is None:
+            raise ValueError("Run-common QCD transport needs a validated full-Run MC fit")
+        mc_double_ratio, double_variance = common_transfer["double_ratio"], common_transfer["variance"]
+    else:
+        mc_double_ratio = measured_double_ratio if method == "mc-double-ratio" else 1.0
+        double_variance = measured_double_variance if method == "mc-double-ratio" else 0.0
+    result = dict(method=method, measured_mc_double_ratio=measured_double_ratio,
                 measured_double_ratio_variance=measured_double_variance,
                 primitive=primitive, windows=dict(low=list(QCD_TRANSFER_LOW_WINDOW),
                                                 high=list(QCD_TRANSFER_HIGH_WINDOW)),
@@ -3181,6 +3327,9 @@ def diagnostic_transfer_statistics(h_ss, h_os, h_qcd_ss, h_qcd_os, h_dy_os, f_dy
                 high_variance=mc_double_ratio ** 2 * low_variance + low_transfer ** 2 * double_variance,
                 low_high_covariance=mc_double_ratio * low_variance,
                 dy_nf_extra_variance=dy_extra_variance, complete=complete, warnings=warnings)
+    if common_transfer is not None and method == "run-common":
+        result["common_transfer"] = common_transfer
+    return result
 
 
 def diagnostic_fit_error(ROOT, selected: SelectedFit, segments: Sequence[Tuple[float, float, float]], objective: str) -> dict:
@@ -3306,6 +3455,10 @@ def write_uncertainty_diagnostics(ROOT, args, selected, h_central, h_up, h_down,
         available = nf_stat is not None and fit_stat is not None
         quadrature = math.hypot(nf_stat, fit_stat) if available else None
         upper = nf_stat + fit_stat if available else None
+        components = (qcd_stat_components(transfer_stats,
+                         integrals[0] + transfer_stats["mc_double_ratio"] * integrals[1],
+                         transfer_stats["low_transfer"] * integrals[1], fit_stat)
+                      if available else {})
         reliable = available and fit["usable"]
         row = dict(era=args.year, window=window["label"], requested_low=window["low"], requested_high=window["high"],
                    effective_low=low, effective_high=high, central=central,
@@ -3320,8 +3473,11 @@ def write_uncertainty_diagnostics(ROOT, args, selected, h_central, h_up, h_down,
         current_model = math.hypot(form, norm)
         row.update(sigma_current_model=current_model,
                    current_model_over_fit_stat=(current_model / fit_stat) if fit_stat else None,
-                   sigma_stat_bound_for_card=upper if reliable else None,
-                   sigma_model_plus_stat_bound=math.hypot(current_model, upper) if reliable else None)
+                   sigma_nf_low_stat=components.get("sigma_nf_low_stat"),
+                   sigma_mc_transfer_stat=components.get("sigma_mc_transfer_stat"),
+                   sigma_local_stat_bound=components.get("sigma_local_stat_bound"),
+                   sigma_stat_bound_for_card=components.get("sigma_stat_bound") if reliable else None,
+                   sigma_model_plus_stat_bound=math.hypot(current_model, components["sigma_stat_bound"]) if reliable else None)
         rows.append(row)
         render = lambda value: "NA" if value is None else f"{value:.6g}"
         print(f"[QCD UNC] {args.year} {window['label']} Q={central:.6g} form={form:.6g} normModel={norm:.6g} "
@@ -3354,7 +3510,8 @@ def write_uncertainty_diagnostics(ROOT, args, selected, h_central, h_up, h_down,
                                  "The linear sum bounds their first-order standard deviation for any cross-correlation.",
                                  "Diagnostics do not change fits or template contents/errors.",
                                  "QCDStat/metadata now exports NF/fit statistics for downstream cards.",
-                                 "One additive QCD_stat Gaussian uses the linear NF+fit bound; cross-covariance is unknown."])
+                                 "Common transport uses an era-local low-NF+fit bound plus an independent MC component shared within Run.",
+                                 "Legacy transport retains the linear NF+fit bound; cross-covariance is unknown."])
     # Serialize before opening either file so non-finite diagnostics cannot leave
     # a seemingly successful partial report. Missing results are JSON null/CSV NA.
     payload = json.dumps(metadata, indent=2, allow_nan=False) + "\n"
@@ -3375,7 +3532,9 @@ def build_qcd_stat_metadata(ROOT, args, selected, transfer_stats):
         raise RuntimeError("QCD statistical covariance propagation is unavailable: "
                            + "; ".join(fit["warnings"])
                            + ". The central fit was not changed; existing ROOT files were not overwritten.")
-    metadata = dict(schema=QCD_STAT_SCHEMA, treatment=QCD_STAT_TREATMENT, basis=QCD_STAT_BASIS,
+    common_method = transfer_stats["method"] == "run-common"
+    metadata = dict(schema=COMMON_STAT_SCHEMA if common_method else QCD_STAT_SCHEMA,
+                    treatment=COMMON_STAT_TREATMENT if common_method else QCD_STAT_TREATMENT, basis=QCD_STAT_BASIS,
                     era=args.year, template_path=hist_path(OS_REGION),
                     fit=dict(model=selected.model.key, **fit),
                     transfer_statistics=transfer_stats,
@@ -3385,8 +3544,10 @@ def build_qcd_stat_metadata(ROOT, args, selected, transfer_stats):
                     ss_max_bin_width=args.ss_max_bin_width,
                     assumptions=["First-order fit covariance and primitive Sumw2 propagation.",
                                  "NF-stat and SS fit-stat share SS data; their cross-covariance is unknown.",
-                                 "sigma_nf_stat + sigma_fit_stat bounds their first-order standard deviation.",
-                                 "Independent eras; modelling nuisances remain separate.",
+                                 ("Era-local low-NF + SS-fit bound; independent common MC component added in quadrature."
+                                  if common_method else "sigma_nf_stat + sigma_fit_stat bounds their first-order standard deviation."),
+                                 ("Common MC transport is correlated within each Run; era-local bounds are independent."
+                                  if common_method else "Independent eras; modelling nuisances remain separate."),
                                  "Not a coverage test or a simultaneous control-region likelihood."])
     validate_qcd_stat_metadata(metadata, args.year, hist_path(OS_REGION))
     t = transfer_stats["low_transfer"]
@@ -3419,7 +3580,7 @@ def build_qcd_stat_basis(metadata, native, main):
         rows.append([t * lo[0] + th * hi[0]]
                     + [t * lo[i] + th * hi[i] for i in range(1, 6)]
                     + [lo[0] + k * hi[0],
-                       t * hi[0] if transfer.get("method", "mc-double-ratio") == "mc-double-ratio" else 0.0])
+                       t * hi[0] if transfer.get("method", "mc-double-ratio") != "data-low" else 0.0])
     if not all(math.isfinite(v) for row in rows for v in row):
         raise RuntimeError("Non-finite QCD statistical derivative basis; ROOT output was not replaced.")
     # Independent global integration checks the sum of every native-bin derivative.
@@ -3530,8 +3691,11 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
         # applies the same data ratio directly.
         low_normalisation = dt_low_ratio
         method = args.qcd_transfer_method
-        high_normalisation = (dt_low_ratio * mc_high_ratio / mc_low_ratio
-                              if method == "mc-double-ratio" else dt_low_ratio)
+        common_transfer = (args._qcd_common_transfers[transfer_group(args.year)]
+                           if method == "run-common" else None)
+        transport = (common_transfer["double_ratio"] if method == "run-common" else
+                     mc_high_ratio / mc_low_ratio if method == "mc-double-ratio" else 1.0)
+        high_normalisation = dt_low_ratio * transport
         for label, value in (
             ("low-mass QCD OS/SS transfer factor", low_normalisation),
             ("high-mass corrected QCD OS/SS transfer factor", high_normalisation),
@@ -3540,9 +3704,9 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
                 raise RuntimeError(f"Invalid {label}: {value}")
 
         # QCD_norm is symmetric in log space and retains the low-mass data/MC
-        # calibration comparison. In the default double-ratio method this
-        # also reaches the uncorrected high-mass MC ratio; in data-low its
-        # fractional kappa is carried unchanged to high mass.
+        # calibration comparison. The legacy per-era double-ratio method also
+        # reaches the uncorrected high-mass MC ratio; run-common and data-low
+        # carry its fractional kappa unchanged to high mass.
         low_log_kappa = abs(math.log(low_normalisation / mc_low_ratio))
         high_log_kappa = (abs(math.log(high_normalisation / mc_high_ratio))
                           if method == "mc-double-ratio" else low_log_kappa)
@@ -3558,7 +3722,8 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
         high_transfer_up = high_normalisation * high_norm_up
 
         transfer_stats = diagnostic_transfer_statistics(
-            h_ss, h_os, h_qcd_ss, h_qcd_os, h_dy_os, f_dy_est, method=method
+            h_ss, h_os, h_qcd_ss, h_qcd_os, h_dy_os, f_dy_est, method=method,
+            common_transfer=common_transfer,
         )
         stat_metadata = build_qcd_stat_metadata(
             ROOT, args, selected_by_key[SS_NOMINAL_MODEL], transfer_stats
@@ -3580,7 +3745,8 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
             "[fit.root] Low-mass central OS/SS = DT(low) = "
             f"{low_normalisation:g}"
         )
-        high_recipe = "DT(low) * MC(high) / MC(low)" if method == "mc-double-ratio" else "DT(low)"
+        high_recipe = (f"DT(low) * D_common({common_transfer['group']})" if method == "run-common" else
+                       "DT(low) * MC(high) / MC(low)" if method == "mc-double-ratio" else "DT(low)")
         print(f"[fit.root] QCD transfer method = {method}")
         print(f"[fit.root] High-mass central OS/SS = {high_recipe} = {high_normalisation:g}")
         print(
@@ -3804,8 +3970,14 @@ def close_files(files: Sequence[object]) -> None:
 
 def run(args: argparse.Namespace) -> int:
     mode = canonical_mode(args.mode)
-    if args.qcd_transfer_method != "mc-double-ratio" and (mode.key != SS_MODE.key or len(input_dirs(args)) != 1):
+    if args.qcd_transfer_method == "data-low" and (mode.key != SS_MODE.key or len(input_dirs(args)) != 1):
         raise ValueError("--qcd-transfer-method data-low requires an individual-era ss-data template run; combined periods write only anchors.")
+    if not math.isfinite(args.qcd_transfer_validation_pmin) or not 0 < args.qcd_transfer_validation_pmin < 1:
+        raise ValueError("--qcd-transfer-validation-pmin must be between 0 and 1")
+    if args.qcd_transfer_log_covariance and args.qcd_transfer_method != "run-common":
+        raise ValueError("--qcd-transfer-log-covariance applies only to run-common")
+    if args.validate_qcd_double_ratio and (mode.key != SS_MODE.key or args.qcd_transfer_method != "run-common"):
+        raise ValueError("--validate-qcd-double-ratio requires ss-data mode with run-common")
     objective = resolve_objective(args.fit_objective, mode)
     if (args.diagnostic_cards or args.diagnostic_output) and not args.uncertainty_diagnostics:
         raise ValueError("--diagnostic-cards/output requires --uncertainty-diagnostics")
@@ -3814,6 +3986,21 @@ def run(args: argparse.Namespace) -> int:
             raise ValueError("Uncertainty diagnostics require ss-data mode and one individual era")
         args._diagnostic_windows = diagnostic_windows(args)
     ROOT = import_root()
+    if args.validate_qcd_double_ratio or (mode.key == SS_MODE.key and len(input_dirs(args)) == 1
+                                        and args.qcd_transfer_method == "run-common" and not args.inspect_binning):
+        groups = list(dict.fromkeys(transfer_group(era) for era in selected_eras(args.year)))
+        args._qcd_common_transfers = {}
+        for group in groups:
+            common = read_common_qcd_transfer(ROOT, args, group)
+            write_common_qcd_validation(ROOT, common)
+            args._qcd_common_transfers[group] = common
+        failed = [group for group, common in args._qcd_common_transfers.items() if not common["compatible"]]
+        if args.validate_qcd_double_ratio:
+            print("[DONE] MC-only validation; SS fits, anchors and ROOT templates were not changed.")
+            return 2 if failed else 0
+        if failed and not args.allow_incompatible_qcd_transfer:
+            raise ValueError(f"Common QCD transport is statistically incompatible in {failed}; ROOT templates were not overwritten. "
+                             "Inspect the validation report; --allow-incompatible-qcd-transfer explicitly overrides this check.")
     declare_fit_functions(ROOT)
     configure_minimizer(ROOT)
 
