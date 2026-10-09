@@ -779,6 +779,41 @@ python3 plotter_qcdseparate.py --era Run2 --variable dimuon_mass
 python3 os_ss_comparison.py --era Run2 --blind
 ```
 
+## DY LightJet source and NF diagnostics
+
+Read existing merged histogram ROOT files to compare the DY source and NF:
+
+```bash
+set -o pipefail
+mkdir -p plots
+python3 -u dy_lightjet_diagnostics.py \
+    --era 2016preVFP 2016postVFP 2017 2018 --mass-range 11 80 \
+    2>&1 | tee plots/dy_lightjet_diagnostics_MG.log
+```
+
+The script prints OS LightJet Data, QCD/Top/Others subtraction, current and
+stored signed LightJet sources, saved DYDD, aMC@NLO/MG LO NF inputs and errors,
+stored/current consistency checks, MG/aMC ratios and an alternative MG-scaled
+DYDD yield using the same stored source. It reads `DYAux/NF_aMC`, `NF_MG`,
+`NFInputs_aMC`, `NFInputs_MG` and `LightJetSource`; missing metadata are reported.
+The default MC files are `NIsoMuon_DYJets_Inclusive.root` and
+`NIsoMuon_DYJets_MG_Inclusive.root`, overridable with `--dy-amc-file` and
+`--dy-mg-file`. It never reads event trees or modifies ROOT outputs.
+
+With several eras in one invocation it also prints pooled `sum(B)/sum(L)` and
+inverse-variance log-fit common NF diagnostics. These assume a common NF and
+independent finite-MC errors; they do not change the production method.
+Era jobs can run in parallel with distinct log files, but the cross-era summary
+requires all requested eras in one invocation.
+
+Default luminosities reproduce the diagnostic comparison denominators
+19.52/16.81/41.48/59.83 fb^-1; they do not certify dataset coverage or rescale
+stored inputs. Use `--lumi ERA=VALUE` for the actual input luminosity when needed.
+Errors exclude luminosity, generator modelling and other systematic effects.
+The stored DYDD histogram errors contain LightJetStat only; NFStat is printed
+separately. The script inspects the OS LightJet control region and DY MC/template
+objects, without reading OS BJet Data observations.
+
 ## Getting script-specific help
 
 Most Python scripts intentionally print their detailed usage when run with no arguments or with `--help`.
