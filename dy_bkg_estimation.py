@@ -137,8 +137,8 @@ DEFAULT_MASS_BINS = [
     0.0, 0.5, 1.0, 1.5, 2.0, 2.5,
     3.0, 3.5, 4.0, 4.5,
     5.0, 6.0, 7.0, 8.0, 9.0,
-    11.0, 15., 20.0, 25.,
-    30.0, 35., 40., 45., 50., 55., 60., 65., 70., 75., 80., 85., 90., 95., 100., 105., 110., 120., 130., 150.
+    11.0, 13., 15., 20.0, 25.,
+    30.0, 40., 60., 80., 85., 90., 95., 100., 110., 150.
 ]
 
 LUMI_FB = {
@@ -2268,10 +2268,10 @@ def main(argv=None):
         injected_prediction_label = "light-jet #times TF(DY + Z' MC)"
     else:
         dy_prediction_label = (
-            f"light-jet #times {nf_amc.value:.6g} (DY aMC@NLO)"
+            f"light-jet #times {nf_amc.value:.6g} (DY MC)"
         )
         data_prediction_label = (
-            f"light-jet data #times {nf_amc.value:.6g} (aMC NF)"
+            f"light-jet data #times {nf_amc.value:.6g} (MC NF)"
         )
         injected_prediction_label = (
             f"light-jet #times {signal_estimate.factor_value:.6g} (DY + Z' MC)"

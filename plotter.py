@@ -49,6 +49,7 @@ Typical examples:
 Dimuon Mass
 
     for era in 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix Run2 Run3 Run2+3; do python3 plotter.py --era ${era} --blind --variable dimuon_mass --uncertainty syst+stat --draw-signal --xmax 80 --signal-scale 0.01 --ymin 0.01; done
+    python3 plotter.py --era 2016preVFP  --varialbe dimuon_mass --uncertainty syst+stat --draw-signal --xmax 80 --ymin 0.01 --signal-scale 0.01
 
 Validation plots
     for era in 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix Run2 Run3 Run2+3; do python3 plotter.py --qcd-method mc --dy-method mc --era ${era} --blind --variable all --ymin 0.5; done
@@ -2653,7 +2654,7 @@ def style_data_graph(ROOT, g, cfg: Config) -> None:
     if not g:
         return
     g.SetMarkerStyle(24 if cfg.blind and cfg.blind_point_mode in {"asimov", "toy"} else 20)
-    g.SetMarkerSize(0.95)
+    g.SetMarkerSize(0.7)
     g.SetMarkerColor(ROOT.kBlack)
     g.SetLineColor(ROOT.kBlack)
     g.SetLineWidth(1)
@@ -3339,8 +3340,8 @@ No-argument behaviour:
     parser.add_argument("--logy", dest="logy", action="store_true", help="use log y axis; default")
     parser.set_defaults(logy=True)
     parser.add_argument("--no-ratio", dest="draw_ratio", action="store_false", help="do not draw the Data/Bkg ratio panel")
-    parser.add_argument("--ratio-min", "--ratio-ymin", "--ratio-y-min", dest="ratio_min", type=float, default=0.5, help="minimum of the Data/Bkg ratio-panel y axis; default: 0.5")
-    parser.add_argument("--ratio-max", "--ratio-ymax", "--ratio-y-max", dest="ratio_max", type=float, default=1.5, help="maximum of the Data/Bkg ratio-panel y axis; default: 1.5")
+    parser.add_argument("--ratio-min", "--ratio-ymin", "--ratio-y-min", dest="ratio_min", type=float, default=0., help="minimum of the Data/Bkg ratio-panel y axis; default: 0.")
+    parser.add_argument("--ratio-max", "--ratio-ymax", "--ratio-y-max", dest="ratio_max", type=float, default=2., help="maximum of the Data/Bkg ratio-panel y axis; default: 2.")
     parser.add_argument("--cms-label", default="Preliminary")
 
     parser.add_argument("--no-bin-width-normalisation", dest="divide_by_bin_width", action="store_false")
