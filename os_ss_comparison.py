@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""BJet OS/SS overlay: QCD MC vs Data - nonQCD BKG."""
+"""BJet OS/SS overlay: QCD MC vs Data - nonQCD BKG.
+
+The ratio panel includes separate QCD MC integrated OS/SS reference lines
+in 5 < m < 9 and 11 < m < 80 GeV, computed from the original weighted yields.
+"""
 
 import argparse, math, os, sys
 from array import array
@@ -152,7 +156,18 @@ def main():
     box=ROOT.TPaveText(.12,.07,.8,.45,"NDC"); box.SetBorderSize(0); box.SetFillStyle(0); box.SetTextAlign(12); box.SetTextSize(.03); box.AddText("Integrated OS/SS"); box.AddText("5<m_{#mu#mu}<9:"); box.AddText(f"  QCD MC = {fmt(qlow)}"); box.AddText(f"  Data = {fmt(dlow)}"); box.AddText("11<m_{#mu#mu}<80:"); box.AddText(f"  QCD MC ={fmt(qhigh)}"); box.AddText(f"  Data = blinded" if args.blind else f"  Data = {fmt(dhigh)}"); box.Draw()
     lo.cd(); qr=ratio_hist(qos,qss,"qr"); dr=ratio_hist(dos,dss,"dr"); qr.SetLineColor(ROOT.kRed+1); qr.SetMarkerColor(ROOT.kRed+1); qr.SetMarkerStyle(20); dr.SetMarkerColor(ROOT.kBlack); dr.SetLineColor(ROOT.kBlack); dr.SetMarkerStyle(20)
     qr.GetYaxis().SetRangeUser(args.ratio_min,args.ratio_max); qr.GetYaxis().SetTitle("OS / SS"); qr.GetYaxis().SetTitleSize(.11); qr.GetYaxis().SetTitleOffset(.50); qr.GetYaxis().SetLabelSize(.09); qr.GetYaxis().SetNdivisions(505); qr.GetXaxis().SetTitle("m_{#mu#mu} [GeV]"); qr.GetXaxis().SetTitleSize(.13); qr.GetXaxis().SetLabelSize(.10); qr.GetXaxis().SetRangeUser(args.xmin,args.xmax)
-    qr.Draw("E1P"); dr.Draw("E1P SAME"); line=ROOT.TLine(args.xmin,1,args.xmax,1); line.SetLineStyle(2); line.SetLineColor(ROOT.kGray+2); line.Draw("SAME"); qr.Draw("E1P SAME"); dr.Draw("E1P SAME"); lo.SetGridy()
+    qr.Draw("E1P"); dr.Draw("E1P SAME"); line=ROOT.TLine(args.xmin,1,args.xmax,1); line.SetLineStyle(2); line.SetLineColor(ROOT.kGray+2); line.Draw("SAME")
+    # Keep separate ROOT objects alive through SaveAs; leave 9--11 GeV empty.
+    qcd_ratio_lines = []
+    for low, high, (value, _) in ((5., 9., qlow), (11., 80., qhigh)):
+        left, right = max(low, args.xmin), min(high, args.xmax)
+        if left >= right or not math.isfinite(value):
+            continue
+        reference = ROOT.TLine(left, value, right, value)
+        reference.SetLineColor(ROOT.kRed+1); reference.SetLineStyle(7); reference.SetLineWidth(3)
+        reference.Draw("SAME")
+        qcd_ratio_lines.append(reference)
+    qr.Draw("E1P SAME"); dr.Draw("E1P SAME"); lo.SetGridy()
     #rleg=ROOT.TLegend(.58,.74,.94,.94); rleg.SetBorderSize(0); rleg.SetFillStyle(0); rleg.SetTextSize(.075); rleg.AddEntry(qr,"QCD MC","lep"); rleg.AddEntry(dr,"Data - nonQCD MC","lep"); rleg.Draw()
     out=Path(args.output_dir); out.mkdir(parents=True,exist_ok=True); tag="Blind" if args.blind else "Unblind"; tag += "_LogX" if args.logx else ""; tag += "_LogY" if args.logy else ""; base=f"OS_SS_Comparison_{era_name(args.era)}_BJet_QCDMC_DataMinusNonQCDMC_{tag}"
     for ext in [x.strip().lstrip('.') for x in args.extensions.split(',') if x.strip()]: c.SaveAs(str(out/f"{base}.{ext}")); print("[SAVED]",out/f"{base}.{ext}")
