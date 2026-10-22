@@ -3,8 +3,12 @@
 
 """BJet OS/SS overlay: QCD MC vs Data - nonQCD BKG.
 
-The ratio panel includes separate QCD MC integrated OS/SS reference lines
-in 5 < m < 9 and 11 < m < 80 GeV, computed from the original weighted yields.
+The ratio panel includes separate QCD MC OS/SS reference lines. The 5 < m < 9
+GeV line uses the integrated ratio; the 11 < m < 80 GeV line uses the equal
+mean of the integrated 11--30 and 30--80 GeV ratios. Statistical errors for the
+mean are combined in quadrature for the disjoint regions. All ratios use the
+original weighted yields before rebinning or bin-width normalisation. Data
+summaries retain the integrated ratios and the existing blinding.
 """
 
 import argparse, math, os, sys
@@ -92,6 +96,14 @@ def ratio_val(hos,hss,a,b):
     if d <= 0: return float("nan"),float("nan")
     r=n/d; er=math.sqrt((en/d)**2+(n*ed/d**2)**2); return r,er
 
+def equal_high_ratio(hos, hss):
+    """Equal mean of two disjoint mass-region ratios and its statistical error."""
+    r1, e1 = ratio_val(hos, hss, 11, 30)
+    r2, e2 = ratio_val(hos, hss, 30, 80)
+    if not all(math.isfinite(x) for x in (r1, e1, r2, e2)):
+        return float("nan"), float("nan")
+    return (r1 + r2) / 2., math.hypot(e1, e2) / 2.
+
 def mask(h,a,b):
     for i in range(1,h.GetNbinsX()+1):
         if a < h.GetXaxis().GetBinCenter(i) < b: h.SetBinContent(i,0.); h.SetBinError(i,0.)
@@ -132,9 +144,9 @@ def main():
     if args.logx and args.xmin<=0: raise PlotError("--logx requires --xmin > 0")
     ROOT=root_module()
     qos,qss=qcd(ROOT,args,"OS"),qcd(ROOT,args,"SS"); dos,dss=data_minus_nonqcd(ROOT,args,"OS"),data_minus_nonqcd(ROOT,args,"SS")
-    qlow,qhigh=ratio_val(qos,qss,5,9),ratio_val(qos,qss,11,80); dlow=ratio_val(dos,dss,5,9); dhigh=None if args.blind else ratio_val(dos,dss,11,80)
+    qlow,qhigh=ratio_val(qos,qss,5,9),equal_high_ratio(qos,qss); dlow=ratio_val(dos,dss,5,9); dhigh=None if args.blind else ratio_val(dos,dss,11,80)
     print(f"[5<m<9] QCD MC={fmt(qlow).replace('#pm','+/-')}, Data-nonQCD={fmt(dlow).replace('#pm','+/-')}")
-    print(f"[11<m<80] QCD MC={fmt(qhigh).replace('#pm','+/-')}, Data-nonQCD={'blinded' if args.blind else fmt(dhigh).replace('#pm','+/-')}")
+    print(f"[11<m<80] QCD MC equal mean (11-30, 30-80)={fmt(qhigh).replace('#pm','+/-')}, Data-nonQCD={'blinded' if args.blind else fmt(dhigh).replace('#pm','+/-')}")
     if args.blind: mask(dos,11,80); mask(dss,11,80)
     e=edges(args); print("[BINNING]",", ".join(f"{x:g}" for x in e))
     qos,qss,dos,dss=(rebin(qos,e,"qos"),rebin(qss,e,"qss"),rebin(dos,e,"dos"),rebin(dss,e,"dss"))
@@ -154,7 +166,7 @@ def main():
     qos.Draw("HIST"); qss.Draw("HIST SAME"); dos.Draw("E1P SAME"); dss.Draw("E1P SAME")
     leg=ROOT.TLegend(.56,.67,.94,.86); leg.SetBorderSize(0); leg.SetFillStyle(0); leg.AddEntry(qos,"QCD MC, OS","l"); leg.AddEntry(qss,"QCD MC, SS","l"); leg.AddEntry(dos,"Data - nonQCD BKG, OS","lep"); leg.AddEntry(dss,"Data - nonQCD BKG, SS","lep"); leg.Draw()
     tx=ROOT.TLatex(); tx.SetNDC(); tx.SetTextFont(42); tx.SetTextSize(.047); tx.DrawLatex(.12,.925,"#bf{CMS} #it{Preliminary}"); tx.SetTextAlign(31); tx.SetTextSize(.038); tx.DrawLatex(.95,.925,lumi_label(args.era)); tx.SetTextAlign(11); tx.SetTextSize(.035); tx.DrawLatex(.15,.8,"BJet category: OS vs SS")
-    box=ROOT.TPaveText(.12,.07,.8,.45,"NDC"); box.SetBorderSize(0); box.SetFillStyle(0); box.SetTextAlign(12); box.SetTextSize(.03); box.AddText("Integrated OS/SS"); box.AddText("5<m_{#mu#mu}<9:"); box.AddText(f"  QCD MC = {fmt(qlow)}"); box.AddText(f"  Data = {fmt(dlow)}"); box.AddText("11<m_{#mu#mu}<80:"); box.AddText(f"  QCD MC ={fmt(qhigh)}"); box.AddText(f"  Data = blinded" if args.blind else f"  Data = {fmt(dhigh)}"); box.Draw()
+    box=ROOT.TPaveText(.12,.07,.8,.45,"NDC"); box.SetBorderSize(0); box.SetFillStyle(0); box.SetTextAlign(12); box.SetTextSize(.03); box.AddText("OS/SS summaries"); box.AddText("5<m_{#mu#mu}<9:"); box.AddText(f"  QCD MC = {fmt(qlow)}"); box.AddText(f"  Data = {fmt(dlow)}"); box.AddText("11<m_{#mu#mu}<80 (QCD: equal mean):"); box.AddText(f"  QCD MC = {fmt(qhigh)}"); box.AddText(f"  Data (integrated) = blinded" if args.blind else f"  Data (integrated) = {fmt(dhigh)}"); box.Draw()
     lo.cd(); qr=ratio_hist(qos,qss,"qr"); dr=ratio_hist(dos,dss,"dr"); qr.SetLineColor(ROOT.kRed+1); qr.SetMarkerColor(ROOT.kRed+1); qr.SetMarkerStyle(20); dr.SetMarkerColor(ROOT.kBlack); dr.SetLineColor(ROOT.kBlack); dr.SetMarkerStyle(20)
     qr.GetYaxis().SetRangeUser(args.ratio_min,args.ratio_max); qr.GetYaxis().SetTitle("OS / SS"); qr.GetYaxis().SetTitleSize(.11); qr.GetYaxis().SetTitleOffset(.50); qr.GetYaxis().SetLabelSize(.09); qr.GetYaxis().SetNdivisions(505); qr.GetXaxis().SetTitle("m_{#mu#mu} [GeV]"); qr.GetXaxis().SetTitleSize(.13); qr.GetXaxis().SetLabelSize(.10); qr.GetXaxis().SetRangeUser(args.xmin,args.xmax)
     qr.Draw("E1P"); dr.Draw("E1P SAME"); line=ROOT.TLine(args.xmin,1,args.xmax,1); line.SetLineStyle(2); line.SetLineColor(ROOT.kGray+2); line.Draw("SAME")
