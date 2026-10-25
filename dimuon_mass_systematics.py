@@ -8,8 +8,11 @@ Example (same inputs, binning, data mode and bands as plotter.py)::
 
 Add --blind to hide the search-region data, exactly as in plotter.py. The
 inherited default is unblind. --ratio-min/--ratio-max control the vertical range.
---systematics accepts a comma-separated subset of the ten default nuisance
-names, with or without CMS_NPS26009_. --list-systematics needs no ROOT or inputs.
+--systematics accepts a comma-separated subset of the ten supported nuisance
+names, with or without CMS_NPS26009_. Six sources are displayed by default;
+the four smallest maximum responses in the Run2+3 review plot are hidden
+(see DEFAULT_HIDDEN_SYSTEMATICS). They remain in the total uncertainty.
+--list-systematics lists all supported names without ROOT or inputs.
 
 The data points and stat/stat+syst bands come directly from plotter.py. Coloured
 step boundaries show each source's envelope, 1 - delta_low/B and
@@ -42,7 +45,7 @@ import plotter as p
 
 
 PREFIX = "CMS_NPS26009_"
-DEFAULT_SYSTEMATICS = (
+SUPPORTED_SYSTEMATICS = (
     "QCDscale_ren_ttbar",
     "QCDscale_fac_ttbar",
     PREFIX + "NFModel_DY_BJetOS_13TeV",
@@ -53,6 +56,19 @@ DEFAULT_SYSTEMATICS = (
     PREFIX + "QCD_MCTransferStat_Run2",
     PREFIX + "NFStat_DY_BJetOS_2018",
     PREFIX + "NFStat_DY_BJetOS_2016preVFP",
+)
+
+
+# Display selection only; all ten sources remain available explicitly, and
+# plotter.py still computes the complete stat/syst/total bands independently.
+DEFAULT_HIDDEN_SYSTEMATICS = frozenset((
+    PREFIX + "NFStat_DY_BJetOS_2016preVFP",
+    PREFIX + "NFModel_DY_BJetOS_13p6TeV",
+    PREFIX + "pdf_NNPDF31",
+    PREFIX + "NFStat_DY_BJetOS_2018",
+))
+DEFAULT_SYSTEMATICS = tuple(
+    name for name in SUPPORTED_SYSTEMATICS if name not in DEFAULT_HIDDEN_SYSTEMATICS
 )
 
 
@@ -68,7 +84,7 @@ def short_name(name):
 
 
 def selected_names(values):
-    known = {short_name(name): name for name in DEFAULT_SYSTEMATICS}
+    known = {short_name(name): name for name in SUPPORTED_SYSTEMATICS}
     selected = []
     for value in values:
         key = short_name(value)
@@ -340,7 +356,7 @@ def draw_ratio(ROOT, cfg, norm, inputs, edges, components, path):
     graphs = {}
     # No filled component bands: ten overlapping fills would obscure the sizes.
     for name, component in components.items():
-        idx = DEFAULT_SYSTEMATICS.index(name)
+        idx = SUPPORTED_SYSTEMATICS.index(name)
         colour = ROOT.TColor.GetColor(colours[idx])
         pair = []
         for side, sign in (("high", 1), ("low", -1)):
@@ -449,10 +465,10 @@ def main(argv=None):
     parser.epilog = __doc__
     parser.set_defaults(uncertainty="syst+stat")
     parser.add_argument("--systematics", type=p.parse_str_list, default=list(DEFAULT_SYSTEMATICS),
-                        help="comma-separated subset of the ten supported nuisance names")
+                        help="comma-separated subset of the ten supported nuisance names; default: six larger sources")
     parser.add_argument("--list-systematics", action="store_true", help="list names without loading ROOT or data")
     if "--list-systematics" in argv:
-        print("\n".join(DEFAULT_SYSTEMATICS))
+        print("\n".join(SUPPORTED_SYSTEMATICS))
         return 0
     if not argv:
         parser.print_help()
