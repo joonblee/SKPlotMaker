@@ -323,6 +323,8 @@ def draw_ratio(ROOT, cfg, norm, inputs, edges, components, path):
     stat = p.make_ratio_unc_graph(ROOT, inputs.bkg_total, inputs.stat, "stat")
     p.style_unc_graph(ROOT, total, "total")
     p.style_unc_graph(ROOT, stat, "stat")
+    stat.SetFillStyle(1001)
+    stat.SetFillColorAlpha(ROOT.kGray + 3, 0.15)
     total.Draw("E2 SAME")
     stat.Draw("E2 SAME")
     outline = p.make_band_outline_graph(ROOT, inputs.bkg_total, inputs.stat, "stat_outline", ratio=True)
@@ -345,8 +347,10 @@ def draw_ratio(ROOT, cfg, norm, inputs, edges, components, path):
             graph = ROOT.TGraph(2 * (len(edges) - 1))
             graph.SetName(p._NAMES.unique(short_name(name) + "_" + side))
             graph.SetLineColor(colour)
-            graph.SetLineStyle(styles[idx])
-            graph.SetLineWidth(3 if idx < 2 else 2)
+            #graph.SetLineStyle(styles[idx])
+            #graph.SetLineWidth(2 if idx < 2 else 1)
+            graph.SetLineStyle(1)
+            graph.SetLineWidth(1)
             for i, delta in enumerate(getattr(component.uncertainty, side)):
                 nominal = inputs.bkg_total.GetBinContent(i + 1)
                 value = 1.0 + sign * delta / nominal if nominal > 0 else 1.0
