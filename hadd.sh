@@ -4,8 +4,10 @@
 # Updated for the NPS-26-009 SKNano production layout (2026-08-25).
 #
 # Usage:
-#   source hadd.sh ERA_SELECTION [COLLECTION]
-#   bash   hadd.sh ERA_SELECTION [COLLECTION]
+#   source hadd.sh ERA_SELECTION [COLLECTION] [--top-pt-reweight]
+#   bash   hadd.sh ERA_SELECTION [COLLECTION] [--top-pt-reweight]
+# With --top-pt-reweight, merge ttbar only below BASE/TopPtReweight;
+# COLLECTION=all selects nominal, RunSyst and RunXSecSyst in that study.
 #
 # ERA_SELECTION:
 #   2016preVFP, 2016postVFP, 2017, 2018,
@@ -45,8 +47,10 @@ print_help() {
     echo "  /data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon"
     echo
     echo "Usage:"
-    echo "  source hadd.sh ERA_SELECTION [COLLECTION]"
-    echo "  bash   hadd.sh ERA_SELECTION [COLLECTION]"
+    echo "  source hadd.sh ERA_SELECTION [COLLECTION] [--top-pt-reweight]"
+    echo "  bash   hadd.sh ERA_SELECTION [COLLECTION] [--top-pt-reweight]"
+    echo "  --top-pt-reweight: ttbar-only study; all = nominal + both systematic collections"
+    echo "  --base-dir PATH: override the input base directory"
     echo
     echo "ERA_SELECTION:"
     echo "  2016preVFP, 2016postVFP, 2017, 2018,"
@@ -358,6 +362,11 @@ run_one() {
         return 0
     fi
 
+    if [[ "$TOPPT_STUDY" == true ]]; then
+        merge_ttbar "$era" "$dir"
+        return $?
+    fi
+
     if is_nominal_like_collection "$collection"; then
         merge_data "$era" "$dir" || return $?
         merge_qcd "$dir" || return $?
@@ -472,6 +481,11 @@ merge_period() {
     echo "[output dir]   $PERIOD_DIR"
     echo "################################################################"
 
+    if [[ "$TOPPT_STUDY" == true ]]; then
+        merge_period_file "$period" "$collection" "NIsoMuon_tt.root" "${eras[@]}"
+        return $?
+    fi
+
     if is_nominal_like_collection "$collection"; then
         merge_period_file "$period" "$collection" "data.root" "${eras[@]}" || return $?
         merge_period_file "$period" "$collection" "NIsoMuon_QCD_Inclusive.root" "${eras[@]}" || return $?
@@ -498,6 +512,22 @@ merge_period() {
 }
 
 hadd_main() {
+    local TOPPT_STUDY=false
+    local BASE_DIR="/data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon"
+    local positional=()
+    local collection era status
+    while (( $# )); do
+        case "$1" in
+            --top-pt-reweight) TOPPT_STUDY=true; shift ;;
+            --base-dir)
+                if (( $# < 2 )); then echo "[ERROR] --base-dir requires a path"; return 2; fi
+                BASE_DIR="$2"; shift 2 ;;
+            -h|--help) print_help; return 0 ;;
+            --*) echo "[ERROR] Unknown option: $1"; return 2 ;;
+            *) positional+=("$1"); shift ;;
+        esac
+    done
+    set -- "${positional[@]}"
     if (( $# == 0 )); then
         print_help
         return 0
@@ -514,7 +544,7 @@ hadd_main() {
         return 2
     fi
 
-    BASE_DIR="/data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon"
+    if $TOPPT_STUDY; then BASE_DIR="$BASE_DIR/TopPtReweight"; fi
 
     local era_selection="$1"
     local collection_selection="${2:-nominal}"
@@ -566,7 +596,17 @@ hadd_main() {
             ;;
     esac
 
-    local collection era status
+    if $TOPPT_STUDY; then
+        if [[ "$collection_selection" == all ]]; then
+            collections=(nominal RunSyst RunXSecSyst)
+        fi
+        for collection in "${collections[@]}"; do
+            case "$collection" in nominal|RunSyst|RunXSecSyst) ;;
+                *) echo "[ERROR] TopPtReweight supports nominal, RunSyst and RunXSecSyst only"; return 2 ;;
+            esac
+        done
+    fi
+
     for collection in "${collections[@]}"; do
         for era in "${eras[@]}"; do
             run_one "$era" "$collection"
@@ -583,6 +623,9 @@ hadd_main() {
         if (( make_run3_summary )); then
             merge_period "Run3" "$collection" "${run3_eras[@]}" || return $?
         fi
+        if $TOPPT_STUDY && (( make_run2_summary && make_run3_summary )); then
+            merge_period "Run2+3" "$collection" "${eras[@]}" || return $?
+        fi
     done
 
     echo
@@ -594,3 +637,4 @@ hadd_main() {
 shopt -s nullglob
 
 hadd_main "$@"
+

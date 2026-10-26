@@ -3,6 +3,11 @@
 """
 Unified PyROOT plotter for NIsoMuon dimuon-mass and object-validation distributions.
 
+Optional top-pT study: --top-pt-reweight replaces only ttbar, including its
+RunSyst/RunXSecSyst templates, from BASE/TopPtReweight. Other predictions and
+the nominal QCD-MC normalisation are retained; DD backgrounds are not refitted.
+Output filenames gain _TopPtReweight. See plotter_toppt_comparison.py for overlays.
+
 Revision 2 updates:
   - for the dimuon-mass data-driven DY estimate, reads LightJetStat from the
     nominal histogram Sumw2 errors and NFStat/NFModel from DYAux metadata in
@@ -579,6 +584,8 @@ class Config:
     dy_data_driven_file: str = "NIsoMuon_DYJets_est.root"
     dy_mc_file: str = "NIsoMuon_DYJets_Inclusive.root"
     tt_file: str = "NIsoMuon_tt.root"
+    top_pt_reweight: bool = False
+    tt_on_top: bool = False  # Used by the dedicated comparison renderer.
     st_file: str = "NIsoMuon_ST.root"
     others_file: str = "NIsoMuon_Others.root"
 
@@ -787,10 +794,14 @@ def syst_region(cfg: Config, suffix: str) -> str:
 
 
 def stack_draw_order(cfg: Config) -> Tuple[str, ...]:
+    if cfg.tt_on_top:
+        return ("Others", "ST", "QCD", "DY", "tt")
     return LIGHT_JET_STACK_DRAW_ORDER if cfg.jet_mode == "lightjet" else B_TAG_STACK_DRAW_ORDER
 
 
 def legend_bkg_order(cfg: Config) -> Tuple[str, ...]:
+    if cfg.tt_on_top:
+        return tuple(reversed(stack_draw_order(cfg)))
     return LIGHT_JET_LEGEND_BKG_ORDER if cfg.jet_mode == "lightjet" else B_TAG_LEGEND_BKG_ORDER
 
 
@@ -1037,6 +1048,9 @@ def process_file(
     nominal_dir = root_dir_for_year(cfg, year)
     is_syst = bool(syst_suffix)
     selected_dir = root_dir_for_year(cfg, year, syst_subdir) if is_syst else nominal_dir
+    if process == "tt" and cfg.top_pt_reweight:
+        study_cfg = replace(cfg, base_dir=os.path.join(cfg.base_dir, "TopPtReweight"))
+        selected_dir = root_dir_for_year(study_cfg, year, syst_subdir if is_syst else "")
 
     if process == "data":
         if is_syst:
@@ -1137,6 +1151,8 @@ def load_year_hist(
     )
     if h and process != "data":
         apply_scale(h, period_prediction_scale(cfg, year))
+    if not h and process == "tt" and cfg.top_pt_reweight and not syst_suffix:
+        raise RuntimeError(f"Missing TopPtReweight ttbar histogram: {filename}:{hist_path(cfg, region)}")
     # A missing period data file must not fall back to merged data or Asimov.
     if not h and process == "data" and cfg.data_period:
         raise RuntimeError(f"Missing period data histogram: {filename}:{hist_path(cfg, region)}")
@@ -2325,6 +2341,9 @@ def build_plot_inputs(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> P
     lumi_pb = selected_period_lumi_fb(cfg) * 1000.0 if cfg.data_period else lumi_pb_for_years(years)
     scale = plot_scale(cfg, norm, lumi_pb)
     out = PlotInputs(years=years, lumi_pb=lumi_pb)
+    # Derive QCD normalisation with the unchanged, unreweighted prediction.
+    # Replace ttbar only after the common QCD factor has been applied.
+    loading_cfg = replace(cfg, top_pt_reweight=False) if cfg.top_pt_reweight else cfg
     if cfg.data_period and (not use_qcd_mc(cfg) or not use_dy_mc(cfg)):
         print("[period-DD] QCD/DY DD use luminosity-scaled full-era templates and uncertainties; "
               "full-era transfer/NF retained; no period-specific fit or calibration.")
@@ -2333,7 +2352,7 @@ def build_plot_inputs(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> P
     for year in years:
         for proc in BKG_PROCESSES:
             h = prepare_year_hist(
-                ROOT, cfg, year, proc, -1.0, edges, scale, out.warnings
+                ROOT, loading_cfg, year, proc, -1.0, edges, scale, out.warnings
             )
             if h:
                 bkg_by_year[year][proc] = h
@@ -2366,7 +2385,7 @@ def build_plot_inputs(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> P
         native_parts = {proc: [] for proc in (*BKG_PROCESSES, "data")}
         for year in years:
             for proc in native_parts:
-                h = load_year_hist(ROOT, cfg, year, proc, -1.0, out.warnings)
+                h = load_year_hist(ROOT, loading_cfg, year, proc, -1.0, out.warnings)
                 if not h:
                     raise RuntimeError(f"{year}: missing {proc} native mass histogram for QCD-MC normalisation.")
                 native_parts[proc].append(h)
@@ -2379,6 +2398,13 @@ def build_plot_inputs(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> P
     out.qcd_normalisation_factor = apply_qcd_normalisation(
         cfg, out.bkg, bkg_by_year, out.data, out.warnings, factor=qcd_factor
     )
+    if cfg.top_pt_reweight:
+        for year in years:
+            bkg_by_year[year]["tt"] = prepare_year_hist(
+                ROOT, cfg, year, "tt", -1.0, edges, scale, out.warnings
+            )
+        out.bkg["tt"] = sum_hists([bkg_by_year[y]["tt"] for y in years], "tt_reweighted")
+        print("[TopPtReweight] Replaced ttbar only; other backgrounds and nominal QCD normalisation retained.")
     out.bkg_total = sum_background_hists(out.bkg, "bkg_total")
     if cfg.qcd_normalisation_diagnostics:
         write_qcd_normalisation_diagnostics(ROOT, cfg, years, out.qcd_normalisation_factor)
@@ -2824,8 +2850,20 @@ def build_manual_stack_hists(ROOT, cfg: Config, bkg: Dict[str, object]) -> List[
         running = hcum
     return cumulative
 
-def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> str:
+def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, comparison_builder=None) -> str:
     inputs = build_plot_inputs(ROOT, cfg, norm, edges)
+    comparison_total = comparison_builder(ROOT, cfg, norm, edges, inputs) if comparison_builder else None
+    nominal_outline = None
+    if comparison_total is not None:
+        nominal_outline = inputs.bkg_total.Clone(_NAMES.unique("nominal_outline"))
+        nominal_outline.SetDirectory(0)
+        nominal_outline.SetFillStyle(0)
+        nominal_outline.SetLineColor(ROOT.kBlack)
+        nominal_outline.SetLineWidth(2)
+        comparison_total.SetFillStyle(0)
+        comparison_total.SetLineColor(ROOT.kBlue + 1)
+        comparison_total.SetLineStyle(2)
+        comparison_total.SetLineWidth(3)
 
     for proc in BKG_PROCESSES:
         style_bkg_hist(ROOT, inputs.bkg[proc], proc)
@@ -2846,7 +2884,7 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> str:
         color = colors[idx % len(colors)]
         style_signal_hist(h, color, idx)
 
-    use_ratio = cfg.draw_ratio and data_graph is not None
+    use_ratio = cfg.draw_ratio and (data_graph is not None or comparison_total is not None)
     canvas = ROOT.TCanvas(_NAMES.unique("c"), "", 900, 850 if use_ratio else 760)
 
     if use_ratio:
@@ -2881,6 +2919,8 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> str:
     # of ROOT histogram autoscaling.
     ymax = hist_max_with_error(inputs.bkg_total, inputs.total if cfg.draw_systematics else inputs.stat)
     ymax = max(ymax, graph_max_y(data_graph))
+    if comparison_total is not None:
+        ymax = max(ymax, hist_max_with_error(comparison_total))
     for _, sig in inputs.signals:
         ymax = max(ymax, hist_max_with_error(sig))
     if ymax <= 0.0:
@@ -2954,6 +2994,10 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> str:
     if g_stat_outline:
         g_stat_outline.Draw("L same")
 
+    if comparison_total is not None:
+        nominal_outline.Draw("hist same")
+        comparison_total.Draw("hist same")
+
     for _, sig in inputs.signals:
         sig.Draw("hist same")
     if data_graph:
@@ -2967,11 +3011,13 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> str:
     if use_qcd_mc(cfg) and cfg.qcd_normalise:
         labels["QCD"] = f"QCD (x {inputs.qcd_normalisation_factor:.3g})"
 
-    leg = ROOT.TLegend(0.56, 0.53, 0.93, 0.86)
+    leg = ROOT.TLegend(0.56, 0.45 if comparison_total is not None else 0.53, 0.93, 0.86)
     leg.SetBorderSize(0)
     leg.SetFillStyle(0)
     leg.SetTextFont(42)
     leg.SetTextSize(0.040)
+    if comparison_total is not None:
+        leg.SetTextSize(0.034)
 
     if data_graph:
         if cfg.blind and cfg.blind_point_mode == "asimov":
@@ -2983,6 +3029,11 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> str:
 
     for proc in legend_bkg_order(cfg):
         leg.AddEntry(inputs.bkg[proc], labels[proc], "f")
+    if comparison_total is not None:
+        leg.AddEntry(nominal_outline, "Bkg: no top-p_{T} reweight", "l")
+        leg.AddEntry(comparison_total, "Bkg: top-p_{T} reweighted", "l")
+    elif cfg.top_pt_reweight:
+        leg.AddEntry(inputs.bkg["tt"], "Top-p_{T} reweighted", "")
 
     if g_total:
         leg.AddEntry(g_total, "Bkg stat #oplus syst unc.", "f")
@@ -3038,7 +3089,8 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> str:
         frame.GetYaxis().SetLabelSize(0.1)
         frame.GetYaxis().SetNdivisions(505)
         frame.Draw("axis")
-        draw_manual_y_axis_title(ROOT, "Data / Bkg", cfg.y_axis_title_ndc_x, 0.5, cfg.ratio_y_axis_title_size)
+        ratio_title = "Ratio" if comparison_total is not None else "Data / Bkg"
+        draw_manual_y_axis_title(ROOT, ratio_title, cfg.y_axis_title_ndc_x, 0.5, cfg.ratio_y_axis_title_size)
 
         if ratio_total:
             ratio_total.Draw("E2 same")
@@ -3050,6 +3102,31 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> str:
         line.SetLineStyle(2)
         line.SetLineWidth(1)
         line.Draw("same")
+        if comparison_total is not None:
+            # Same simulated events underlie both predictions; do not invent
+            # an independent-sample statistical error for their ratio.
+            prediction_ratio = ROOT.TGraph()
+            prediction_ratio.SetName(_NAMES.unique("toppt_ratio"))
+            for ib in range(1, inputs.bkg_total.GetNbinsX() + 1):
+                den = inputs.bkg_total.GetBinContent(ib)
+                if den <= 0.0:
+                    continue
+                prediction_ratio.SetPoint(prediction_ratio.GetN(), inputs.bkg_total.GetBinCenter(ib),
+                                          comparison_total.GetBinContent(ib) / den)
+            prediction_ratio.SetLineColor(ROOT.kBlue + 1)
+            prediction_ratio.SetLineStyle(2)
+            prediction_ratio.SetLineWidth(3)
+            prediction_ratio.Draw("L same")
+            ratio_legend = ROOT.TLegend(0.17, 0.79, 0.94, 0.96)
+            ratio_legend.SetNColumns(2)
+            ratio_legend.SetBorderSize(0)
+            ratio_legend.SetFillStyle(0)
+            ratio_legend.SetTextSize(0.067)
+            if ratio:
+                point_label = "Asimov" if cfg.blind and cfg.blind_point_mode == "asimov" else "Toy" if cfg.blind and cfg.blind_point_mode == "toy" else "Data"
+                ratio_legend.AddEntry(ratio, f"{point_label} / Bkg (nom.)", "pe")
+            ratio_legend.AddEntry(prediction_ratio, "Bkg (rw.) / Bkg (nom.)", "l")
+            ratio_legend.Draw()
         if ratio:
             ratio.Draw("PZ same")
         pad2.RedrawAxis()
@@ -3084,6 +3161,10 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> str:
         cfg.output_dir,
         f"{plot_era_tag(cfg)}_{spec.key}_{norm}_{data_tag}{jet_tag}{sign_tag}{qcd_tag}{dy_tag}{syst_tag}{rebin_tag}{x_range_tag}",
     )
+    if comparison_total is not None:
+        out_base += "_TopPtComparison"
+    elif cfg.top_pt_reweight:
+        out_base += "_TopPtReweight"
     for ext in cfg.extensions:
         canvas.SaveAs(f"{out_base}.{ext}")
 
@@ -3092,8 +3173,14 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float]) -> str:
         for proc, hist in inputs.bkg.items():
             hist.Write(proc)
         inputs.bkg_total.Write("bkg_total")
-        if inputs.data:
+        if inputs.data and comparison_total is None:
             inputs.data.Write("data")
+        if comparison_total is not None:
+            comparison_total.Write("bkg_toppt_reweighted")
+            if data_graph:
+                data_graph.Write("displayed_data")
+            if use_ratio:
+                prediction_ratio.Write("bkg_toppt_over_nominal")
         for mass, sig in inputs.signals:
             sig.Write(f"sig_M{mass_label(mass)}")
         g_stat.Write("bkg_stat_unc")
@@ -3141,7 +3228,7 @@ def apply_variable_blinding_mode(cfg: Config) -> Config:
     return cfg
 
 
-def run(cfg: Config) -> List[str]:
+def run(cfg: Config, *, comparison_builder=None) -> List[str]:
     validate_data_period(cfg)
     ROOT = import_root()
     ROOT.gROOT.SetBatch(True)
@@ -3186,7 +3273,7 @@ def run(cfg: Config) -> List[str]:
             if norm_key not in {"events", "xsec"}:
                 raise ValueError(f"Unknown normalisation: {norm}. Use events or xsec.")
             print(f"[INFO] Drawing {variable}, normalisation: {norm_key}")
-            outputs.append(draw_one_plot(ROOT, this_cfg, norm_key, edges))
+            outputs.append(draw_one_plot(ROOT, this_cfg, norm_key, edges, comparison_builder=comparison_builder))
 
     print("[DONE] wrote:")
     for out in outputs:
@@ -3324,6 +3411,8 @@ No-argument behaviour:
     parser.add_argument("--dy-data-driven-file", default="NIsoMuon_DYJets_est.root")
     parser.add_argument("--dy-mc-file", default="NIsoMuon_DYJets_Inclusive.root")
     parser.add_argument("--tt-file", default="NIsoMuon_tt.root")
+    parser.add_argument("--top-pt-reweight", action="store_true",
+                        help="replace only ttbar and its systematic templates from BASE/TopPtReweight; keep nominal QCD normalisation and other backgrounds")
     parser.add_argument("--st-file", default="NIsoMuon_ST.root")
     parser.add_argument("--others-file", default="NIsoMuon_Others.root")
 
@@ -3409,6 +3498,7 @@ def config_from_args(args: argparse.Namespace) -> Config:
         dy_data_driven_file=args.dy_data_driven_file,
         dy_mc_file=args.dy_mc_file,
         tt_file=args.tt_file,
+        top_pt_reweight=args.top_pt_reweight,
         st_file=args.st_file,
         others_file=args.others_file,
         divide_by_bin_width=args.divide_by_bin_width,
@@ -3469,3 +3559,4 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

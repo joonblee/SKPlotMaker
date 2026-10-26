@@ -89,6 +89,67 @@ source hadd.sh all all
 
 The script can also be executed with `bash hadd.sh ...`.  Missing inputs are skipped rather than terminating the shell.
 
+### Optional top-pT-reweighted ttbar study
+
+Keep the normal production and data-driven QCD/DY templates in the usual base
+folder. Produce the optional ttbar samples with the analyzers' `run.sh --flags
+all --top-pt-reweight`, then merge them separately:
+
+```bash
+source hadd.sh Run2+3 all --top-pt-reweight
+# Single era / collection also works:
+source hadd.sh 2018 RunSyst --top-pt-reweight
+```
+
+The merger is `hadd.sh`. This option merges **ttbar only** under
+`NIsoMuon/TopPtReweight/[RunSyst|RunXSecSyst/]<era>/NIsoMuon_tt.root`, including
+Run-3 `TTLL_powheg_ext1` where present, and writes the requested Run2/Run3/Run2+3
+summaries. In this study, `all` means nominal plus both systematic collections.
+`--base-dir PATH` overrides the NIsoMuon base (do not append TopPtReweight).
+Missing inputs retain the usual skip behaviour; ordinary merges are unchanged.
+
+To use the reweighted prediction in the usual plotter:
+
+```bash
+python3 plotter.py --era Run2 --blind --top-pt-reweight
+python3 plotter.py --era 2018 --blind --top-pt-reweight --uncertainty syst+stat --strict
+```
+
+Only ttbar and its RunSyst/RunXSecSyst templates are read from the study folder.
+Other processes and data use the usual inputs. The QCD-MC normalisation is
+calculated using the **unreweighted** prediction and retained, so the ttbar
+effect cannot be absorbed into QCD. Existing data-driven QCD/DY estimates are
+reused without refitting. Missing reweighted nominal ttbar histograms are errors;
+systematic checks follow the existing `--strict` policy. Output names gain
+`_TopPtReweight`; normal plot names and defaults are unchanged.
+
+For an overlay of both predictions:
+
+```bash
+python3 plotter_toppt_comparison.py --era Run2 --regions all
+python3 plotter_toppt_comparison.py --era Run3 --regions all
+python3 plotter_toppt_comparison.py --era 2018 --regions sr --variable dimuon_mass --blind --xmax 80
+python3 plotter_toppt_comparison.py --era 2022 --regions bjet-ss --variable all
+```
+
+The new script accepts the plotter options (except `--top-pt-reweight`, since it
+always compares both). It defaults to all variables, OS BJet, and blinded SR.
+`--regions all` draws SR plus SS BJet and OS LightJet controls. Controls use
+observed data, QCD/DY MC, and statistical uncertainties; SR preserves the requested
+background methods and uncertainty mode. As in `plotter.py`, blinded SR kinematics
+use Asimov points, while mass plots hide the blinded interval. Explicit
+`--unblind` is required to display SR observations there.
+
+The upper panel has the nominal stack with ttbar at the top, a black nominal
+total outline and a blue dashed reweighted total. Every other background,
+including QCD normalisation, is identical. The lower panel shows
+Data/Bkg(nominal) and Bkg(reweighted)/Bkg(nominal), using Asimov/toy points when
+requested by the blinding mode. Bands describe the nominal prediction; the
+reweighting ratio has no independent-sample error because the events are shared.
+Comparison outputs go to `plots/toppt_comparison` with `_TopPtComparison` names.
+`--save-root` stores the two totals and displayed (blinded, if applicable) points.
+No fit inputs or production ROOT files are modified by either plotter.
+
 ### 2. Build the DY data-driven estimate
 
 The current production mode is the constant normalisation-factor method (`--method nf`, which is also the default).
@@ -832,3 +893,4 @@ Run these scripts inside an environment with PyROOT/ROOT available and with acce
 ## Development rule of thumb
 
 When modifying this repository, preserve the physics behaviour first and refactor second.  A small explicit change that keeps histogram names, region definitions, normalisations, fit ranges, blinding, and output conventions intact is preferred to a broad cleanup that silently changes the analysis.
+
