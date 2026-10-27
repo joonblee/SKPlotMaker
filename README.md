@@ -152,11 +152,13 @@ and uncertainty mode. Black data points follow the canonical blinding policy;
 blinded kinematics retain labelled nominal-Asimov/toy points.
 
 The upper panel has the nominal stack with ttbar at the top, a black nominal
-outline, and a blue reweighted total-background Asimov histogram. The expected
-Poisson band has dashed blue boundaries and transparent blue fill (alpha 0.12).
+outline, and blue reweighted total-background Asimov dots with horizontal
+bin-width and vertical Poisson error bars (no fill band). These blue points
+are drawn in both SR and CR, regardless of blinding; black points retain the
+canonical data/blinding modes.
 Every other background, including QCD normalisation, is identical.
 The lower panel shows Data/Before as black points and After/Before as a blue
-step line with the same Poisson band. Band errors are sqrt(N_after) above and
+points with the same error-bar style. Vertical errors are sqrt(N_after) above and
 sqrt(N_after)/N_before below, with bin-width/luminosity scaling accounted for.
 They are not MC ratio errors and are not added to nominal stat/syst bands.
 Comparison outputs go to `plots/toppt_comparison` with `_TopPtComparison` names.
