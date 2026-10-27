@@ -2914,13 +2914,7 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
         nominal_asimov.SetMarkerStyle(24)
         nominal_asimov.SetMarkerColor(ROOT.kBlack)
         nominal_asimov.SetLineColor(ROOT.kBlack)
-    nominal_outline = None
     if comparison_total is not None:
-        nominal_outline = inputs.bkg_total.Clone(_NAMES.unique("nominal_outline"))
-        nominal_outline.SetDirectory(0)
-        nominal_outline.SetFillStyle(0)
-        nominal_outline.SetLineColor(ROOT.kBlack)
-        nominal_outline.SetLineWidth(2)
         comparison_total.SetFillStyle(0)
         comparison_total.SetLineColor(ROOT.kBlue + 1)
         comparison_total.SetLineStyle(1)
@@ -3058,7 +3052,6 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
         g_stat_outline.Draw("L same")
 
     if comparison_total is not None:
-        nominal_outline.Draw("hist same")
         asimov_stat.Draw("PX same")  # X suppresses both horizontal and vertical errors.
     if nominal_asimov is not None:
         nominal_asimov.Draw("PZ same")
@@ -3095,7 +3088,6 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
     for proc in legend_bkg_order(cfg):
         leg.AddEntry(inputs.bkg[proc], labels[proc], "f")
     if comparison_total is not None:
-        leg.AddEntry(nominal_outline, "Bkg: no top-p_{T} reweight", "l")
         leg.AddEntry(asimov_stat, "Bkg: top-p_{T} reweighted", "p")
         if nominal_asimov is not None:
             leg.AddEntry(nominal_asimov, "Nominal Asimov: Poisson stat.", "pe")
@@ -3156,9 +3148,9 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
         frame.GetYaxis().SetLabelSize(0.1)
         frame.GetYaxis().SetNdivisions(505)
         frame.Draw("axis")
-        ratio_title = "#splitline{Data or After}{Before reweight}" if comparison_total is not None else "Data / Bkg"
+        ratio_title = "Ratio" if comparison_total is not None else "Data / Bkg"
         draw_manual_y_axis_title(ROOT, ratio_title, cfg.y_axis_title_ndc_x, 0.5,
-                                 min(cfg.ratio_y_axis_title_size, 0.075) if comparison_total is not None else cfg.ratio_y_axis_title_size)
+                                 cfg.ratio_y_axis_title_size)
 
         if ratio_total:
             ratio_total.Draw("E2 same")

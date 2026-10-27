@@ -151,7 +151,7 @@ QCD/DY MC and statistical bands; SR preserves the requested background methods
 and uncertainty mode. Black data points follow the canonical blinding policy;
 blinded kinematics retain labelled nominal-Asimov/toy points.
 
-The upper panel has the nominal stack with ttbar at the top, its black outline,
+The upper panel has the nominal stack with ttbar at the top
 and the reweighted total background as blue open triangles without error bars.
 This marker-only style also applies to After/Before in the ratio panel, for
 mass and kinematic distributions alike.

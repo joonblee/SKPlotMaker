@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Compare nominal and top-pT-reweighted ttbar using the canonical plotter.
 
-The upper panel contains the nominal stack with ttbar at the top, its black
-outline, data points subject to canonical blinding, and blue open triangles
+The upper panel contains the nominal stack with ttbar at the top,
+data points subject to canonical blinding, and blue open triangles
 for the reweighted total background. Reweighted markers have no displayed
 horizontal or vertical errors, in both panels and for all variables.
 Mass plots also show nominal-background Asimov open black circles with
