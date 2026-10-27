@@ -2894,7 +2894,7 @@ def make_asimov_stat_graph(ROOT, cfg, norm, lumi_pb, bkg_total, *, denominator=N
         graph.SetPoint(ip, bkg_total.GetXaxis().GetBinCenter(ib), y / den)
         graph.SetPointError(ip, width / 2.0, width / 2.0, error, error)
     graph.SetFillStyle(0)
-    graph.SetMarkerStyle(20)
+    graph.SetMarkerStyle(26)  # Open upward triangle.
     graph.SetMarkerSize(0.7)
     graph.SetMarkerColor(ROOT.kBlue + 1)
     graph.SetLineColor(ROOT.kBlue + 1)
