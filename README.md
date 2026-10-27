@@ -151,6 +151,14 @@ including QCD normalisation, is identical. The lower panel shows
 Data/Bkg(nominal) and Bkg(reweighted)/Bkg(nominal), using Asimov/toy points when
 requested by the blinding mode. Bands describe the nominal prediction; the
 reweighting ratio has no independent-sample error because the events are shared.
+Red open boxes in both panels show the expected Poisson counting precision
+of nominal-background Asimov data: sqrt(N) in event yields and 1 +/- 1/sqrt(N)
+in the ratio. N is recovered from the displayed histogram using its bin width
+and luminosity normalisation, after rebinning. Non-positive bins are omitted.
+These boxes are a counting-precision reference, not fluctuated pseudo-data,
+MC Sumw2 errors, or a confidence interval; they are not added to the existing
+background uncertainty bands. Blinding is unchanged. With --save-root, the
+additional graphs are asimov_poisson_stat and asimov_poisson_stat_ratio.
 Comparison outputs go to `plots/toppt_comparison` with `_TopPtComparison` names.
 `--save-root` stores the two totals and displayed (blinded, if applicable) points.
 No fit inputs or production ROOT files are modified by either plotter.

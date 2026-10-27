@@ -7,6 +7,7 @@ Optional top-pT study: --top-pt-reweight replaces only ttbar, including its
 RunSyst/RunXSecSyst templates, from BASE/TopPtReweight. Other predictions and
 the nominal QCD-MC normalisation are retained; DD backgrounds are not refitted.
 Output filenames gain _TopPtReweight. See plotter_toppt_comparison.py for overlays.
+Comparison overlays also show a separate nominal-Asimov Poisson counting band.
 
 Revision 2 updates:
   - for the dimuon-mass data-driven DY estimate, reads LightJetStat from the
@@ -2850,9 +2851,37 @@ def build_manual_stack_hists(ROOT, cfg: Config, bkg: Dict[str, object]) -> List[
         running = hcum
     return cumulative
 
+def make_asimov_stat_graph(ROOT, cfg, norm, lumi_pb, bkg_total, *, ratio=False):
+    """Expected Poisson counting precision, not MC Sumw2 or fit uncertainty.
+
+    Undo display scaling before sqrt(N); Asimov counts are deterministic and
+    need not be integers. Non-positive bins have no defined relative precision.
+    """
+    scale = plot_scale(cfg, norm, lumi_pb)
+    per_width = cfg.divide_by_bin_width and variable_spec(cfg).divide_by_bin_width
+    graph = ROOT.TGraphAsymmErrors()
+    graph.SetName(_NAMES.unique("asimov_poisson_ratio" if ratio else "asimov_poisson"))
+    for ib in range(1, bkg_total.GetNbinsX() + 1):
+        width = bkg_total.GetXaxis().GetBinWidth(ib)
+        unit_scale = scale / width if per_width else scale
+        y = float(bkg_total.GetBinContent(ib))
+        if unit_scale <= 0.0 or not math.isfinite(y) or y <= 0.0:
+            continue
+        count = y / unit_scale
+        error = 1.0 / math.sqrt(count) if ratio else math.sqrt(count) * unit_scale
+        ip = graph.GetN()
+        graph.SetPoint(ip, bkg_total.GetXaxis().GetBinCenter(ib), 1.0 if ratio else y)
+        graph.SetPointError(ip, width / 2.0, width / 2.0, error, error)
+    graph.SetFillStyle(0)
+    graph.SetLineColor(ROOT.kRed + 1)
+    graph.SetLineWidth(2)
+    return graph
+
+
 def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, comparison_builder=None) -> str:
     inputs = build_plot_inputs(ROOT, cfg, norm, edges)
     comparison_total = comparison_builder(ROOT, cfg, norm, edges, inputs) if comparison_builder else None
+    asimov_stat = make_asimov_stat_graph(ROOT, cfg, norm, inputs.lumi_pb, inputs.bkg_total) if comparison_total is not None else None
     nominal_outline = None
     if comparison_total is not None:
         nominal_outline = inputs.bkg_total.Clone(_NAMES.unique("nominal_outline"))
@@ -2919,6 +2948,8 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
     # of ROOT histogram autoscaling.
     ymax = hist_max_with_error(inputs.bkg_total, inputs.total if cfg.draw_systematics else inputs.stat)
     ymax = max(ymax, graph_max_y(data_graph))
+    if asimov_stat is not None:
+        ymax = max(ymax, graph_max_y(asimov_stat))
     if comparison_total is not None:
         ymax = max(ymax, hist_max_with_error(comparison_total))
     for _, sig in inputs.signals:
@@ -2995,6 +3026,7 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
         g_stat_outline.Draw("L same")
 
     if comparison_total is not None:
+        asimov_stat.Draw("2 same")
         nominal_outline.Draw("hist same")
         comparison_total.Draw("hist same")
 
@@ -3038,6 +3070,8 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
     if g_total:
         leg.AddEntry(g_total, "Bkg stat #oplus syst unc.", "f")
     leg.AddEntry(g_stat, "Bkg stat unc.", "f")
+    if asimov_stat is not None:
+        leg.AddEntry(asimov_stat, "Asimov Poisson stat.", "l")
 
     for mass, sig in inputs.signals:
         scale_label = signal_scale_label(cfg)
@@ -3103,6 +3137,8 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
         line.SetLineWidth(1)
         line.Draw("same")
         if comparison_total is not None:
+            asimov_ratio_stat = make_asimov_stat_graph(ROOT, cfg, norm, inputs.lumi_pb, inputs.bkg_total, ratio=True)
+            asimov_ratio_stat.Draw("2 same")
             # Same simulated events underlie both predictions; do not invent
             # an independent-sample statistical error for their ratio.
             prediction_ratio = ROOT.TGraph()
@@ -3117,15 +3153,16 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
             prediction_ratio.SetLineStyle(2)
             prediction_ratio.SetLineWidth(3)
             prediction_ratio.Draw("L same")
-            ratio_legend = ROOT.TLegend(0.17, 0.79, 0.94, 0.96)
+            ratio_legend = ROOT.TLegend(0.17, 0.68, 0.94, 0.96)
             ratio_legend.SetNColumns(2)
             ratio_legend.SetBorderSize(0)
             ratio_legend.SetFillStyle(0)
-            ratio_legend.SetTextSize(0.067)
+            ratio_legend.SetTextSize(0.055)
             if ratio:
                 point_label = "Asimov" if cfg.blind and cfg.blind_point_mode == "asimov" else "Toy" if cfg.blind and cfg.blind_point_mode == "toy" else "Data"
                 ratio_legend.AddEntry(ratio, f"{point_label} / Bkg (nom.)", "pe")
             ratio_legend.AddEntry(prediction_ratio, "Bkg (rw.) / Bkg (nom.)", "l")
+            ratio_legend.AddEntry(asimov_ratio_stat, "Asimov Poisson stat.", "l")
             ratio_legend.Draw()
         if ratio:
             ratio.Draw("PZ same")
@@ -3177,10 +3214,12 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
             inputs.data.Write("data")
         if comparison_total is not None:
             comparison_total.Write("bkg_toppt_reweighted")
+            asimov_stat.Write("asimov_poisson_stat")
             if data_graph:
                 data_graph.Write("displayed_data")
             if use_ratio:
                 prediction_ratio.Write("bkg_toppt_over_nominal")
+                asimov_ratio_stat.Write("asimov_poisson_stat_ratio")
         for mass, sig in inputs.signals:
             sig.Write(f"sig_M{mass_label(mass)}")
         g_stat.Write("bkg_stat_unc")

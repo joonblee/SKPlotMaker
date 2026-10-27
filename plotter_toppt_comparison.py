@@ -7,6 +7,11 @@ including the nominal QCD-MC normalisation and DD estimates, are identical.
 The lower panel shows Data/Bkg(nominal) and Bkg(reweighted)/Bkg(nominal).
 Bands refer to the nominal prediction; the two correlated predictions' ratio
 is shown without an independent-sample statistical uncertainty.
+Red open boxes show expected Asimov Poisson counting precision sqrt(N),
+with N taken from nominal total-background event yields after rebinning.
+The ratio boxes show 1 +/- 1/sqrt(N); non-positive bins are omitted.
+This is separate from background-template statistics and is not added to
+stat+syst bands. Observed data blinding and Asimov point modes are unchanged.
 
 Accepts plotter.py options plus --regions selected|sr|bjet-ss|lightjet-os|all.
 Defaults: selected region (OS BJet), all variables, SR blinded.
