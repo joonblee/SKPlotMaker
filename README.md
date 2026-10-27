@@ -148,22 +148,21 @@ Explicit `--bin-edges` or `--bin-width` overrides this default; a different
 Kinematic binning and the standalone `plotter.py` defaults are unchanged.
 `--regions all` draws SR plus SS BJet and OS LightJet controls. Controls use
 QCD/DY MC and statistical bands; SR preserves the requested background methods
-and uncertainty mode. No observed Data points are drawn in any comparison panel.
+and uncertainty mode. Black data points follow the canonical blinding policy;
+blinded kinematics retain labelled nominal-Asimov/toy points.
 
 The upper panel has the nominal stack with ttbar at the top, a black nominal
-total outline, and blue reweighted total-background Asimov points with Poisson
-errors. Every other background, including QCD normalisation, is identical.
-The lower panel shows After / Before top pT reweight. Point errors are
-sqrt(N_after) above and sqrt(N_after)/N_before below, using expected event counts
-after rebinning and correctly undoing bin-width/luminosity display scaling.
-Non-positive numerator/denominator bins are omitted. These are expected counting
-errors, not MC Sumw2 errors or independent-sample ratio errors; they are not
-added to the unchanged nominal stat/syst bands. There is no red reference band.
-Blinding and background estimation remain unchanged internally.
+outline, and a blue reweighted total-background Asimov histogram. The expected
+Poisson band has dashed blue boundaries and transparent blue fill (alpha 0.12).
+Every other background, including QCD normalisation, is identical.
+The lower panel shows Data/Before as black points and After/Before as a blue
+step line with the same Poisson band. Band errors are sqrt(N_after) above and
+sqrt(N_after)/N_before below, with bin-width/luminosity scaling accounted for.
+They are not MC ratio errors and are not added to nominal stat/syst bands.
 Comparison outputs go to `plots/toppt_comparison` with `_TopPtComparison` names.
-`--save-root` stores both totals and reweighted Asimov graphs as
-`asimov_poisson_stat`, `asimov_poisson_stat_ratio`, and `bkg_toppt_over_nominal`
-(the last two contain the same ratio points). Observed Data are not exported.
+`--save-root` stores both totals, the Asimov graphs (`asimov_poisson_stat`,
+`asimov_poisson_stat_ratio`, `bkg_toppt_over_nominal`), and only the displayed
+data graph (`displayed_data`), preserving blinding.
 No fit inputs or production ROOT files are modified by either plotter.
 
 ### 2. Build the DY data-driven estimate
@@ -909,5 +908,6 @@ Run these scripts inside an environment with PyROOT/ROOT available and with acce
 ## Development rule of thumb
 
 When modifying this repository, preserve the physics behaviour first and refactor second.  A small explicit change that keeps histogram names, region definitions, normalisations, fit ranges, blinding, and output conventions intact is preferred to a broad cleanup that silently changes the analysis.
+
 
 

@@ -7,7 +7,7 @@ Optional top-pT study: --top-pt-reweight replaces only ttbar, including its
 RunSyst/RunXSecSyst templates, from BASE/TopPtReweight. Other predictions and
 the nominal QCD-MC normalisation are retained; DD backgrounds are not refitted.
 Output filenames gain _TopPtReweight. See topptreweight_comparison.py for overlays.
-Comparison overlays replace data with reweighted Asimov points and Poisson errors.
+Comparison overlays show data plus reweighted Asimov histograms and Poisson bands.
 
 Revision 2 updates:
   - for the dimuon-mass data-driven DY estimate, reads LightJetStat from the
@@ -2893,13 +2893,35 @@ def make_asimov_stat_graph(ROOT, cfg, norm, lumi_pb, bkg_total, *, denominator=N
         ip = graph.GetN()
         graph.SetPoint(ip, bkg_total.GetXaxis().GetBinCenter(ib), y / den)
         graph.SetPointError(ip, width / 2.0, width / 2.0, error, error)
-    graph.SetFillStyle(0)
-    graph.SetMarkerStyle(20)
-    graph.SetMarkerSize(0.7)
-    graph.SetMarkerColor(ROOT.kBlue + 1)
+    graph.SetFillStyle(1001)
+    graph.SetFillColorAlpha(ROOT.kBlue + 1, 0.12)
     graph.SetLineColor(ROOT.kBlue + 1)
-    graph.SetLineWidth(1)
+    graph.SetLineStyle(2)
+    graph.SetLineWidth(2)
     return graph
+
+
+def make_asimov_band_shapes(ROOT, graph):
+    """Build central and dashed boundary steps for each contiguous run of bins."""
+    shapes = []
+    for offset in (0, -1, 1):
+        line, previous_right = None, None
+        for i in range(graph.GetN()):
+            x, y = graph_point(graph, i)
+            left, right = x - graph.GetErrorXlow(i), x + graph.GetErrorXhigh(i)
+            if line is None or abs(left - previous_right) > 1.e-8:
+                line = ROOT.TGraph()
+                line.SetName(_NAMES.unique("asimov_step"))
+                line.SetLineColor(ROOT.kBlue + 1)
+                line.SetLineStyle(1 if offset == 0 else 2)
+                line.SetLineWidth(2)
+                shapes.append(line)
+            error = graph.GetErrorYlow(i) if offset < 0 else graph.GetErrorYhigh(i)
+            value = y + offset * error
+            line.SetPoint(line.GetN(), left, value)
+            line.SetPoint(line.GetN(), right, value)
+            previous_right = right
+    return shapes
 
 
 def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, comparison_builder=None) -> str:
@@ -2915,7 +2937,7 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
         nominal_outline.SetLineWidth(2)
         comparison_total.SetFillStyle(0)
         comparison_total.SetLineColor(ROOT.kBlue + 1)
-        comparison_total.SetLineStyle(2)
+        comparison_total.SetLineStyle(1)
         comparison_total.SetLineWidth(3)
 
     for proc in BKG_PROCESSES:
@@ -2929,8 +2951,7 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
     style_unc_graph(ROOT, g_stat, "stat")
     style_band_outline(ROOT, g_stat_outline)
 
-    data_graph = (make_data_graph(ROOT, cfg, norm, inputs.lumi_pb, inputs.data, inputs.bkg_total)
-                  if comparison_total is None else None)
+    data_graph = make_data_graph(ROOT, cfg, norm, inputs.lumi_pb, inputs.data, inputs.bkg_total)
     style_data_graph(ROOT, data_graph, cfg)
 
     colors = signal_colors(ROOT)
@@ -3052,7 +3073,10 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
 
     if comparison_total is not None:
         nominal_outline.Draw("hist same")
-        asimov_stat.Draw("PZ same")
+        asimov_stat.Draw("2 same")
+        asimov_shapes = make_asimov_band_shapes(ROOT, asimov_stat)
+        for shape in asimov_shapes:
+            shape.Draw("L same")
 
     for _, sig in inputs.signals:
         sig.Draw("hist same")
@@ -3087,7 +3111,7 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
         leg.AddEntry(inputs.bkg[proc], labels[proc], "f")
     if comparison_total is not None:
         leg.AddEntry(nominal_outline, "Bkg: no top-p_{T} reweight", "l")
-        leg.AddEntry(asimov_stat, "After top-p_{T} reweight (Asimov)", "pe")
+        leg.AddEntry(asimov_stat, "Reweighted Asimov: Poisson stat.", "lf")
     elif cfg.top_pt_reweight:
         leg.AddEntry(inputs.bkg["tt"], "Top-p_{T} reweighted", "")
 
@@ -3107,14 +3131,12 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
     draw_cms_labels(ROOT, cfg, inputs.lumi_pb)
     draw_manual_y_axis_title(ROOT, y_axis_title(cfg, norm), cfg.y_axis_title_ndc_x, 0.65, cfg.main_y_axis_title_size)
 
-    if comparison_total is not None or cfg.blind:
+    if cfg.blind:
         note = ROOT.TLatex()
         note.SetNDC(True)
         note.SetTextFont(42)
         note.SetTextSize(0.040)
-        if comparison_total is not None:
-            note.DrawLatex(0.155, 0.78, "Reweighted Asimov points: Poisson stat.")
-        elif cfg.blind_point_mode == "data" and is_mass_variable(cfg):
+        if cfg.blind_point_mode == "data" and is_mass_variable(cfg):
             note.DrawLatex(0.155, 0.78, f"Data blinded for {cfg.blind_low:g} < m_{{#mu^{{+}}#mu^{{-}}}} < {cfg.blind_high:g} GeV")
         elif cfg.blind_point_mode == "asimov":
             note.DrawLatex(0.155, 0.78, "Blind: background-only Asimov points")
@@ -3147,7 +3169,7 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
         frame.GetYaxis().SetLabelSize(0.1)
         frame.GetYaxis().SetNdivisions(505)
         frame.Draw("axis")
-        ratio_title = "#splitline{After / Before}{top p_{T} reweight}" if comparison_total is not None else "Data / Bkg"
+        ratio_title = "#splitline{Data or After}{Before reweight}" if comparison_total is not None else "Data / Bkg"
         draw_manual_y_axis_title(ROOT, ratio_title, cfg.y_axis_title_ndc_x, 0.5,
                                  min(cfg.ratio_y_axis_title_size, 0.075) if comparison_total is not None else cfg.ratio_y_axis_title_size)
 
@@ -3165,7 +3187,20 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
             prediction_ratio = make_asimov_stat_graph(
                 ROOT, cfg, norm, inputs.lumi_pb, comparison_total,
                 denominator=inputs.bkg_total)
-            prediction_ratio.Draw("PZ same")
+            prediction_ratio.Draw("2 same")
+            ratio_shapes = make_asimov_band_shapes(ROOT, prediction_ratio)
+            for shape in ratio_shapes:
+                shape.Draw("L same")
+            ratio_legend = ROOT.TLegend(0.17, 0.80, 0.94, 0.96)
+            ratio_legend.SetNColumns(2)
+            ratio_legend.SetBorderSize(0)
+            ratio_legend.SetFillStyle(0)
+            ratio_legend.SetTextSize(0.055)
+            if ratio:
+                point_label = "Asimov" if cfg.blind and cfg.blind_point_mode == "asimov" else "Toy" if cfg.blind and cfg.blind_point_mode == "toy" else "Data"
+                ratio_legend.AddEntry(ratio, point_label + " / Before", "pe")
+            ratio_legend.AddEntry(prediction_ratio, "After / Before (Poisson stat.)", "lf")
+            ratio_legend.Draw()
         if ratio:
             ratio.Draw("PZ same")
         pad2.RedrawAxis()
@@ -3217,6 +3252,8 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
         if comparison_total is not None:
             comparison_total.Write("bkg_toppt_reweighted")
             asimov_stat.Write("asimov_poisson_stat")
+            if data_graph:
+                data_graph.Write("displayed_data")
             if use_ratio:
                 prediction_ratio.Write("bkg_toppt_over_nominal")
                 prediction_ratio.Write("asimov_poisson_stat_ratio")
@@ -3598,5 +3635,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
 

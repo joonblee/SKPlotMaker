@@ -2,13 +2,16 @@
 """Compare nominal and top-pT-reweighted ttbar using the canonical plotter.
 
 The upper panel contains the nominal stack with ttbar at the top, its black
-outline, and blue reweighted total-background Asimov points. No observed data
-points are drawn in any region. Point errors are sqrt(N_after) in event yields;
-the lower panel shows After/Before with errors sqrt(N_after)/N_before.
-These are expected Poisson counting errors, not independent MC ratio errors.
+outline, black data points subject to canonical blinding, and a blue reweighted
+total-background Asimov histogram. Its Poisson band has dashed blue boundaries
+and transparent blue fill (alpha 0.12). The lower panel shows Data/Before
+and After/Before with the same styling. Blinded kinematics retain labelled
+nominal-Asimov/toy point modes; SR data are not unblinded.
+The blue band represents sqrt(N_after) in event yields and
+sqrt(N_after)/N_before in the ratio, not independent MC ratio errors.
 Non-positive numerator/denominator bins are omitted. Nominal stat/syst bands
-are unchanged; the Asimov errors are not added to those bands. All non-ttbar
-histograms, including QCD-MC normalisation and DD estimates, remain identical.
+are unchanged; Asimov errors are not added to them. All non-ttbar histograms,
+including QCD-MC normalisation and DD estimates, remain identical.
 
 Accepts plotter.py options plus --regions selected|sr|bjet-ss|lightjet-os|all.
 Defaults: selected region (OS BJet), all variables, SR blinded internally.
@@ -106,4 +109,5 @@ def main(argv=None):
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
