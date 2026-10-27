@@ -9,7 +9,9 @@ Bands refer to the nominal prediction; the two correlated predictions' ratio
 is shown without an independent-sample statistical uncertainty.
 
 Accepts plotter.py options plus --regions selected|sr|bjet-ss|lightjet-os|all.
-Defaults: selected region (OS BJet), all variables, SR blinded, stat-only.
+Defaults: selected region (OS BJet), all variables, SR blinded.
+Dimuon mass defaults to 5--80 GeV and stat+syst in SR; other variables stay
+stat-only. Ratio limits default to 0.5--1.5. Explicit CLI options override these.
 For --regions all, SR retains the requested blinding and background methods;
 SS BJet and OS LightJet use observed control data, QCD/DY MC, and stat-only.
 Blinded kinematics use nominal-background Asimov points, exactly as plotter.py.
@@ -67,7 +69,8 @@ def region_configs(cfg, regions):
 def main(argv=None):
     parser = p.make_parser()
     parser.description = __doc__
-    parser.set_defaults(data_mode="blind", variable="all", output_dir="plots/toppt_comparison")
+    parser.set_defaults(data_mode="blind", variable="all", output_dir="plots/toppt_comparison",
+                        uncertainty=None, ratio_min=0.5, ratio_max=1.5)
     parser.add_argument("--regions", choices=("selected", "sr", "bjet-ss", "lightjet-os", "all"),
                         default="selected", help="all = blinded/requested SR plus observed SS-BJet and OS-LightJet controls")
     argv = p.normalise_cli_hyphen_typos(sys.argv[1:] if argv is None else argv)
@@ -77,9 +80,21 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.top_pt_reweight:
         parser.error("This script always compares both predictions; omit --top-pt-reweight.")
+    requested_uncertainty = args.uncertainty
+    args.uncertainty = requested_uncertainty or "stat-only"
     cfg = replace(p.config_from_args(args), tt_on_top=True)
     for region_cfg in region_configs(cfg, args.regions):
-        p.run(region_cfg, comparison_builder=build_reweighted_total)
+        for variable in p.variables_for_request(region_cfg):
+            this_cfg = replace(region_cfg, variable=variable)
+            if p.is_mass_variable(this_cfg):
+                this_cfg = replace(
+                    this_cfg,
+                    xmin=5.0 if this_cfg.xmin is None else this_cfg.xmin,
+                    xmax=80.0 if this_cfg.xmax is None else this_cfg.xmax,
+                )
+                if requested_uncertainty is None and this_cfg.jet_mode == "bjet" and this_cfg.dilepton_sign == "OS":
+                    this_cfg = replace(this_cfg, uncertainty="syst+stat", draw_systematics=True)
+            p.run(this_cfg, comparison_builder=build_reweighted_total)
     return 0
 
 

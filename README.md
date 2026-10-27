@@ -134,6 +134,11 @@ python3 plotter_toppt_comparison.py --era 2022 --regions bjet-ss --variable all
 
 The new script accepts the plotter options (except `--top-pt-reweight`, since it
 always compares both). It defaults to all variables, OS BJet, and blinded SR.
+Dimuon mass defaults to 5--80 GeV with stat+syst uncertainties in SR; other
+variables remain stat-only. Ratio limits default to 0.5--1.5. Explicit `--xmin`,
+`--xmax`, `--uncertainty`, and ratio-limit options override these defaults.
+The mass defaults also apply when using `--variable all`, without changing
+other variables' axis ranges.
 `--regions all` draws SR plus SS BJet and OS LightJet controls. Controls use
 observed data, QCD/DY MC, and statistical uncertainties; SR preserves the requested
 background methods and uncertainty mode. As in `plotter.py`, blinded SR kinematics
