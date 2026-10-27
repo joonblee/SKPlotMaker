@@ -12,9 +12,10 @@ histograms, including QCD-MC normalisation and DD estimates, remain identical.
 
 Accepts plotter.py options plus --regions selected|sr|bjet-ss|lightjet-os|all.
 Defaults: selected region (OS BJet), all variables, SR blinded internally.
-Mass binning uses the same plotter.make_bin_edges function and default 1 GeV
-spacing as dimuon_mass_systematics.py, with the comparison range 5--80 GeV.
-Explicit --bin-edges, --bin-width and --rebin options use the same shared logic.
+Mass binning defaults to 1/2/5/10 GeV widths over 5--20/20--40/40--60/60--80
+GeV, identical to dimuon_mass_systematics.py. Explicit --bin-edges or --bin-width
+override this default; a different --xmin/--xmax uses regular binning.
+--rebin merges the selected bins. Kinematic binning is unchanged.
 Dimuon mass defaults to stat+syst in SR; other variables stay stat-only.
 Ratio limits default to 0.5--1.5. Explicit CLI options override these.
 For --regions all, SR retains the requested background methods;
@@ -22,10 +23,10 @@ SS BJet and OS LightJet use QCD/DY MC and stat-only bands.
 No fits, templates or production ROOT files are updated.
 
 Examples:
-  python3 plotter_toppt_comparison.py --era Run2 --regions all
-  python3 plotter_toppt_comparison.py --era 2018 --variable dimuon_mass --xmax 80 --blind
-  python3 plotter_toppt_comparison.py --era Run3 --regions bjet-ss --variable all
-  python3 plotter_toppt_comparison.py --era 2018 --variable dimuon_mass --blind --uncertainty syst+stat --strict
+  python3 topptreweight_comparison.py --era Run2 --regions all
+  python3 topptreweight_comparison.py --era 2018 --variable dimuon_mass --xmax 80 --blind
+  python3 topptreweight_comparison.py --era Run3 --regions bjet-ss --variable all
+  python3 topptreweight_comparison.py --era 2018 --variable dimuon_mass --blind --uncertainty syst+stat --strict
 """
 
 from dataclasses import replace
@@ -98,6 +99,7 @@ def main(argv=None):
                 )
                 if requested_uncertainty is None and this_cfg.jet_mode == "bjet" and this_cfg.dilepton_sign == "OS":
                     this_cfg = replace(this_cfg, uncertainty="syst+stat", draw_systematics=True)
+            this_cfg = p.apply_comparison_mass_binning(this_cfg)
             p.run(this_cfg, comparison_builder=build_reweighted_total)
     return 0
 

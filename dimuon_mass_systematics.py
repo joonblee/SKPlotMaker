@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """Compare selected prefit background uncertainties in a single mass-ratio panel.
 
-Example (same inputs, binning, data mode and bands as plotter.py)::
+Example (same inputs, data mode and bands as plotter.py)::
 
     python3 dimuon_mass_systematics.py --era Run2+3 --variable dimuon_mass \
         --uncertainty syst+stat --xmax 80 --strict
+
+Default mass edges use 1/2/5/10 GeV widths over 5--20/20--40/40--60/60--80 GeV,
+identical to topptreweight_comparison.py. Explicit --bin-edges or --bin-width
+override this default; a different --xmin/--xmax uses regular binning.
+--rebin merges the selected bins.
 
 Add --blind to hide the search-region data, exactly as in plotter.py. The
 inherited default is unblind. --ratio-min/--ratio-max control the vertical range.
@@ -474,7 +479,7 @@ def main(argv=None):
         parser.print_help()
         return 0
     args = parser.parse_args(argv)
-    cfg = p.config_from_args(args)
+    cfg = p.apply_comparison_mass_binning(p.config_from_args(args))
     if cfg.variable != "dimuon_mass" or cfg.jet_mode != "bjet" or cfg.dilepton_sign != "OS":
         parser.error("This diagnostic supports dimuon_mass in the OS BJet region only.")
     if not cfg.draw_systematics:

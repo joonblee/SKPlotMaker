@@ -6,7 +6,7 @@ Unified PyROOT plotter for NIsoMuon dimuon-mass and object-validation distributi
 Optional top-pT study: --top-pt-reweight replaces only ttbar, including its
 RunSyst/RunXSecSyst templates, from BASE/TopPtReweight. Other predictions and
 the nominal QCD-MC normalisation are retained; DD backgrounds are not refitted.
-Output filenames gain _TopPtReweight. See plotter_toppt_comparison.py for overlays.
+Output filenames gain _TopPtReweight. See topptreweight_comparison.py for overlays.
 Comparison overlays replace data with reweighted Asimov points and Poisson errors.
 
 Revision 2 updates:
@@ -1204,6 +1204,22 @@ def combined_hist(
         if h:
             parts.append(h)
     return sum_hists(parts, f"{process}_combined")
+
+
+# Opt-in mass binning for the two comparison scripts; plotter.py defaults stay unchanged.
+COMPARISON_MASS_EDGES = (
+    5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+    22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 45, 50, 55, 60, 70, 80,
+)
+
+
+def apply_comparison_mass_binning(cfg: Config) -> Config:
+    """Use variable mass edges unless explicit edges, width or a different range is supplied."""
+    if (is_mass_variable(cfg) and not cfg.bin_edges and cfg.bin_width is None
+            and cfg.xmin in (None, 5.0) and cfg.xmax in (None, 80.0)):
+        return replace(cfg, bin_edges=list(COMPARISON_MASS_EDGES))
+    return cfg
+
 
 def make_bin_edges(cfg: Config) -> List[float]:
     """Build final plotting edges using variable-specific defaults."""

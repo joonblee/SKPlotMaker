@@ -126,10 +126,10 @@ systematic checks follow the existing `--strict` policy. Output names gain
 For an overlay of both predictions:
 
 ```bash
-python3 plotter_toppt_comparison.py --era Run2 --regions all
-python3 plotter_toppt_comparison.py --era Run3 --regions all
-python3 plotter_toppt_comparison.py --era 2018 --regions sr --variable dimuon_mass --blind --xmax 80
-python3 plotter_toppt_comparison.py --era 2022 --regions bjet-ss --variable all
+python3 topptreweight_comparison.py --era Run2 --regions all
+python3 topptreweight_comparison.py --era Run3 --regions all
+python3 topptreweight_comparison.py --era 2018 --regions sr --variable dimuon_mass --blind --xmax 80
+python3 topptreweight_comparison.py --era 2022 --regions bjet-ss --variable all
 ```
 
 The new script accepts the plotter options (except `--top-pt-reweight`, since it
@@ -139,9 +139,13 @@ variables remain stat-only. Ratio limits default to 0.5--1.5. Explicit `--xmin`,
 `--xmax`, `--uncertainty`, and ratio-limit options override these defaults.
 The mass defaults also apply when using `--variable all`, without changing
 other variables' axis ranges.
-Mass edges use the same `plotter.make_bin_edges` function as
-`dimuon_mass_systematics.py`: default 1 GeV spacing, here over 5--80 GeV.
-`--bin-edges`, `--bin-width`, and `--rebin` use the same shared logic.
+Both `topptreweight_comparison.py` (renamed from the former comparison script)
+and `dimuon_mass_systematics.py` default to these mass edges:
+`5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,22,24,26,28,30,32,34,36,38,40,45,50,55,60,70,80`.
+The widths are 1/2/5/10 GeV over 5--20/20--40/40--60/60--80 GeV.
+Explicit `--bin-edges` or `--bin-width` overrides this default; a different
+`--xmin`/`--xmax` selects regular binning. `--rebin` merges the selected bins.
+Kinematic binning and the standalone `plotter.py` defaults are unchanged.
 `--regions all` draws SR plus SS BJet and OS LightJet controls. Controls use
 QCD/DY MC and statistical bands; SR preserves the requested background methods
 and uncertainty mode. No observed Data points are drawn in any comparison panel.
