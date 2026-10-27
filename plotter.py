@@ -2915,6 +2915,7 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
         nominal_asimov.SetMarkerColor(ROOT.kBlack)
         nominal_asimov.SetLineColor(ROOT.kBlack)
     if comparison_total is not None:
+        ROOT.gStyle.SetEndErrorSize(3)
         comparison_total.SetFillStyle(0)
         comparison_total.SetLineColor(ROOT.kBlue + 1)
         comparison_total.SetLineStyle(1)
@@ -3054,12 +3055,12 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
     if comparison_total is not None:
         asimov_stat.Draw("PX same")  # X suppresses both horizontal and vertical errors.
     if nominal_asimov is not None:
-        nominal_asimov.Draw("PZ same")
+        nominal_asimov.Draw("P same")
 
     for _, sig in inputs.signals:
         sig.Draw("hist same")
     if data_graph:
-        data_graph.Draw("PZ same")
+        data_graph.Draw("P same" if comparison_total is not None and cfg.blind and cfg.blind_point_mode == "asimov" else "PZ same")
 
     # Re-draw the explicit frame axes so that the displayed limits remain those
     # requested by --ymin/--ymax after all same-pad objects have been drawn.
@@ -3079,7 +3080,7 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
 
     if data_graph:
         if cfg.blind and cfg.blind_point_mode == "asimov":
-            leg.AddEntry(data_graph, "Bkg Asimov", "pe")
+            leg.AddEntry(data_graph, "Bkg: no top-p_{T} reweight (Poisson stat.)" if comparison_total is not None else "Bkg Asimov", "pe")
         elif cfg.blind and cfg.blind_point_mode == "toy":
             leg.AddEntry(data_graph, "Bkg toy", "pe")
         else:
@@ -3088,9 +3089,9 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
     for proc in legend_bkg_order(cfg):
         leg.AddEntry(inputs.bkg[proc], labels[proc], "f")
     if comparison_total is not None:
-        leg.AddEntry(asimov_stat, "Bkg: top-p_{T} reweighted", "p")
+        leg.AddEntry(asimov_stat, "Bkg: with top-p_{T} reweight", "p")
         if nominal_asimov is not None:
-            leg.AddEntry(nominal_asimov, "Nominal Asimov: Poisson stat.", "pe")
+            leg.AddEntry(nominal_asimov, "Bkg: no top-p_{T} reweight (Poisson stat.)", "pe")
     elif cfg.top_pt_reweight:
         leg.AddEntry(inputs.bkg["tt"], "Top-p_{T} reweighted", "")
 
@@ -3173,7 +3174,7 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
                 nominal_asimov_ratio.SetMarkerSize(0.7)
                 nominal_asimov_ratio.SetMarkerColor(ROOT.kBlack)
                 nominal_asimov_ratio.SetLineColor(ROOT.kBlack)
-                nominal_asimov_ratio.Draw("PZ same")
+                nominal_asimov_ratio.Draw("P same")
             ratio_legend = ROOT.TLegend(0.17, 0.70 if nominal_asimov is not None else 0.80, 0.94, 0.96)
             ratio_legend.SetNColumns(2)
             ratio_legend.SetBorderSize(0)
@@ -3187,7 +3188,7 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
                 ratio_legend.AddEntry(nominal_asimov_ratio, "Nominal Asimov / Before", "pe")
             ratio_legend.Draw()
         if ratio:
-            ratio.Draw("PZ same")
+            ratio.Draw("P same" if comparison_total is not None and cfg.blind and cfg.blind_point_mode == "asimov" else "PZ same")
         pad2.RedrawAxis()
 
     os.makedirs(cfg.output_dir, exist_ok=True)
