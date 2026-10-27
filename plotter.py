@@ -7,7 +7,7 @@ Optional top-pT study: --top-pt-reweight replaces only ttbar, including its
 RunSyst/RunXSecSyst templates, from BASE/TopPtReweight. Other predictions and
 the nominal QCD-MC normalisation are retained; DD backgrounds are not refitted.
 Output filenames gain _TopPtReweight. See plotter_toppt_comparison.py for overlays.
-Comparison overlays also show a separate nominal-Asimov Poisson counting band.
+Comparison overlays replace data with reweighted Asimov points and Poisson errors.
 
 Revision 2 updates:
   - for the dimuon-mass data-driven DY estimate, reads LightJetStat from the
@@ -2851,16 +2851,18 @@ def build_manual_stack_hists(ROOT, cfg: Config, bkg: Dict[str, object]) -> List[
         running = hcum
     return cumulative
 
-def make_asimov_stat_graph(ROOT, cfg, norm, lumi_pb, bkg_total, *, ratio=False):
+def make_asimov_stat_graph(ROOT, cfg, norm, lumi_pb, bkg_total, *, denominator=None):
     """Expected Poisson counting precision, not MC Sumw2 or fit uncertainty.
 
     Undo display scaling before sqrt(N); Asimov counts are deterministic and
-    need not be integers. Non-positive bins have no defined relative precision.
+    need not be integers. With a denominator, show after/before and divide only
+    the numerator Poisson error by the fixed reference; this is not MC ratio
+    error propagation. Non-positive numerator/denominator bins are omitted.
     """
     scale = plot_scale(cfg, norm, lumi_pb)
     per_width = cfg.divide_by_bin_width and variable_spec(cfg).divide_by_bin_width
     graph = ROOT.TGraphAsymmErrors()
-    graph.SetName(_NAMES.unique("asimov_poisson_ratio" if ratio else "asimov_poisson"))
+    graph.SetName(_NAMES.unique("asimov_poisson_ratio" if denominator is not None else "asimov_poisson"))
     for ib in range(1, bkg_total.GetNbinsX() + 1):
         width = bkg_total.GetXaxis().GetBinWidth(ib)
         unit_scale = scale / width if per_width else scale
@@ -2868,20 +2870,26 @@ def make_asimov_stat_graph(ROOT, cfg, norm, lumi_pb, bkg_total, *, ratio=False):
         if unit_scale <= 0.0 or not math.isfinite(y) or y <= 0.0:
             continue
         count = y / unit_scale
-        error = 1.0 / math.sqrt(count) if ratio else math.sqrt(count) * unit_scale
+        den = float(denominator.GetBinContent(ib)) if denominator is not None else 1.0
+        if not math.isfinite(den) or den <= 0.0:
+            continue
+        error = math.sqrt(count) * unit_scale / den
         ip = graph.GetN()
-        graph.SetPoint(ip, bkg_total.GetXaxis().GetBinCenter(ib), 1.0 if ratio else y)
+        graph.SetPoint(ip, bkg_total.GetXaxis().GetBinCenter(ib), y / den)
         graph.SetPointError(ip, width / 2.0, width / 2.0, error, error)
     graph.SetFillStyle(0)
-    graph.SetLineColor(ROOT.kRed + 1)
-    graph.SetLineWidth(2)
+    graph.SetMarkerStyle(20)
+    graph.SetMarkerSize(0.7)
+    graph.SetMarkerColor(ROOT.kBlue + 1)
+    graph.SetLineColor(ROOT.kBlue + 1)
+    graph.SetLineWidth(1)
     return graph
 
 
 def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, comparison_builder=None) -> str:
     inputs = build_plot_inputs(ROOT, cfg, norm, edges)
     comparison_total = comparison_builder(ROOT, cfg, norm, edges, inputs) if comparison_builder else None
-    asimov_stat = make_asimov_stat_graph(ROOT, cfg, norm, inputs.lumi_pb, inputs.bkg_total) if comparison_total is not None else None
+    asimov_stat = make_asimov_stat_graph(ROOT, cfg, norm, inputs.lumi_pb, comparison_total) if comparison_total is not None else None
     nominal_outline = None
     if comparison_total is not None:
         nominal_outline = inputs.bkg_total.Clone(_NAMES.unique("nominal_outline"))
@@ -2905,7 +2913,8 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
     style_unc_graph(ROOT, g_stat, "stat")
     style_band_outline(ROOT, g_stat_outline)
 
-    data_graph = make_data_graph(ROOT, cfg, norm, inputs.lumi_pb, inputs.data, inputs.bkg_total)
+    data_graph = (make_data_graph(ROOT, cfg, norm, inputs.lumi_pb, inputs.data, inputs.bkg_total)
+                  if comparison_total is None else None)
     style_data_graph(ROOT, data_graph, cfg)
 
     colors = signal_colors(ROOT)
@@ -3026,9 +3035,8 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
         g_stat_outline.Draw("L same")
 
     if comparison_total is not None:
-        asimov_stat.Draw("2 same")
         nominal_outline.Draw("hist same")
-        comparison_total.Draw("hist same")
+        asimov_stat.Draw("PZ same")
 
     for _, sig in inputs.signals:
         sig.Draw("hist same")
@@ -3063,15 +3071,13 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
         leg.AddEntry(inputs.bkg[proc], labels[proc], "f")
     if comparison_total is not None:
         leg.AddEntry(nominal_outline, "Bkg: no top-p_{T} reweight", "l")
-        leg.AddEntry(comparison_total, "Bkg: top-p_{T} reweighted", "l")
+        leg.AddEntry(asimov_stat, "After top-p_{T} reweight (Asimov)", "pe")
     elif cfg.top_pt_reweight:
         leg.AddEntry(inputs.bkg["tt"], "Top-p_{T} reweighted", "")
 
     if g_total:
         leg.AddEntry(g_total, "Bkg stat #oplus syst unc.", "f")
     leg.AddEntry(g_stat, "Bkg stat unc.", "f")
-    if asimov_stat is not None:
-        leg.AddEntry(asimov_stat, "Asimov Poisson stat.", "l")
 
     for mass, sig in inputs.signals:
         scale_label = signal_scale_label(cfg)
@@ -3085,12 +3091,14 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
     draw_cms_labels(ROOT, cfg, inputs.lumi_pb)
     draw_manual_y_axis_title(ROOT, y_axis_title(cfg, norm), cfg.y_axis_title_ndc_x, 0.65, cfg.main_y_axis_title_size)
 
-    if cfg.blind:
+    if comparison_total is not None or cfg.blind:
         note = ROOT.TLatex()
         note.SetNDC(True)
         note.SetTextFont(42)
         note.SetTextSize(0.040)
-        if cfg.blind_point_mode == "data" and is_mass_variable(cfg):
+        if comparison_total is not None:
+            note.DrawLatex(0.155, 0.78, "Reweighted Asimov points: Poisson stat.")
+        elif cfg.blind_point_mode == "data" and is_mass_variable(cfg):
             note.DrawLatex(0.155, 0.78, f"Data blinded for {cfg.blind_low:g} < m_{{#mu^{{+}}#mu^{{-}}}} < {cfg.blind_high:g} GeV")
         elif cfg.blind_point_mode == "asimov":
             note.DrawLatex(0.155, 0.78, "Blind: background-only Asimov points")
@@ -3123,8 +3131,9 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
         frame.GetYaxis().SetLabelSize(0.1)
         frame.GetYaxis().SetNdivisions(505)
         frame.Draw("axis")
-        ratio_title = "Ratio" if comparison_total is not None else "Data / Bkg"
-        draw_manual_y_axis_title(ROOT, ratio_title, cfg.y_axis_title_ndc_x, 0.5, cfg.ratio_y_axis_title_size)
+        ratio_title = "#splitline{After / Before}{top p_{T} reweight}" if comparison_total is not None else "Data / Bkg"
+        draw_manual_y_axis_title(ROOT, ratio_title, cfg.y_axis_title_ndc_x, 0.5,
+                                 min(cfg.ratio_y_axis_title_size, 0.075) if comparison_total is not None else cfg.ratio_y_axis_title_size)
 
         if ratio_total:
             ratio_total.Draw("E2 same")
@@ -3137,33 +3146,10 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
         line.SetLineWidth(1)
         line.Draw("same")
         if comparison_total is not None:
-            asimov_ratio_stat = make_asimov_stat_graph(ROOT, cfg, norm, inputs.lumi_pb, inputs.bkg_total, ratio=True)
-            asimov_ratio_stat.Draw("2 same")
-            # Same simulated events underlie both predictions; do not invent
-            # an independent-sample statistical error for their ratio.
-            prediction_ratio = ROOT.TGraph()
-            prediction_ratio.SetName(_NAMES.unique("toppt_ratio"))
-            for ib in range(1, inputs.bkg_total.GetNbinsX() + 1):
-                den = inputs.bkg_total.GetBinContent(ib)
-                if den <= 0.0:
-                    continue
-                prediction_ratio.SetPoint(prediction_ratio.GetN(), inputs.bkg_total.GetBinCenter(ib),
-                                          comparison_total.GetBinContent(ib) / den)
-            prediction_ratio.SetLineColor(ROOT.kBlue + 1)
-            prediction_ratio.SetLineStyle(2)
-            prediction_ratio.SetLineWidth(3)
-            prediction_ratio.Draw("L same")
-            ratio_legend = ROOT.TLegend(0.17, 0.68, 0.94, 0.96)
-            ratio_legend.SetNColumns(2)
-            ratio_legend.SetBorderSize(0)
-            ratio_legend.SetFillStyle(0)
-            ratio_legend.SetTextSize(0.055)
-            if ratio:
-                point_label = "Asimov" if cfg.blind and cfg.blind_point_mode == "asimov" else "Toy" if cfg.blind and cfg.blind_point_mode == "toy" else "Data"
-                ratio_legend.AddEntry(ratio, f"{point_label} / Bkg (nom.)", "pe")
-            ratio_legend.AddEntry(prediction_ratio, "Bkg (rw.) / Bkg (nom.)", "l")
-            ratio_legend.AddEntry(asimov_ratio_stat, "Asimov Poisson stat.", "l")
-            ratio_legend.Draw()
+            prediction_ratio = make_asimov_stat_graph(
+                ROOT, cfg, norm, inputs.lumi_pb, comparison_total,
+                denominator=inputs.bkg_total)
+            prediction_ratio.Draw("PZ same")
         if ratio:
             ratio.Draw("PZ same")
         pad2.RedrawAxis()
@@ -3215,11 +3201,9 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
         if comparison_total is not None:
             comparison_total.Write("bkg_toppt_reweighted")
             asimov_stat.Write("asimov_poisson_stat")
-            if data_graph:
-                data_graph.Write("displayed_data")
             if use_ratio:
                 prediction_ratio.Write("bkg_toppt_over_nominal")
-                asimov_ratio_stat.Write("asimov_poisson_stat_ratio")
+                prediction_ratio.Write("asimov_poisson_stat_ratio")
         for mass, sig in inputs.signals:
             sig.Write(f"sig_M{mass_label(mass)}")
         g_stat.Write("bkg_stat_unc")
@@ -3598,4 +3582,5 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 

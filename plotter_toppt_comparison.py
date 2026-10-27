@@ -2,24 +2,23 @@
 """Compare nominal and top-pT-reweighted ttbar using the canonical plotter.
 
 The upper panel contains the nominal stack with ttbar at the top, its black
-total outline, and a blue dashed reweighted total. All non-ttbar histograms,
-including the nominal QCD-MC normalisation and DD estimates, are identical.
-The lower panel shows Data/Bkg(nominal) and Bkg(reweighted)/Bkg(nominal).
-Bands refer to the nominal prediction; the two correlated predictions' ratio
-is shown without an independent-sample statistical uncertainty.
-Red open boxes show expected Asimov Poisson counting precision sqrt(N),
-with N taken from nominal total-background event yields after rebinning.
-The ratio boxes show 1 +/- 1/sqrt(N); non-positive bins are omitted.
-This is separate from background-template statistics and is not added to
-stat+syst bands. Observed data blinding and Asimov point modes are unchanged.
+outline, and blue reweighted total-background Asimov points. No observed data
+points are drawn in any region. Point errors are sqrt(N_after) in event yields;
+the lower panel shows After/Before with errors sqrt(N_after)/N_before.
+These are expected Poisson counting errors, not independent MC ratio errors.
+Non-positive numerator/denominator bins are omitted. Nominal stat/syst bands
+are unchanged; the Asimov errors are not added to those bands. All non-ttbar
+histograms, including QCD-MC normalisation and DD estimates, remain identical.
 
 Accepts plotter.py options plus --regions selected|sr|bjet-ss|lightjet-os|all.
-Defaults: selected region (OS BJet), all variables, SR blinded.
-Dimuon mass defaults to 5--80 GeV and stat+syst in SR; other variables stay
-stat-only. Ratio limits default to 0.5--1.5. Explicit CLI options override these.
-For --regions all, SR retains the requested blinding and background methods;
-SS BJet and OS LightJet use observed control data, QCD/DY MC, and stat-only.
-Blinded kinematics use nominal-background Asimov points, exactly as plotter.py.
+Defaults: selected region (OS BJet), all variables, SR blinded internally.
+Mass binning uses the same plotter.make_bin_edges function and default 1 GeV
+spacing as dimuon_mass_systematics.py, with the comparison range 5--80 GeV.
+Explicit --bin-edges, --bin-width and --rebin options use the same shared logic.
+Dimuon mass defaults to stat+syst in SR; other variables stay stat-only.
+Ratio limits default to 0.5--1.5. Explicit CLI options override these.
+For --regions all, SR retains the requested background methods;
+SS BJet and OS LightJet use QCD/DY MC and stat-only bands.
 No fits, templates or production ROOT files are updated.
 
 Examples:
@@ -77,7 +76,7 @@ def main(argv=None):
     parser.set_defaults(data_mode="blind", variable="all", output_dir="plots/toppt_comparison",
                         uncertainty=None, ratio_min=0.5, ratio_max=1.5)
     parser.add_argument("--regions", choices=("selected", "sr", "bjet-ss", "lightjet-os", "all"),
-                        default="selected", help="all = blinded/requested SR plus observed SS-BJet and OS-LightJet controls")
+                        default="selected", help="all = SR plus SS-BJet and OS-LightJet controls; reweighted Asimov points in all regions")
     argv = p.normalise_cli_hyphen_typos(sys.argv[1:] if argv is None else argv)
     if not argv:
         parser.print_help()
@@ -105,3 +104,4 @@ def main(argv=None):
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

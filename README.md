@@ -139,28 +139,27 @@ variables remain stat-only. Ratio limits default to 0.5--1.5. Explicit `--xmin`,
 `--xmax`, `--uncertainty`, and ratio-limit options override these defaults.
 The mass defaults also apply when using `--variable all`, without changing
 other variables' axis ranges.
+Mass edges use the same `plotter.make_bin_edges` function as
+`dimuon_mass_systematics.py`: default 1 GeV spacing, here over 5--80 GeV.
+`--bin-edges`, `--bin-width`, and `--rebin` use the same shared logic.
 `--regions all` draws SR plus SS BJet and OS LightJet controls. Controls use
-observed data, QCD/DY MC, and statistical uncertainties; SR preserves the requested
-background methods and uncertainty mode. As in `plotter.py`, blinded SR kinematics
-use Asimov points, while mass plots hide the blinded interval. Explicit
-`--unblind` is required to display SR observations there.
+QCD/DY MC and statistical bands; SR preserves the requested background methods
+and uncertainty mode. No observed Data points are drawn in any comparison panel.
 
 The upper panel has the nominal stack with ttbar at the top, a black nominal
-total outline and a blue dashed reweighted total. Every other background,
-including QCD normalisation, is identical. The lower panel shows
-Data/Bkg(nominal) and Bkg(reweighted)/Bkg(nominal), using Asimov/toy points when
-requested by the blinding mode. Bands describe the nominal prediction; the
-reweighting ratio has no independent-sample error because the events are shared.
-Red open boxes in both panels show the expected Poisson counting precision
-of nominal-background Asimov data: sqrt(N) in event yields and 1 +/- 1/sqrt(N)
-in the ratio. N is recovered from the displayed histogram using its bin width
-and luminosity normalisation, after rebinning. Non-positive bins are omitted.
-These boxes are a counting-precision reference, not fluctuated pseudo-data,
-MC Sumw2 errors, or a confidence interval; they are not added to the existing
-background uncertainty bands. Blinding is unchanged. With --save-root, the
-additional graphs are asimov_poisson_stat and asimov_poisson_stat_ratio.
+total outline, and blue reweighted total-background Asimov points with Poisson
+errors. Every other background, including QCD normalisation, is identical.
+The lower panel shows After / Before top pT reweight. Point errors are
+sqrt(N_after) above and sqrt(N_after)/N_before below, using expected event counts
+after rebinning and correctly undoing bin-width/luminosity display scaling.
+Non-positive numerator/denominator bins are omitted. These are expected counting
+errors, not MC Sumw2 errors or independent-sample ratio errors; they are not
+added to the unchanged nominal stat/syst bands. There is no red reference band.
+Blinding and background estimation remain unchanged internally.
 Comparison outputs go to `plots/toppt_comparison` with `_TopPtComparison` names.
-`--save-root` stores the two totals and displayed (blinded, if applicable) points.
+`--save-root` stores both totals and reweighted Asimov graphs as
+`asimov_poisson_stat`, `asimov_poisson_stat_ratio`, and `bkg_toppt_over_nominal`
+(the last two contain the same ratio points). Observed Data are not exported.
 No fit inputs or production ROOT files are modified by either plotter.
 
 ### 2. Build the DY data-driven estimate
@@ -906,4 +905,5 @@ Run these scripts inside an environment with PyROOT/ROOT available and with acce
 ## Development rule of thumb
 
 When modifying this repository, preserve the physics behaviour first and refactor second.  A small explicit change that keeps histogram names, region definitions, normalisations, fit ranges, blinding, and output conventions intact is preferred to a broad cleanup that silently changes the analysis.
+
 
