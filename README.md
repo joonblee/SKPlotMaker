@@ -151,20 +151,21 @@ QCD/DY MC and statistical bands; SR preserves the requested background methods
 and uncertainty mode. Black data points follow the canonical blinding policy;
 blinded kinematics retain labelled nominal-Asimov/toy points.
 
-The upper panel has the nominal stack with ttbar at the top, a black nominal
-outline, and blue reweighted total-background Asimov dots with horizontal
-bin-width and vertical Poisson error bars (no fill band). These blue points
-are drawn in both SR and CR, regardless of blinding; black points retain the
-canonical data/blinding modes.
-Every other background, including QCD normalisation, is identical.
-The lower panel shows Data/Before as black points and After/Before as a blue
-points with the same error-bar style. Vertical errors are sqrt(N_after) above and
-sqrt(N_after)/N_before below, with bin-width/luminosity scaling accounted for.
-They are not MC ratio errors and are not added to nominal stat/syst bands.
-Comparison outputs go to `plots/toppt_comparison` with `_TopPtComparison` names.
-`--save-root` stores both totals, the Asimov graphs (`asimov_poisson_stat`,
-`asimov_poisson_stat_ratio`, `bkg_toppt_over_nominal`), and only the displayed
-data graph (`displayed_data`), preserving blinding.
+The upper panel has the nominal stack with ttbar at the top, its black outline,
+and the reweighted total background as blue open triangles without error bars.
+This marker-only style also applies to After/Before in the ratio panel, for
+mass and kinematic distributions alike.
+Mass plots additionally show nominal-background Asimov open black circles with
+Poisson errors sqrt(N_before); their ratio is centred at one with errors
+1/sqrt(N_before). These predictions include the blinded interval while observed
+data retain the existing blinding. Blinded kinematics keep the canonical
+nominal-Asimov/toy point mode without duplicating those points.
+Nominal stat/syst bands and all non-ttbar predictions remain unchanged.
+Outputs remain under `plots/toppt_comparison` with `_TopPtComparison` names.
+With `--save-root`, reweighted graphs retain calculated Poisson errors although
+these are not displayed. Additional nominal mass graphs are
+`nominal_asimov_poisson_stat` and `nominal_asimov_poisson_stat_ratio`.
+Only the displayed data graph is exported, preserving blinding.
 No fit inputs or production ROOT files are modified by either plotter.
 
 ### 2. Build the DY data-driven estimate

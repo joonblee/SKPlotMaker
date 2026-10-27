@@ -7,7 +7,7 @@ Optional top-pT study: --top-pt-reweight replaces only ttbar, including its
 RunSyst/RunXSecSyst templates, from BASE/TopPtReweight. Other predictions and
 the nominal QCD-MC normalisation are retained; DD backgrounds are not refitted.
 Output filenames gain _TopPtReweight. See topptreweight_comparison.py for overlays.
-Comparison overlays show data plus blue reweighted Asimov points and Poisson errors.
+Comparison overlays show nominal Asimov Poisson errors and reweighted markers without errors.
 
 Revision 2 updates:
   - for the dimuon-mass data-driven DY estimate, reads LightJetStat from the
@@ -2907,6 +2907,13 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
     inputs = build_plot_inputs(ROOT, cfg, norm, edges)
     comparison_total = comparison_builder(ROOT, cfg, norm, edges, inputs) if comparison_builder else None
     asimov_stat = make_asimov_stat_graph(ROOT, cfg, norm, inputs.lumi_pb, comparison_total) if comparison_total is not None else None
+    nominal_asimov = None
+    if (comparison_total is not None and is_mass_variable(cfg)
+            and not (cfg.blind and cfg.blind_point_mode == "asimov")):
+        nominal_asimov = make_asimov_stat_graph(ROOT, cfg, norm, inputs.lumi_pb, inputs.bkg_total)
+        nominal_asimov.SetMarkerStyle(24)
+        nominal_asimov.SetMarkerColor(ROOT.kBlack)
+        nominal_asimov.SetLineColor(ROOT.kBlack)
     nominal_outline = None
     if comparison_total is not None:
         nominal_outline = inputs.bkg_total.Clone(_NAMES.unique("nominal_outline"))
@@ -2972,7 +2979,7 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
     # empty frame first makes --ymin and --ymax literal axis limits, independent
     # of ROOT histogram autoscaling.
     ymax = hist_max_with_error(inputs.bkg_total, inputs.total if cfg.draw_systematics else inputs.stat)
-    ymax = max(ymax, graph_max_y(data_graph))
+    ymax = max(ymax, graph_max_y(data_graph), graph_max_y(nominal_asimov))
     if asimov_stat is not None:
         ymax = max(ymax, graph_max_y(asimov_stat))
     if comparison_total is not None:
@@ -3052,7 +3059,9 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
 
     if comparison_total is not None:
         nominal_outline.Draw("hist same")
-        asimov_stat.Draw("PZ same")
+        asimov_stat.Draw("PX same")  # X suppresses both horizontal and vertical errors.
+    if nominal_asimov is not None:
+        nominal_asimov.Draw("PZ same")
 
     for _, sig in inputs.signals:
         sig.Draw("hist same")
@@ -3087,7 +3096,9 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
         leg.AddEntry(inputs.bkg[proc], labels[proc], "f")
     if comparison_total is not None:
         leg.AddEntry(nominal_outline, "Bkg: no top-p_{T} reweight", "l")
-        leg.AddEntry(asimov_stat, "Reweighted Asimov: Poisson stat.", "pe")
+        leg.AddEntry(asimov_stat, "Bkg: top-p_{T} reweighted", "p")
+        if nominal_asimov is not None:
+            leg.AddEntry(nominal_asimov, "Nominal Asimov: Poisson stat.", "pe")
     elif cfg.top_pt_reweight:
         leg.AddEntry(inputs.bkg["tt"], "Top-p_{T} reweighted", "")
 
@@ -3163,8 +3174,15 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
             prediction_ratio = make_asimov_stat_graph(
                 ROOT, cfg, norm, inputs.lumi_pb, comparison_total,
                 denominator=inputs.bkg_total)
-            prediction_ratio.Draw("PZ same")
-            ratio_legend = ROOT.TLegend(0.17, 0.80, 0.94, 0.96)
+            prediction_ratio.Draw("PX same")
+            nominal_asimov_ratio = make_ratio_graph(ROOT, nominal_asimov, inputs.bkg_total)
+            if nominal_asimov_ratio is not None:
+                nominal_asimov_ratio.SetMarkerStyle(24)
+                nominal_asimov_ratio.SetMarkerSize(0.7)
+                nominal_asimov_ratio.SetMarkerColor(ROOT.kBlack)
+                nominal_asimov_ratio.SetLineColor(ROOT.kBlack)
+                nominal_asimov_ratio.Draw("PZ same")
+            ratio_legend = ROOT.TLegend(0.17, 0.70 if nominal_asimov is not None else 0.80, 0.94, 0.96)
             ratio_legend.SetNColumns(2)
             ratio_legend.SetBorderSize(0)
             ratio_legend.SetFillStyle(0)
@@ -3172,7 +3190,9 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
             if ratio:
                 point_label = "Asimov" if cfg.blind and cfg.blind_point_mode == "asimov" else "Toy" if cfg.blind and cfg.blind_point_mode == "toy" else "Data"
                 ratio_legend.AddEntry(ratio, point_label + " / Before", "pe")
-            ratio_legend.AddEntry(prediction_ratio, "After / Before (Poisson stat.)", "pe")
+            ratio_legend.AddEntry(prediction_ratio, "After / Before", "p")
+            if nominal_asimov_ratio is not None:
+                ratio_legend.AddEntry(nominal_asimov_ratio, "Nominal Asimov / Before", "pe")
             ratio_legend.Draw()
         if ratio:
             ratio.Draw("PZ same")
@@ -3225,11 +3245,15 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
         if comparison_total is not None:
             comparison_total.Write("bkg_toppt_reweighted")
             asimov_stat.Write("asimov_poisson_stat")
+            if nominal_asimov is not None:
+                nominal_asimov.Write("nominal_asimov_poisson_stat")
             if data_graph:
                 data_graph.Write("displayed_data")
             if use_ratio:
                 prediction_ratio.Write("bkg_toppt_over_nominal")
                 prediction_ratio.Write("asimov_poisson_stat_ratio")
+                if nominal_asimov_ratio is not None:
+                    nominal_asimov_ratio.Write("nominal_asimov_poisson_stat_ratio")
         for mass, sig in inputs.signals:
             sig.Write(f"sig_M{mass_label(mass)}")
         g_stat.Write("bkg_stat_unc")

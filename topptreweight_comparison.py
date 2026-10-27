@@ -2,16 +2,18 @@
 """Compare nominal and top-pT-reweighted ttbar using the canonical plotter.
 
 The upper panel contains the nominal stack with ttbar at the top, its black
-outline, black data points subject to canonical blinding, and a blue reweighted
-total-background Asimov prediction shown as blue dots with horizontal bin-width
-and vertical Poisson error bars (no fill band). The lower panel shows Data/Before
-and After/Before with the same styling. Blinded kinematics retain labelled
-nominal-Asimov/toy point modes; SR data are not unblinded.
-The blue vertical errors represent sqrt(N_after) in event yields and
-sqrt(N_after)/N_before in the ratio, not independent MC ratio errors.
-Non-positive numerator/denominator bins are omitted. Nominal stat/syst bands
-are unchanged; Asimov errors are not added to them. All non-ttbar histograms,
-including QCD-MC normalisation and DD estimates, remain identical.
+outline, data points subject to canonical blinding, and blue open triangles
+for the reweighted total background. Reweighted markers have no displayed
+horizontal or vertical errors, in both panels and for all variables.
+Mass plots also show nominal-background Asimov open black circles with
+Poisson errors sqrt(N_before), including the blinded mass interval.
+Their ratio is centred at one with errors 1/sqrt(N_before). Observed data
+remain blinded according to the existing policy. Blinded kinematics retain
+the canonical nominal-Asimov/toy point mode without an additional duplicate.
+Nominal stat/syst bands and all non-ttbar predictions remain unchanged.
+Saved reweighted graphs retain their calculated Poisson errors for inspection;
+only their display is suppressed. Additional nominal mass graphs are saved as
+nominal_asimov_poisson_stat and nominal_asimov_poisson_stat_ratio.
 
 Accepts plotter.py options plus --regions selected|sr|bjet-ss|lightjet-os|all.
 Defaults: selected region (OS BJet), all variables, SR blinded internally.
