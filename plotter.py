@@ -446,7 +446,7 @@ VARIABLE_SPECS: Dict[str, VariableSpec] = {
     "jet1_pt": VariableSpec("jet1_pt", "Jet_1_Pt", "p_{T}(j_{b-tag}) [GeV]", 30.0, 500.0, 10.0, True),
     "jet1_eta": VariableSpec("jet1_eta", "Jet_1_Eta", "#eta(j_{b-tag})", -2.4, 2.4, 0.1, False),
     "jet1_phi": VariableSpec("jet1_phi", "Jet_1_Phi", "#phi(j_{b-tag})", -3.0, 3.0, 0.2, False),
-    "mu_lead_pt": VariableSpec("mu_lead_pt", "Lepton_0_Pt", "p_{T}(#mu_{lead}) [GeV]", 50.0, 500.0, 10.0, True),
+    "mu_lead_pt": VariableSpec("mu_lead_pt", "Lepton_0_Pt", "p_{T}(#mu_{lead}) [GeV]", 50.0, 500.0, 20.0, True),
     "mu_lead_eta": VariableSpec("mu_lead_eta", "Lepton_0_Eta", "#eta(#mu_{lead})", -2.4, 2.4, 0.1, False),
     "mu_lead_phi": VariableSpec("mu_lead_phi", "Lepton_0_Phi", "#phi(#mu_{lead})", -3.2, 3.2, 0.2, False),
     "mu_sub_pt": VariableSpec("mu_sub_pt", "Lepton_1_Pt", "p_{T}(#mu_{sub}) [GeV]", 10.0, 200.0, 10.0, True),
