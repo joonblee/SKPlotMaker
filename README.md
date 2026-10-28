@@ -765,8 +765,7 @@ orthogonal validation selection.
 | `id_eff.py` | Muon-ID tag-and-probe | Self-contained J/psi/Z efficiency and scale-factor measurement. The C++ fit implementation is embedded in the Python script and compiled through ROOT ACLiC. |
 | `trig_eff.py` | Trigger-efficiency measurement | Projects the analyser's 2D trigger-efficiency histograms into the required eta regions and pT binning, then makes data/MC efficiency and SF plots. |
 | `convener_studies.py` | Convener-review diagnostics | Plots the dedicated 2018 electron/tau-veto, dimuon-jet composition, dijet-mass, and orthogonal DY data-closure studies written by the SKFlatAnalyzer diagnostic modes. |
-| `sigFit.py` | Signal mass-shape fit | Fits signal dimuon-mass distributions with a double Crystal Ball or Gaussian and parameterises `sigma_m / m` versus mass. |
-| `sigFit_v2.py` | Extended signal fit/interpolation | Extends the signal-fit workflow with interpolation products, closure information, yields, and signal systematic bookkeeping. Use this version when the interpolation outputs are required. |
+| `sigFit.py` | Signal mass-shape fit/interpolation | Fits signal dimuon-mass distributions with a double Crystal Ball or Gaussian, parameterises `sigma_m / m` versus mass, and optionally builds interpolation products, closure information, yields, and signal systematic bookkeeping with `--build-interpolation`. |
 
 ## Important analysis conventions
 
@@ -829,7 +828,7 @@ Signal resolution/interpolation:
 ```bash
 python3 sigFit.py --era Run2
 python3 sigFit.py --era Run3
-python3 sigFit_v2.py --era Run2 --build-interpolation --interpolation-step 1
+python3 sigFit.py --era Run2 --build-interpolation --interpolation-step 1
 ```
 
 ## QCD yield and OS/SS diagnostic examples
@@ -903,7 +902,7 @@ python3 qcd_bkg_estimation.py
 python3 plotter.py
 python3 id_eff.py
 python3 trig_eff.py
-python3 sigFit_v2.py --help
+python3 sigFit.py --help
 ```
 
 Run these scripts inside an environment with PyROOT/ROOT available and with access to the analysis ROOT files under the configured server paths.

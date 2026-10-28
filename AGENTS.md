@@ -351,13 +351,7 @@ The script assumes x=`|eta|`, y=`probe pT`, then projects and rebins to the refe
 
 ### `sigFit.py`
 
-Purpose: fit signal dimuon-mass shapes and parameterise relative mass resolution.
-
-### `sigFit_v2.py`
-
-Purpose: extended signal workflow including interpolation, closure products, yield summaries, and signal systematic bookkeeping.
-
-Prefer `sigFit_v2.py` when the requested task concerns signal interpolation.  Do not delete or rewrite `sigFit.py` merely because v2 exists.
+Purpose: fit signal dimuon-mass shapes, parameterise relative mass resolution, and optionally build interpolation, closure products, yield summaries, and signal systematic bookkeeping with `--build-interpolation`.
 
 ## 8. Systematic-uncertainty changes must be end-to-end
 

@@ -45,6 +45,7 @@ Typical usage
   python3 sigFit.py --masses final
   python3 sigFit.py --masses auto
   python3 sigFit.py --masses 12,20,40,70
+  python3 sigFit.py --build-interpolation --interpolation-step 1
 
 Outputs
 -------
@@ -55,6 +56,9 @@ Outputs
   plots/sigFit/resolution_coefficients.csv
   plots/sigFit/resolution_coefficients.json
   plots/sigFit/resolution_coefficients.py
+  plots/sigFit/signal_interpolation.json/csv
+  plots/sigFit/signal_interpolation_closure.json/csv
+  plots/sigFit/sigFit_yield_<era>.pdf/png
 
 The generated resolution_coefficients.py contains a RESOLUTION dictionary in
 the same convention used by the counting-limit workflow:
@@ -65,6 +69,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import ctypes
 import json
 import math
 import os
@@ -116,15 +121,41 @@ MIN_DCB_FIT_FRACTION = 0.1
 MIN_DCB_CORE_FRACTION = 0.03
 
 LUMI_FB: Dict[str, float] = {
-    "2016preVFP": 19.5,
-    "2016postVFP": 16.8,
-    "2017": 41.5,
-    "2018": 59.8,
-    "2022": 7.98,
-    "2022EE": 26.67,
-    "2023": 17.7,
-    "2023BPix": 9.5,
+    "2016preVFP": 19.52,
+    "2016postVFP": 16.81,
+    "2017": 41.48,
+    "2018": 59.83,
+    "2022": 7.9804,
+    "2022EE": 26.6717,
+    "2023": 18.064,
+    "2023BPix": 9.693,
 }
+
+# Signal experimental systematics mirrored from limit_workflow.py.  The signal
+# has no generator-theory nuisance in the default statistical model, so the
+# interpolation model only needs nominal + RunSyst inputs.
+SIGNAL_EXP_SYST: Dict[str, Tuple[str, str]] = {
+    "jer": ("JetResDown", "JetResUp"),
+    "jes": ("JetEnDown", "JetEnUp"),
+    "pu": ("PUDown", "PUUp"),
+    "mu_trig_sf": ("MuonTriggerSFDown", "MuonTriggerSFUp"),
+    "mu_id_sf": ("MuonIDSFDown", "MuonIDSFUp"),
+    "mu_scale": ("MuonEnDown", "MuonEnUp"),
+}
+SIGNAL_BTAG_SYST: Dict[str, Tuple[str, str]] = {
+    "btagSFbc_correlated": ("BTagHFCorrDown", "BTagHFCorrUp"),
+    "btagSFbc_uncorrelated": ("BTagHFUncorrDown", "BTagHFUncorrUp"),
+    "btagSFlight_correlated": ("BTagLFCorrDown", "BTagLFCorrUp"),
+    "btagSFlight_uncorrelated": ("BTagLFUncorrDown", "BTagLFUncorrUp"),
+}
+SIGNAL_L1_PREFIRE_SYST: Dict[str, Tuple[str, str]] = {
+    "l1prefire": ("L1PrefireDown", "L1PrefireUp"),
+}
+L1_PREFIRE_ERAS = frozenset({"2016preVFP", "2016postVFP", "2017"})
+DEFAULT_N_SIGMA = 5.0
+DEFAULT_SEARCH_MIN = 10.4
+DEFAULT_SEARCH_MAX = 80.0
+DEFAULT_INTERPOLATION_STEP = 1.0
 
 
 @dataclass
@@ -170,6 +201,39 @@ class ResolutionResult:
     ndf: int
     chi2_ndf: Optional[float]
     plot_files: List[str]
+
+
+@dataclass
+class SignalAnchorResult:
+    era: str
+    mass: float
+    source: str
+    measured_resolution: float
+    resolution: float
+    sigma: float
+    window_low: float
+    window_high: float
+    nominal_yield: float
+    nominal_error: float
+    relative_stat_error: float
+    systematics: Dict[str, Dict[str, float]]
+
+
+@dataclass
+class SignalModelPoint:
+    era: str
+    mass: float
+    source: str
+    anchor_low: float
+    anchor_high: float
+    resolution: float
+    sigma: float
+    window_low: float
+    window_high: float
+    nominal_yield: float
+    nominal_error: float
+    relative_stat_error: float
+    systematics: Dict[str, Dict[str, float]]
 
 
 class NameFactory:
@@ -334,6 +398,38 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-resolution-fit",
         action="store_true",
         help="skip the linear sigma/m versus mass fit",
+    )
+    parser.add_argument(
+        "--build-interpolation",
+        action="store_true",
+        help=(
+            "build a continuous signal model from the simulated mass anchors: "
+            "nominal yield, fitted resolution, and RunSyst response ratios"
+        ),
+    )
+    parser.add_argument(
+        "--interpolation-step",
+        type=float,
+        default=DEFAULT_INTERPOLATION_STEP,
+        help="mass spacing in GeV for the continuous signal model; default: %(default)s",
+    )
+    parser.add_argument(
+        "--n-sigma",
+        type=float,
+        default=DEFAULT_N_SIGMA,
+        help="half-width of the counting window in fitted sigma; default: %(default)s",
+    )
+    parser.add_argument(
+        "--search-min",
+        type=float,
+        default=DEFAULT_SEARCH_MIN,
+        help="lower edge of the statistical search range in GeV; default: %(default)s",
+    )
+    parser.add_argument(
+        "--search-max",
+        type=float,
+        default=DEFAULT_SEARCH_MAX,
+        help="upper edge of the statistical search range in GeV; default: %(default)s",
     )
     return parser
 
@@ -725,7 +821,7 @@ def lumi_label(era: str) -> str:
     lumi = LUMI_FB.get(era)
     if lumi is None:
         return f"{era}, {energy}"
-    return f"{lumi:g} fb^{{-1}} ({energy})"
+    return f"{lumi:.1f} fb^{{-1}} ({energy})"
 
 
 def style_hist(ROOT, hist) -> None:
@@ -1384,6 +1480,644 @@ def write_resolution_outputs(
     print(f"[SAVE] {py_path}")
 
 
+
+
+def applicable_signal_systematics(era: str) -> Dict[str, Tuple[str, str]]:
+    out: Dict[str, Tuple[str, str]] = {}
+    out.update(SIGNAL_EXP_SYST)
+    out.update(SIGNAL_BTAG_SYST)
+    if era in L1_PREFIRE_ERAS:
+        out.update(SIGNAL_L1_PREFIRE_SYST)
+    return out
+
+
+def systematic_region(region: str, suffix: str) -> str:
+    prefix = region.replace("_NIsoDimuon", "")
+    return f"{prefix}_Syst_{suffix}_NIsoDimuon"
+
+
+def integrate_histogram(hist, low: float, high: float) -> Tuple[float, float]:
+    axis = hist.GetXaxis()
+    nbins = int(hist.GetNbinsX())
+    low_c = max(float(low), float(axis.GetXmin()))
+    high_c = min(float(high), float(axis.GetXmax()))
+    if high_c <= low_c:
+        return 0.0, 0.0
+
+    eps = 1.0e-9 * max(1.0, abs(high_c - low_c))
+    first = max(1, min(nbins, int(axis.FindFixBin(low_c + eps))))
+    last = max(1, min(nbins, int(axis.FindFixBin(high_c - eps))))
+    error = ctypes.c_double(0.0)
+    value = float(hist.IntegralAndError(first, last, error))
+    return value, float(error.value)
+
+
+def integrate_file_histogram(
+    ROOT,
+    filename: str,
+    path: str,
+    low: float,
+    high: float,
+) -> Tuple[float, float]:
+    hist = open_histogram(ROOT, filename, path)
+    return integrate_histogram(hist, low, high)
+
+
+def relative_resolution_from_fit(result: ResolutionResult, mass: float) -> float:
+    return result.slope_a * mass + result.intercept_b
+
+
+def counting_window_from_resolution(
+    mass: float,
+    relative_resolution: float,
+    n_sigma: float,
+    search_min: float,
+    search_max: float,
+) -> Tuple[float, float, float]:
+    sigma = mass * relative_resolution
+    low = max(search_min, mass - n_sigma * sigma)
+    high = min(search_max, mass + n_sigma * sigma)
+    if not high > low:
+        raise ValueError(
+            f"Empty signal window at M={mass:g}: [{low:g}, {high:g}] GeV"
+        )
+    return low, high, sigma
+
+
+def find_runsyst_signal_file(
+    base_dir: str,
+    era: str,
+    mass: float,
+    nominal_file: str,
+) -> Optional[str]:
+    exact = Path(base_dir) / "RunSyst" / era / Path(nominal_file).name
+    if exact.is_file():
+        return str(exact)
+    discovered = discover_signal_files(str(Path(base_dir) / "RunSyst"), era)
+    return find_requested_file(discovered, mass)
+
+
+def build_signal_anchor(
+    ROOT,
+    *,
+    era: str,
+    mass: float,
+    nominal_file: str,
+    resolution_result: ResolutionResult,
+    measured_resolution: float,
+    base_dir: str,
+    region: str,
+    hist_name: str,
+    n_sigma: float,
+    search_min: float,
+    search_max: float,
+    strict: bool,
+) -> SignalAnchorResult:
+    rel_res = relative_resolution_from_fit(resolution_result, mass)
+    low, high, sigma = counting_window_from_resolution(
+        mass,
+        rel_res,
+        n_sigma,
+        search_min,
+        search_max,
+    )
+    nominal_path = hist_path(region, hist_name)
+    nominal_yield, nominal_error = integrate_file_histogram(
+        ROOT,
+        nominal_file,
+        nominal_path,
+        low,
+        high,
+    )
+    if nominal_yield <= 0.0 or not math.isfinite(nominal_yield):
+        raise ValueError(
+            f"Non-positive nominal signal yield for {era}, M={mass:g}: {nominal_yield}"
+        )
+
+    runsyst_file = find_runsyst_signal_file(base_dir, era, mass, nominal_file)
+    if runsyst_file is None:
+        message = f"Missing RunSyst signal file for {era}, M={mass:g}"
+        if strict:
+            raise FileNotFoundError(message)
+        print(f"[WARNING] {message}")
+
+    systematics: Dict[str, Dict[str, float]] = {}
+    if runsyst_file is not None:
+        for name, (down_suffix, up_suffix) in applicable_signal_systematics(era).items():
+            side_values: Dict[str, Tuple[float, float]] = {}
+            missing = False
+            for side, suffix in (("down", down_suffix), ("up", up_suffix)):
+                path = hist_path(systematic_region(region, suffix), hist_name)
+                try:
+                    side_values[side] = integrate_file_histogram(
+                        ROOT,
+                        runsyst_file,
+                        path,
+                        low,
+                        high,
+                    )
+                except (OSError, KeyError) as exc:
+                    missing = True
+                    message = (
+                        f"Missing signal systematic {name}/{side} for {era}, "
+                        f"M={mass:g}: {exc}"
+                    )
+                    if strict:
+                        raise
+                    print(f"[WARNING] {message}")
+                    break
+            if missing:
+                continue
+
+            down_yield, down_error = side_values["down"]
+            up_yield, up_error = side_values["up"]
+            if down_yield <= 0.0 or up_yield <= 0.0:
+                message = (
+                    f"Non-positive signal systematic yield for {name}, {era}, "
+                    f"M={mass:g}: down={down_yield}, up={up_yield}"
+                )
+                if strict:
+                    raise ValueError(message)
+                print(f"[WARNING] {message}")
+                continue
+
+            systematics[name] = {
+                "down": down_yield / nominal_yield,
+                "up": up_yield / nominal_yield,
+                "down_yield": down_yield,
+                "up_yield": up_yield,
+                "down_error": down_error,
+                "up_error": up_error,
+            }
+
+    return SignalAnchorResult(
+        era=era,
+        mass=mass,
+        source="simulated",
+        measured_resolution=measured_resolution,
+        resolution=rel_res,
+        sigma=sigma,
+        window_low=low,
+        window_high=high,
+        nominal_yield=nominal_yield,
+        nominal_error=nominal_error,
+        relative_stat_error=(nominal_error / nominal_yield),
+        systematics=systematics,
+    )
+
+
+def interpolation_weight(x: float, x0: float, x1: float) -> float:
+    if not x1 > x0:
+        raise ValueError(f"Invalid interpolation anchors: {x0}, {x1}")
+    return (x - x0) / (x1 - x0)
+
+
+def interpolate_linear(x: float, x0: float, y0: float, x1: float, y1: float) -> float:
+    w = interpolation_weight(x, x0, x1)
+    return (1.0 - w) * y0 + w * y1
+
+
+def interpolate_positive_log(
+    x: float,
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+) -> float:
+    if y0 <= 0.0 or y1 <= 0.0:
+        return max(0.0, interpolate_linear(x, x0, y0, x1, y1))
+    w = interpolation_weight(x, x0, x1)
+    return math.exp((1.0 - w) * math.log(y0) + w * math.log(y1))
+
+
+def propagated_log_interpolation_error(
+    x: float,
+    x0: float,
+    y0: float,
+    e0: float,
+    x1: float,
+    y1: float,
+    e1: float,
+    interpolated_y: float,
+) -> float:
+    if y0 <= 0.0 or y1 <= 0.0 or interpolated_y <= 0.0:
+        return 0.0
+    w = interpolation_weight(x, x0, x1)
+    relative_variance = (
+        ((1.0 - w) * e0 / y0) ** 2
+        + (w * e1 / y1) ** 2
+    )
+    return interpolated_y * math.sqrt(max(0.0, relative_variance))
+
+
+def exact_anchor_for_mass(
+    anchors: Sequence[SignalAnchorResult],
+    mass: float,
+    tolerance: float = 1.0e-8,
+) -> Optional[SignalAnchorResult]:
+    for anchor in anchors:
+        if abs(anchor.mass - mass) <= tolerance:
+            return anchor
+    return None
+
+
+def bracketing_anchors(
+    anchors: Sequence[SignalAnchorResult],
+    mass: float,
+) -> Tuple[SignalAnchorResult, SignalAnchorResult]:
+    ordered = sorted(anchors, key=lambda item: item.mass)
+    if mass < ordered[0].mass or mass > ordered[-1].mass:
+        raise ValueError(
+            f"Interpolation mass {mass:g} lies outside anchor range "
+            f"[{ordered[0].mass:g}, {ordered[-1].mass:g}]"
+        )
+    for left, right in zip(ordered[:-1], ordered[1:]):
+        if left.mass < mass < right.mass:
+            return left, right
+    raise ValueError(f"Could not bracket interpolation mass {mass:g}")
+
+
+def interpolate_signal_point(
+    *,
+    era: str,
+    mass: float,
+    anchors: Sequence[SignalAnchorResult],
+    resolution_result: ResolutionResult,
+    n_sigma: float,
+    search_min: float,
+    search_max: float,
+) -> SignalModelPoint:
+    rel_res = relative_resolution_from_fit(resolution_result, mass)
+    low, high, sigma = counting_window_from_resolution(
+        mass,
+        rel_res,
+        n_sigma,
+        search_min,
+        search_max,
+    )
+
+    exact = exact_anchor_for_mass(anchors, mass)
+    if exact is not None:
+        return SignalModelPoint(
+            era=era,
+            mass=mass,
+            source="simulated",
+            anchor_low=mass,
+            anchor_high=mass,
+            resolution=rel_res,
+            sigma=sigma,
+            window_low=low,
+            window_high=high,
+            nominal_yield=exact.nominal_yield,
+            nominal_error=exact.nominal_error,
+            relative_stat_error=exact.relative_stat_error,
+            systematics={k: dict(v) for k, v in exact.systematics.items()},
+        )
+
+    left, right = bracketing_anchors(anchors, mass)
+    nominal_yield = interpolate_positive_log(
+        mass,
+        left.mass,
+        left.nominal_yield,
+        right.mass,
+        right.nominal_yield,
+    )
+    nominal_error = propagated_log_interpolation_error(
+        mass,
+        left.mass,
+        left.nominal_yield,
+        left.nominal_error,
+        right.mass,
+        right.nominal_yield,
+        right.nominal_error,
+        nominal_yield,
+    )
+
+    systematics: Dict[str, Dict[str, float]] = {}
+    common = sorted(set(left.systematics) & set(right.systematics))
+    for name in common:
+        down = interpolate_positive_log(
+            mass,
+            left.mass,
+            left.systematics[name]["down"],
+            right.mass,
+            right.systematics[name]["down"],
+        )
+        up = interpolate_positive_log(
+            mass,
+            left.mass,
+            left.systematics[name]["up"],
+            right.mass,
+            right.systematics[name]["up"],
+        )
+        systematics[name] = {"down": down, "up": up}
+
+    return SignalModelPoint(
+        era=era,
+        mass=mass,
+        source="interpolated",
+        anchor_low=left.mass,
+        anchor_high=right.mass,
+        resolution=rel_res,
+        sigma=sigma,
+        window_low=low,
+        window_high=high,
+        nominal_yield=nominal_yield,
+        nominal_error=nominal_error,
+        relative_stat_error=(nominal_error / nominal_yield if nominal_yield > 0.0 else 0.0),
+        systematics=systematics,
+    )
+
+
+def interpolation_grid(
+    anchors: Sequence[SignalAnchorResult],
+    step: float,
+) -> List[float]:
+    ordered = sorted(anchors, key=lambda item: item.mass)
+    lo = ordered[0].mass
+    hi = ordered[-1].mass
+    values: List[float] = []
+    current = lo
+    # Include the full [lo, hi] range and make generated anchors exact points.
+    while current <= hi + 1.0e-9:
+        values.append(round(current, 10))
+        current += step
+    values.extend(anchor.mass for anchor in ordered)
+    values.append(hi)
+    return sorted(set(values))
+
+
+def build_interpolation_closure(
+    anchors: Sequence[SignalAnchorResult],
+    resolution_result: ResolutionResult,
+) -> List[Dict[str, object]]:
+    ordered = sorted(anchors, key=lambda item: item.mass)
+    rows: List[Dict[str, object]] = []
+    for index, anchor in enumerate(ordered):
+        fit_resolution = relative_resolution_from_fit(resolution_result, anchor.mass)
+        resolution_residual = (
+            (fit_resolution - anchor.measured_resolution) / anchor.measured_resolution
+            if anchor.measured_resolution != 0.0 else 0.0
+        )
+        row: Dict[str, object] = {
+            "era": anchor.era,
+            "mass": anchor.mass,
+            "resolution_fit_relative_residual": resolution_residual,
+            "yield_relative_residual": None,
+            "systematics": {},
+        }
+        if index == 0 or index == len(ordered) - 1:
+            rows.append(row)
+            continue
+
+        left = ordered[index - 1]
+        right = ordered[index + 1]
+        pred_yield = interpolate_positive_log(
+            anchor.mass,
+            left.mass,
+            left.nominal_yield,
+            right.mass,
+            right.nominal_yield,
+        )
+        row["yield_relative_residual"] = (
+            (pred_yield - anchor.nominal_yield) / anchor.nominal_yield
+            if anchor.nominal_yield > 0.0 else None
+        )
+
+        syst_residuals: Dict[str, Dict[str, Optional[float]]] = {}
+        common = sorted(
+            set(left.systematics)
+            & set(anchor.systematics)
+            & set(right.systematics)
+        )
+        for name in common:
+            side_residuals: Dict[str, Optional[float]] = {}
+            for side in ("down", "up"):
+                predicted = interpolate_positive_log(
+                    anchor.mass,
+                    left.mass,
+                    left.systematics[name][side],
+                    right.mass,
+                    right.systematics[name][side],
+                )
+                truth = anchor.systematics[name][side]
+                side_residuals[side] = (
+                    (predicted - truth) / truth if truth > 0.0 else None
+                )
+            syst_residuals[name] = side_residuals
+        row["systematics"] = syst_residuals
+        rows.append(row)
+    return rows
+
+
+def interpolation_closure_summary(rows: Sequence[Dict[str, object]]) -> Dict[str, object]:
+    yield_residuals: List[float] = []
+    syst_residuals: Dict[str, List[float]] = {}
+    for row in rows:
+        value = row.get("yield_relative_residual")
+        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+            yield_residuals.append(abs(float(value)))
+        syst = row.get("systematics", {})
+        if not isinstance(syst, dict):
+            continue
+        for name, sides in syst.items():
+            if not isinstance(sides, dict):
+                continue
+            for side in ("down", "up"):
+                value = sides.get(side)
+                if isinstance(value, (int, float)) and math.isfinite(float(value)):
+                    syst_residuals.setdefault(str(name), []).append(abs(float(value)))
+    return {
+        "max_abs_yield_relative_residual": max(yield_residuals) if yield_residuals else None,
+        "max_abs_systematic_relative_residual": {
+            name: max(values) for name, values in sorted(syst_residuals.items()) if values
+        },
+    }
+
+
+def draw_yield_interpolation(
+    ROOT,
+    *,
+    era: str,
+    anchors: Sequence[SignalAnchorResult],
+    points: Sequence[SignalModelPoint],
+    output_dir: Path,
+    extensions: Sequence[str],
+) -> List[str]:
+    ordered_anchors = sorted(anchors, key=lambda item: item.mass)
+    ordered_points = sorted(points, key=lambda item: item.mass)
+    xa = array("d", [item.mass for item in ordered_anchors])
+    ya = array("d", [item.nominal_yield for item in ordered_anchors])
+    exa = array("d", [0.0 for _ in ordered_anchors])
+    eya = array("d", [item.nominal_error for item in ordered_anchors])
+    xp = array("d", [item.mass for item in ordered_points])
+    yp = array("d", [item.nominal_yield for item in ordered_points])
+
+    anchors_graph = ROOT.TGraphErrors(len(xa), xa, ya, exa, eya)
+    anchors_graph.SetMarkerStyle(20)
+    anchors_graph.SetMarkerSize(1.0)
+    anchors_graph.SetMarkerColor(ROOT.kBlack)
+    anchors_graph.SetLineColor(ROOT.kBlack)
+
+    model_graph = ROOT.TGraph(len(xp), xp, yp)
+    model_graph.SetLineColor(ROOT.kRed + 1)
+    model_graph.SetLineWidth(2)
+
+    canvas = ROOT.TCanvas(NAMES.unique("c_yield_model"), "", 850, 700)
+    canvas.SetLeftMargin(0.13)
+    canvas.SetRightMargin(0.04)
+    canvas.SetTopMargin(0.08)
+    canvas.SetBottomMargin(0.13)
+    if all(value > 0.0 for value in ya) and all(value > 0.0 for value in yp):
+        canvas.SetLogy(True)
+
+    model_graph.Draw("AL")
+    model_graph.GetXaxis().SetTitle("m_{Z'} [GeV]")
+    model_graph.GetYaxis().SetTitle("Expected signal yield in #pm5#sigma window")
+    model_graph.GetXaxis().SetTitleSize(0.050)
+    model_graph.GetYaxis().SetTitleSize(0.050)
+    model_graph.GetXaxis().SetLabelSize(0.043)
+    model_graph.GetYaxis().SetLabelSize(0.043)
+    model_graph.GetYaxis().SetTitleOffset(1.15)
+    anchors_graph.Draw("PE SAME")
+
+    legend = ROOT.TLegend(0.58, 0.74, 0.92, 0.87)
+    legend.SetBorderSize(0)
+    legend.SetFillStyle(0)
+    legend.AddEntry(anchors_graph, "Simulated anchors", "pe")
+    legend.AddEntry(model_graph, "Interpolated model", "l")
+    legend.Draw()
+
+    latex = ROOT.TLatex()
+    latex.SetNDC(True)
+    latex.SetTextFont(42)
+    latex.SetTextAlign(13)
+    latex.SetTextSize(0.043)
+    latex.DrawLatex(0.14, 0.965, "#bf{CMS} #it{Simulation Preliminary}")
+    latex.SetTextAlign(33)
+    latex.SetTextSize(0.037)
+    latex.DrawLatex(0.96, 0.965, lumi_label(era))
+
+    canvas._keepalive = [anchors_graph, model_graph, legend, latex]
+    outputs: List[str] = []
+    base = output_dir / f"sigFit_yield_{era}"
+    for ext in extensions:
+        path = f"{base}.{ext}"
+        canvas.SaveAs(path)
+        outputs.append(path)
+        print(f"[SAVE] {path}")
+    return outputs
+
+
+def write_signal_interpolation_outputs(
+    output_dir: Path,
+    model_by_era: Dict[str, Dict[str, object]],
+) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "signal_interpolation.json"
+    payload = {
+        "formulae": {
+            "resolution": "sigma_m / m = a*m + b",
+            "nominal_yield": "piecewise log-linear between simulated mass anchors",
+            "systematic_ratios": "piecewise log-linear in multiplicative Down/Up ratios",
+            "interpolated_mc_stat": (
+                "anchor MC statistical uncertainties propagated through the log-linear interpolation"
+            ),
+        },
+        "eras": model_by_era,
+    }
+    json_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+    all_systs = sorted({
+        name
+        for era_payload in model_by_era.values()
+        for point in era_payload.get("points", [])
+        for name in point.get("systematics", {})
+    })
+    csv_path = output_dir / "signal_interpolation.csv"
+    fieldnames = [
+        "era", "mass", "source", "anchor_low", "anchor_high",
+        "resolution", "sigma", "window_low", "window_high",
+        "nominal_yield", "nominal_error", "relative_stat_error",
+    ]
+    for name in all_systs:
+        fieldnames.extend([f"{name}_down", f"{name}_up"])
+
+    with csv_path.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fieldnames)
+        writer.writeheader()
+        for era, era_payload in sorted(model_by_era.items()):
+            for point in era_payload.get("points", []):
+                row = {key: point.get(key) for key in fieldnames if key in point}
+                row.update({
+                    "era": era,
+                    "mass": point["mass"],
+                    "source": point["source"],
+                    "anchor_low": point["anchor_low"],
+                    "anchor_high": point["anchor_high"],
+                    "resolution": point["resolution"],
+                    "sigma": point["sigma"],
+                    "window_low": point["window_low"],
+                    "window_high": point["window_high"],
+                    "nominal_yield": point["nominal_yield"],
+                    "nominal_error": point["nominal_error"],
+                    "relative_stat_error": point["relative_stat_error"],
+                })
+                for name in all_systs:
+                    info = point.get("systematics", {}).get(name, {})
+                    row[f"{name}_down"] = info.get("down", "")
+                    row[f"{name}_up"] = info.get("up", "")
+                writer.writerow(row)
+
+    closure_json_path = output_dir / "signal_interpolation_closure.json"
+    closure_payload = {
+        era: {
+            "summary": payload.get("closure_summary", {}),
+            "points": payload.get("closure", []),
+        }
+        for era, payload in model_by_era.items()
+    }
+    closure_json_path.write_text(
+        json.dumps(closure_payload, indent=2, sort_keys=True) + "\n"
+    )
+
+    closure_csv_path = output_dir / "signal_interpolation_closure.csv"
+    with closure_csv_path.open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow([
+            "era", "mass", "quantity", "side", "relative_residual"
+        ])
+        for era, era_payload in sorted(model_by_era.items()):
+            for row in era_payload.get("closure", []):
+                writer.writerow([
+                    era,
+                    row["mass"],
+                    "yield",
+                    "",
+                    row.get("yield_relative_residual"),
+                ])
+                writer.writerow([
+                    era,
+                    row["mass"],
+                    "resolution_fit",
+                    "",
+                    row.get("resolution_fit_relative_residual"),
+                ])
+                for name, sides in sorted(row.get("systematics", {}).items()):
+                    for side in ("down", "up"):
+                        writer.writerow([
+                            era,
+                            row["mass"],
+                            name,
+                            side,
+                            sides.get(side),
+                        ])
+
+    print(f"[SAVE] {json_path}")
+    print(f"[SAVE] {csv_path}")
+    print(f"[SAVE] {closure_json_path}")
+    print(f"[SAVE] {closure_csv_path}")
+
 def validate_args(args: argparse.Namespace) -> None:
     if args.fit_fraction <= 0.0:
         raise ValueError("--fit-fraction must be positive.")
@@ -1395,6 +2129,14 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--rebin-fraction must be non-negative.")
     if args.min_rebin_width <= 0.0:
         raise ValueError("--min-rebin-width must be positive.")
+    if args.interpolation_step <= 0.0:
+        raise ValueError("--interpolation-step must be positive.")
+    if args.n_sigma <= 0.0:
+        raise ValueError("--n-sigma must be positive.")
+    if not args.search_max > args.search_min:
+        raise ValueError("--search-max must be larger than --search-min.")
+    if args.build_interpolation and args.no_resolution_fit:
+        raise ValueError("--build-interpolation requires the resolution fit.")
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -1419,6 +2161,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     fit_results: List[FitResult] = []
     resolution_results: List[ResolutionResult] = []
+    model_by_era: Dict[str, Dict[str, object]] = {}
 
     for era in eras:
         discovered = discover_signal_files(args.base_dir, era)
@@ -1475,8 +2218,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if result.fit_status != 0:
                 message = (
                     f"{fit_function_label(args.fit_function)} fit did not "
-                    f"converge cleanly: "
-                    f"era={era}, M={mass:g}, status={result.fit_status}"
+                    f"converge cleanly: era={era}, M={mass:g}, "
+                    f"status={result.fit_status}"
                 )
                 if args.strict:
                     raise RuntimeError(message)
@@ -1519,15 +2262,101 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"[WARNING] {message}")
             continue
 
-        resolution_results.append(
-            draw_resolution_fit(
-                ROOT,
-                era=era,
-                results=good_for_resolution,
-                output_dir=output_dir,
-                extensions=extensions,
-            )
+        resolution_result = draw_resolution_fit(
+            ROOT,
+            era=era,
+            results=good_for_resolution,
+            output_dir=output_dir,
+            extensions=extensions,
         )
+        resolution_results.append(resolution_result)
+
+        if not args.build_interpolation:
+            continue
+
+        anchors: List[SignalAnchorResult] = []
+        for result in sorted(era_results, key=lambda item: item.mass):
+            try:
+                anchor = build_signal_anchor(
+                    ROOT,
+                    era=era,
+                    mass=result.mass,
+                    nominal_file=result.file,
+                    resolution_result=resolution_result,
+                    measured_resolution=result.sigma_over_mass,
+                    base_dir=args.base_dir,
+                    region=args.region,
+                    hist_name=args.hist_name,
+                    n_sigma=args.n_sigma,
+                    search_min=args.search_min,
+                    search_max=args.search_max,
+                    strict=args.strict,
+                )
+            except (OSError, KeyError, RuntimeError, ValueError, FileNotFoundError) as exc:
+                if args.strict:
+                    raise
+                print(f"[WARNING] Could not build interpolation anchor {era} M={result.mass:g}: {exc}")
+                continue
+            anchors.append(anchor)
+
+        if len(anchors) < 2:
+            message = f"Need at least two signal anchors for interpolation in {era}."
+            if args.strict:
+                raise RuntimeError(message)
+            print(f"[WARNING] {message}")
+            continue
+
+        target_masses = interpolation_grid(anchors, args.interpolation_step)
+        points = [
+            interpolate_signal_point(
+                era=era,
+                mass=mass,
+                anchors=anchors,
+                resolution_result=resolution_result,
+                n_sigma=args.n_sigma,
+                search_min=args.search_min,
+                search_max=args.search_max,
+            )
+            for mass in target_masses
+        ]
+        closure = build_interpolation_closure(anchors, resolution_result)
+        closure_summary = interpolation_closure_summary(closure)
+        yield_plots = draw_yield_interpolation(
+            ROOT,
+            era=era,
+            anchors=anchors,
+            points=points,
+            output_dir=output_dir,
+            extensions=extensions,
+        )
+
+        model_by_era[era] = {
+            "resolution": {
+                "a": resolution_result.slope_a,
+                "b": resolution_result.intercept_b,
+                "formula": "sigma_m / m = a*m + b",
+            },
+            "n_sigma": args.n_sigma,
+            "search_min": args.search_min,
+            "search_max": args.search_max,
+            "interpolation_step": args.interpolation_step,
+            "anchors": [asdict(anchor) for anchor in anchors],
+            "points": [asdict(point) for point in points],
+            "closure": closure,
+            "closure_summary": closure_summary,
+            "yield_plot_files": yield_plots,
+        }
+
+        max_yield_residual = closure_summary.get("max_abs_yield_relative_residual")
+        if isinstance(max_yield_residual, (int, float)):
+            print(
+                f"[INTERPOLATION] {era}: {len(anchors)} anchors -> {len(points)} points, "
+                f"max leave-one-out yield residual={100.0 * float(max_yield_residual):.2f}%"
+            )
+        else:
+            print(
+                f"[INTERPOLATION] {era}: {len(anchors)} anchors -> {len(points)} points"
+            )
 
     if not fit_results:
         print("[ERROR] No signal fits were produced.", file=sys.stderr)
@@ -1536,6 +2365,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     write_fit_outputs(output_dir, fit_results)
     if resolution_results:
         write_resolution_outputs(output_dir, resolution_results)
+    if args.build_interpolation:
+        if not model_by_era:
+            print("[ERROR] No signal interpolation model was produced.", file=sys.stderr)
+            return 3
+        write_signal_interpolation_outputs(output_dir, model_by_era)
 
     print("\n[DONE]")
     print(
@@ -1543,9 +2377,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         f"{len(fit_results)}"
     )
     print(f"  Resolution fits: {len(resolution_results)}")
+    if args.build_interpolation:
+        print(f"  Interpolated eras: {len(model_by_era)}")
     print(f"  Output directory: {output_dir}")
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
