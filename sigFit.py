@@ -22,7 +22,7 @@ Final mass hypotheses:
 The default double-crystal-ball fit uses
   m(Z') - 0.07*m(Z') < m(mumu) < m(Z') + 0.07*m(Z'),
 with a Gaussian core covering at least
-  m(Z') - 0.02*m(Z') < m(mumu) < m(Z') + 0.02*m(Z').
+  m(Z') - 0.01*m(Z') < m(mumu) < m(Z') + 0.01*m(Z').
 
 The optional Gaussian fit keeps the original range
   m(Z') - 0.04*m(Z') < m(mumu) < m(Z') + 0.04*m(Z').
@@ -117,8 +117,8 @@ DEFAULT_BASE_DIR = (
 DEFAULT_REGION = "OS_POGMedium_tight_BJet_NIsoDimuon"
 DEFAULT_HIST_NAME = "Dilepton_Mass"
 DEFAULT_OUTPUT_DIR = "plots/sigFit"
-MIN_DCB_FIT_FRACTION = 0.1
-MIN_DCB_CORE_FRACTION = 0.03
+MIN_DCB_FIT_FRACTION = 0.07
+MIN_DCB_CORE_FRACTION = 0.01
 
 LUMI_FB: Dict[str, float] = {
     "2016preVFP": 19.52,

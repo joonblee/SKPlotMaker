@@ -825,6 +825,9 @@ python3 trig_eff.py --year 2023 --inspect-hists
 
 Signal resolution/interpolation:
 
+The default DCB fit uses a mass interval of `m(Z') +/- 7% * m(Z')` for every
+mass hypothesis, with a Gaussian core covering at least `m(Z') +/- 1% * m(Z')`.
+
 ```bash
 python3 sigFit.py --era Run2
 python3 sigFit.py --era Run3
