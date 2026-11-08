@@ -860,6 +860,38 @@ python3 plotter_qcdseparate.py --era Run2 --variable dimuon_mass
 python3 os_ss_comparison.py --era Run2 --blind
 ```
 
+## DY MC-only BJet--LightJet mass-shape comparison
+
+This standalone plotter reads only the nominal aMC@NLO DY file
+`NIsoMuon_DYJets_Inclusive.root` in each selected era. It compares the
+OS POGMedium/tight BJet and LightJet `Dilepton_Mass` histograms.
+It does not read collision data or produce background-estimation ROOT files.
+
+```bash
+python3 dy_mc_shape_comparison.py --era Run2+3 --xmin 11 --xmax 80
+```
+
+The default is Run2+3: 2016preVFP, 2016postVFP, 2017, 2018, 2022, 2022EE,
+2023 and 2023BPix. Run3 contains only the 2022--2023 eras.
+All era histograms are summed with their stored MC weights **before** multiplying
+LightJet by `integral(BJet) / integral(LightJet)` in the displayed 11--80 GeV
+interval. There is no per-era shape normalisation or additional luminosity
+rescaling. Missing era inputs cause an error.
+
+The upper panel shows event yields per GeV and the lower panel shows
+BJet / scaled LightJet. Errors are finite-MC Sumw2 errors with the matching
+factor held fixed; they exclude total systematic and matching-factor uncertainties.
+The default variable edges in 11--80 GeV are 11, 13, 15, 20, 25, 30, 40, 60, 80,
+matching the existing DY plotter. `--rebin 50` instead merges 50 native bins;
+`--linear-y` selects a linear y axis.
+
+PDF and PNG are saved under `/data6/Users/joonblee/PlotMaker/plots` by default:
+```text
+DY_BJet_vs_LightJet_Run2+3_POGMedium_NIsoDimuon_yieldPerGeV_LightJetScaled_m11to80_varBin.{pdf,png}
+```
+Use `--base-dir` to change the input base and `--output-dir` to change the
+plot destination. The same code supports each individual era, Run2 and Run3.
+
 ## DY LightJet source and NF diagnostics
 
 Read existing merged histogram ROOT files to compare the DY source and NF:
