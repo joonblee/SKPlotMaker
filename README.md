@@ -883,7 +883,8 @@ BJet / scaled LightJet. Errors are finite-MC Sumw2 errors with the matching
 factor held fixed; they exclude total systematic and matching-factor uncertainties.
 The default variable edges in 11--80 GeV are 11, 13, 15, 20, 25, 30, 40, 60, 80,
 matching the existing DY plotter. `--rebin 50` instead merges 50 native bins;
-`--linear-y` selects a linear y axis.
+`--linear-y` selects a linear y axis. `--logx` uses a logarithmic mass axis in
+both panels and adds `_logx` to the output filename.
 
 PDF and PNG are saved under `/data6/Users/joonblee/PlotMaker/plots` by default:
 ```text

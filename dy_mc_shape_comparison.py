@@ -15,6 +15,7 @@ Examples:
   python3 dy_mc_shape_comparison.py
   python3 dy_mc_shape_comparison.py --era Run2+3 --xmin 11 --xmax 80
   python3 dy_mc_shape_comparison.py --era 2018
+  python3 dy_mc_shape_comparison.py --logx
   python3 dy_mc_shape_comparison.py --era Run3 --rebin 50 --linear-y
 
 Use the same checkout's dy_bkg_estimation.py for input, era, binning and style
@@ -158,6 +159,7 @@ def draw(ROOT, args, b_hist, l_hist, factor):
     for pad in (upper, lower):
         pad.SetLeftMargin(0.14)
         pad.SetRightMargin(0.05)
+        pad.SetLogx(args.logx)
         pad.SetTickx()
         pad.SetTicky()
     upper.SetTopMargin(0.10)
@@ -241,6 +243,9 @@ def draw(ROOT, args, b_hist, l_hist, factor):
     frame.SetDirectory(0)
     apply_style(frame, is_ratio=True)
     frame.GetXaxis().SetTitle("m(#mu#mu) [GeV]")
+    if args.logx:
+        frame.GetXaxis().SetMoreLogLabels()
+        frame.GetXaxis().SetNoExponent()
     frame.GetYaxis().SetTitle("b / scaled light")
     frame.GetYaxis().SetTitleSize(0.10)
     frame.GetYaxis().SetTitleOffset(0.65)
@@ -271,6 +276,7 @@ def draw(ROOT, args, b_hist, l_hist, factor):
         f"DY_BJet_vs_LightJet_{args.era}_POGMedium_NIsoDimuon_"
         f"yieldPerGeV_LightJetScaled_m{args.xmin:g}to{args.xmax:g}"
         f"_{'varBin' if args.rebin == 0 else 'rebin' + str(args.rebin)}"
+        f"{'_logx' if args.logx else ''}"
     )
     for suffix in ("pdf", "png"):
         path = output / f"{stem}.{suffix}"
@@ -289,6 +295,7 @@ def build_parser():
     parser.add_argument(
         "--rebin", type=int, default=0,
         help="0: existing DY variable mass bins; positive: native-bin merge factor")
+    parser.add_argument("--logx", action="store_true", help="Use a logarithmic mass axis")
     parser.add_argument("--linear-y", action="store_true", help="Use a linear y axis")
     parser.add_argument("--ratio-min", type=float, default=0.0)
     parser.add_argument("--ratio-max", type=float, default=2.0)
@@ -301,6 +308,8 @@ def main(argv=None):
     if not (math.isfinite(args.xmin) and math.isfinite(args.xmax)
             and args.xmin < args.xmax):
         parser.error("Require finite xmin < xmax")
+    if args.logx and args.xmin <= 0:
+        parser.error("--logx requires --xmin > 0")
     if args.rebin < 0:
         parser.error("--rebin must be nonnegative")
     if not (math.isfinite(args.ratio_min) and math.isfinite(args.ratio_max)
