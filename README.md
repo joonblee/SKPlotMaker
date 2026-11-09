@@ -882,7 +882,20 @@ The upper panel shows event yields per GeV and the lower panel shows
 BJet / scaled LightJet. Errors are finite-MC Sumw2 errors with the matching
 factor held fixed; they exclude total systematic and matching-factor uncertainties.
 The default variable edges in 11--80 GeV are 11, 13, 15, 20, 25, 30, 40, 60, 80,
-matching the existing DY plotter. `--rebin 50` instead merges 50 native bins;
+defined by `DEFAULT_MASS_BINS` in `dy_mc_shape_comparison.py`. The script requires
+PyROOT and runs independently of the other repository scripts.
+Use `--bin-edges` to set the mass binning directly.
+
+```bash
+python3 dy_mc_shape_comparison.py --era Run2+3 --bin-edges 11 12 15 20 30 50 80 --logx
+```
+
+The first and last custom edges define the plot and normalisation range.
+All edges must coincide with input histogram boundaries. If given explicitly,
+`--xmin` and `--xmax` must equal the corresponding endpoint.
+Custom binning adds `_customBins` to the output filename.
+`--rebin 50` instead merges 50 native bins.
+
 `--linear-y` selects a linear y axis. `--logx` uses a logarithmic mass axis in
 both panels and adds `_logx` to the output filename.
 

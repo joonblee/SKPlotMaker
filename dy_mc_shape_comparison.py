@@ -16,10 +16,10 @@ Examples:
   python3 dy_mc_shape_comparison.py --era Run2+3 --xmin 11 --xmax 80
   python3 dy_mc_shape_comparison.py --era 2018
   python3 dy_mc_shape_comparison.py --logx
+  python3 dy_mc_shape_comparison.py --bin-edges 11 12 15 20 30 50 80 --logx
   python3 dy_mc_shape_comparison.py --era Run3 --rebin 50 --linear-y
 
-Use the same checkout's dy_bkg_estimation.py for input, era, binning and style
-helpers. Importing it does not run the estimator. --help does not require ROOT.
+Requires PyROOT for plotting. --help does not require ROOT.
 """
 
 from __future__ import annotations
@@ -27,46 +27,200 @@ from __future__ import annotations
 import argparse
 import math
 import sys
+from array import array
 from pathlib import Path
 
-from dy_bkg_estimation import (
-    DEFAULT_BASE_DIR,
-    DY_AMC_DEFAULT_FILE,
-    PLOT_DIR,
-    VALID_ERAS,
-    apply_style,
-    assert_same_1d_binning,
-    clone_hist,
-    import_root,
-    lumi_label,
-    rebin_hist,
-    scale_to_yield_per_gev,
-    selected_eras,
+RUN2_ERAS: tuple[str, ...] = (
+    "2016preVFP", "2016postVFP", "2017", "2018",
 )
+RUN3_ERAS: tuple[str, ...] = (
+    "2022", "2022EE", "2023", "2023BPix",
+)
+ALL_ERAS: tuple[str, ...] = RUN2_ERAS + RUN3_ERAS
+ERA_GROUPS = {
+    **{era: (era,) for era in ALL_ERAS},
+    "Run2": RUN2_ERAS,
+    "Run3": RUN3_ERAS,
+    "Run2+3": ALL_ERAS,
+}
+VALID_ERAS = list(ERA_GROUPS.keys())
+DEFAULT_BASE_DIR = "/data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon"
+PLOT_DIR = "/data6/Users/joonblee/PlotMaker/plots"
+DY_AMC_DEFAULT_FILE = "NIsoMuon_DYJets_Inclusive.root"
+
+DEFAULT_MASS_BINS = [
+    0.0, 0.5, 1.0, 1.5, 2.0, 2.5,
+    3.0, 3.5, 4.0, 4.5,
+    5.0, 6.0, 7.0, 8.0, 9.0,
+    11.0, 13., 15., 20.0, 25.,
+    30.0, 40., 60., 80., 85., 90., 95., 100., 110., 150.
+]
+
+LUMI_FB = {
+    "2016preVFP": 19.5,
+    "2016postVFP": 16.8,
+    "2017": 42.07,
+    "2018": 59.56,
+    "2022": 7.98,
+    "2022EE": 26.67,
+    "2023": 17.7,
+    "2023BPix": 9.5,
+}
+PERIOD_LUMI_FB = {
+    "2016": 36.31,
+    "Run2": 137.94,
+    "2022total": 34.65,
+    "2023total": 27.20,
+    "Run3": 61.85,
+    "Run2+3": 199.79,
+}
 
 REG_B = "OS_POGMedium_tight_BJet_NIsoDimuon"
 REG_L = "OS_POGMedium_tight_LightJet_NIsoDimuon"
 
 
-def window_bins(hist, low, high):
-    """Require window boundaries on bin edges; exclude under/overflow bins."""
-    axis = hist.GetXaxis()
-    edges = [float(axis.GetBinLowEdge(i))
-             for i in range(1, hist.GetNbinsX() + 2)]
-
-    def edge_index(value):
-        for i, edge in enumerate(edges):
-            if math.isclose(value, edge, rel_tol=0.0, abs_tol=1e-8):
-                return i
+def selected_eras(period: str) -> tuple[str, ...]:
+    try:
+        return ERA_GROUPS[period]
+    except KeyError as exc:
         raise ValueError(
-            f"{hist.GetName()}: boundary {value:g} GeV is not a bin edge; "
-            "choose a compatible range/rebinning"
-        )
+            f"Unknown era/period {period!r}; use one of: {', '.join(VALID_ERAS)}"
+        ) from exc
 
-    start, stop = edge_index(low), edge_index(high)
+
+def period_lumi_fb(period: str) -> float:
+    if period in LUMI_FB:
+        return LUMI_FB[period]
+    if period in PERIOD_LUMI_FB:
+        return PERIOD_LUMI_FB[period]
+    return sum(LUMI_FB[era] for era in selected_eras(period))
+
+
+def format_lumi_fb(value: float) -> str:
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def lumi_label(period: str) -> str:
+    if period == "Run2+3":
+        return (
+            f"{format_lumi_fb(PERIOD_LUMI_FB['Run2'])} fb^{{-1}} (13 TeV) + "
+            f"{format_lumi_fb(PERIOD_LUMI_FB['Run3'])} fb^{{-1}} (13.6 TeV)"
+        )
+    energy = "13.6 TeV" if period == "Run3" or period in RUN3_ERAS else "13 TeV"
+    return f"{format_lumi_fb(period_lumi_fb(period))} fb^{{-1}} ({energy})"
+
+
+def import_root():
+    import ROOT # type: ignore
+    ROOT.gROOT.SetBatch(True)
+    ROOT.gStyle.SetOptStat(0)
+    ROOT.gStyle.SetOptTitle(0)
+    return ROOT
+
+def clone_hist(hist, name: str):
+    out = hist.Clone(name)
+    out.SetDirectory(0)
+    out.Sumw2()
+    return out
+
+
+def apply_style(hist, is_ratio=False):
+    font = 42
+    hist.GetXaxis().SetTitleFont(font)
+    hist.GetXaxis().SetLabelFont(font)
+    hist.GetYaxis().SetTitleFont(font)
+    hist.GetYaxis().SetLabelFont(font)
+
+    if is_ratio:
+        hist.GetYaxis().SetTitleSize(0.11)
+        hist.GetYaxis().SetTitleOffset(0.52)
+        hist.GetYaxis().SetLabelSize(0.10)
+
+        hist.GetXaxis().SetTitleSize(0.13)
+        hist.GetXaxis().SetTitleOffset(1.15)
+        hist.GetXaxis().SetLabelSize(0.11)
+        hist.GetYaxis().SetNdivisions(505)
+    else:
+        hist.GetYaxis().SetTitleSize(0.055)
+        hist.GetYaxis().SetTitleOffset(1.10)
+        hist.GetYaxis().SetLabelSize(0.045)
+
+        hist.GetXaxis().SetTitleSize(0.0)
+        hist.GetXaxis().SetLabelSize(0.0)
+
+
+def scale_to_yield_per_gev(hist) -> None:
+    axis = hist.GetXaxis()
+    for ibin in range(1, hist.GetNbinsX() + 1):
+        width = float(axis.GetBinWidth(ibin))
+        if width <= 0.0 or not math.isfinite(width):
+            continue
+        hist.SetBinContent(ibin, float(hist.GetBinContent(ibin)) / width)
+        hist.SetBinError(ibin, float(hist.GetBinError(ibin)) / width)
+    hist.GetYaxis().SetTitle("Yield / GeV")
+
+
+def axis_edges(hist):
+    axis = hist.GetXaxis()
+    return [float(axis.GetBinLowEdge(i))
+            for i in range(1, hist.GetNbinsX() + 2)]
+
+
+def edge_index(hist, edges, value):
+    for i, edge in enumerate(edges):
+        if math.isclose(value, edge, rel_tol=0.0, abs_tol=1e-8):
+            return i
+    raise ValueError(
+        f"{hist.GetName()}: {value:g} GeV is not an input bin edge; "
+        "choose a compatible mass range and binning"
+    )
+
+
+def window_bins(hist, low, high):
+    """Require exact histogram boundaries and exclude underflow and overflow."""
+    edges = axis_edges(hist)
+    start = edge_index(hist, edges, low)
+    stop = edge_index(hist, edges, high)
     if start >= stop:
         raise ValueError("Require a nonempty mass window")
     return range(start + 1, stop + 1)
+
+
+def assert_same_1d_binning(reference, candidate, reference_label, candidate_label):
+    first, second = axis_edges(reference), axis_edges(candidate)
+    if len(first) != len(second) or any(
+        not math.isclose(a, b, rel_tol=0.0, abs_tol=1e-9)
+        for a, b in zip(first, second)
+    ):
+        raise ValueError(f"Histogram binning differs: {reference_label} vs {candidate_label}")
+
+
+def rebin_hist(hist, name, args):
+    if args.rebin == 1:
+        return clone_hist(hist, name)
+    if args.rebin > 1:
+        out = hist.Rebin(args.rebin, name)
+    else:
+        native_edges = axis_edges(hist)
+        if args.bin_edges is None:
+            edges = [native_edges[0]]
+            edges.extend(edge for edge in DEFAULT_MASS_BINS
+                         if native_edges[0] < edge < native_edges[-1])
+            edges.append(native_edges[-1])
+        else:
+            edges = args.bin_edges
+        # Give ROOT the original boundaries, including their floating-point
+        # representation, so no input bin is split between two output bins.
+        indices = [edge_index(hist, native_edges, edge) for edge in edges]
+        if any(left >= right for left, right in zip(indices, indices[1:])):
+            raise ValueError("Bin edges must select distinct input boundaries")
+        root_edges = array("d", (native_edges[index] for index in indices))
+        out = hist.Rebin(len(root_edges) - 1, name, root_edges)
+    if not out:
+        raise ValueError(f"Could not rebin {hist.GetName()}")
+    out.SetDirectory(0)
+    out.Sumw2()
+    return out
 
 
 def integral_and_error(hist, low, high):
@@ -95,7 +249,7 @@ def load_dy_pair(ROOT, args):
                 hist = handle.Get(key)
                 if not hist or not hist.InheritsFrom("TH1") or hist.GetDimension() != 1:
                     raise ValueError(f"Missing one-dimensional histogram: {path}:{key}")
-                hist = clone_hist(ROOT, hist, f"dy_shape_{category}_{era}")
+                hist = clone_hist(hist, f"dy_shape_{category}_{era}")
                 # Validate the requested integration interval before adding eras.
                 integral_and_error(hist, args.xmin, args.xmax)
                 pair.append(hist)
@@ -121,7 +275,7 @@ def match_lightjet(ROOT, b_hist, l_hist, low, high):
     if b_yield <= 0 or l_yield <= 0:
         raise ValueError("BJet and LightJet integrals must both be positive")
     factor = b_yield / l_yield
-    scaled = clone_hist(ROOT, l_hist, "dy_shape_LightJet_matched")
+    scaled = clone_hist(l_hist, "dy_shape_LightJet_matched")
     scaled.Scale(factor)
     print(f"[MATCH] {low:g} < m(mumu) < {high:g} GeV")
     print(f"[YIELD] BJet={b_yield:.9g} +/- {b_error:.9g}; "
@@ -206,7 +360,7 @@ def draw(ROOT, args, b_hist, l_hist, factor):
     l_hist.SetFillStyle(3004)
     l_hist.SetMarkerSize(0)
     l_hist.Draw("E2 SAME")
-    line = clone_hist(ROOT, l_hist, "dy_shape_LightJet_line")
+    line = clone_hist(l_hist, "dy_shape_LightJet_line")
     line.SetFillStyle(0)
     line.SetLineWidth(2)
     line.Draw("HIST SAME")
@@ -217,8 +371,8 @@ def draw(ROOT, args, b_hist, l_hist, factor):
     legend.SetFillStyle(0)
     legend.SetTextFont(42)
     legend.SetTextSize(0.032)
-    legend.AddEntry(b_hist, "b-jet category (DY NLO)", "pe")
-    legend.AddEntry(line, "light-jet category (normalised)", "l")
+    legend.AddEntry(b_hist, "b-jet category", "pe")
+    legend.AddEntry(line, f"light-jet category (scale = {factor:.5g})", "l")
     legend.Draw()
 
     text = ROOT.TLatex()
@@ -233,10 +387,10 @@ def draw(ROOT, args, b_hist, l_hist, factor):
     text.SetTextSize(0.032)
     text.DrawLatex(0.18, 0.85, "DY aMC@NLO, POG Medium, nonisolated dimuon")
     text.SetTextSize(0.029)
-    text.DrawLatex(0.18, 0.61, f"Light-jet scale = {factor:.5g}")
-    text.DrawLatex(0.18, 0.565,
+    text.DrawLatex(0.18, 0.16, f"Light-jet scale = {factor:.5g}")
+    text.DrawLatex(0.18, 0.115,
                    f"Integral matched in {args.xmin:g} < m(#mu#mu) < {args.xmax:g} GeV")
-    text.DrawLatex(0.18, 0.52, "MC statistical errors; matching factor fixed")
+    text.DrawLatex(0.18, 0.07, "MC statistical errors; matching factor fixed")
 
     lower.cd()
     frame = ROOT.TH1D("dy_shape_ratio_frame", "", 1, args.xmin, args.xmax)
@@ -272,10 +426,16 @@ def draw(ROOT, args, b_hist, l_hist, factor):
 
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
+    if args.bin_edges is not None:
+        binning_tag = "customBins"
+    elif args.rebin:
+        binning_tag = f"rebin{args.rebin}"
+    else:
+        binning_tag = "varBin"
     stem = (
         f"DY_BJet_vs_LightJet_{args.era}_POGMedium_NIsoDimuon_"
         f"yieldPerGeV_LightJetScaled_m{args.xmin:g}to{args.xmax:g}"
-        f"_{'varBin' if args.rebin == 0 else 'rebin' + str(args.rebin)}"
+        f"_{binning_tag}"
         f"{'_logx' if args.logx else ''}"
     )
     for suffix in ("pdf", "png"):
@@ -290,11 +450,15 @@ def build_parser():
     parser.add_argument("--era", choices=VALID_ERAS, default="Run2+3")
     parser.add_argument("--base-dir", default=DEFAULT_BASE_DIR)
     parser.add_argument("--output-dir", default=PLOT_DIR)
-    parser.add_argument("--xmin", type=float, default=11.0)
-    parser.add_argument("--xmax", type=float, default=80.0)
-    parser.add_argument(
+    parser.add_argument("--xmin", type=float, help="Lower mass bound (default: 11 GeV or first custom edge)")
+    parser.add_argument("--xmax", type=float, help="Upper mass bound (default: 80 GeV or last custom edge)")
+    binning = parser.add_mutually_exclusive_group()
+    binning.add_argument(
         "--rebin", type=int, default=0,
-        help="0: existing DY variable mass bins; positive: native-bin merge factor")
+        help="0: default variable mass bins; positive: native-bin merge factor")
+    binning.add_argument(
+        "--bin-edges", type=float, nargs="+", metavar="EDGE",
+        help="Custom mass bin edges in GeV, in increasing order")
     parser.add_argument("--logx", action="store_true", help="Use a logarithmic mass axis")
     parser.add_argument("--linear-y", action="store_true", help="Use a linear y axis")
     parser.add_argument("--ratio-min", type=float, default=0.0)
@@ -305,6 +469,18 @@ def build_parser():
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+    edges = args.bin_edges
+    if edges is not None and (
+        len(edges) < 2 or not all(map(math.isfinite, edges))
+        or any(left >= right for left, right in zip(edges, edges[1:]))
+    ):
+        parser.error("--bin-edges requires at least two finite, increasing edges")
+    if args.xmin is None:
+        args.xmin = edges[0] if edges is not None else 11.0
+    if args.xmax is None:
+        args.xmax = edges[-1] if edges is not None else 80.0
+    if edges is not None and (args.xmin != edges[0] or args.xmax != edges[-1]):
+        parser.error("--xmin and --xmax must match the first and last custom bin edges")
     if not (math.isfinite(args.xmin) and math.isfinite(args.xmax)
             and args.xmin < args.xmax):
         parser.error("Require finite xmin < xmax")
@@ -319,10 +495,8 @@ def main(argv=None):
     print("[ERAS] " + ", ".join(selected_eras(args.era)))
     b_raw, l_raw = load_dy_pair(ROOT, args)
     l_matched, factor = match_lightjet(ROOT, b_raw, l_raw, args.xmin, args.xmax)
-    b_plot = rebin_hist(ROOT, b_raw, "dy_shape_BJet_plot",
-                        args.rebin == 0, args.rebin)
-    l_plot = rebin_hist(ROOT, l_matched, "dy_shape_LightJet_plot",
-                        args.rebin == 0, args.rebin)
+    b_plot = rebin_hist(b_raw, "dy_shape_BJet_plot", args)
+    l_plot = rebin_hist(l_matched, "dy_shape_LightJet_plot", args)
     # Reject display bins straddling either normalisation boundary.
     integral_and_error(b_plot, args.xmin, args.xmax)
     integral_and_error(l_plot, args.xmin, args.xmax)
