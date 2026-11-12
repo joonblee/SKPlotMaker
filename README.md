@@ -539,6 +539,17 @@ the full displayed fit/MC ratio, and a JSON held-out comparison for each model
 The grey ratio band and held-out `chi2/nBin` use **MC Sumw2 only**; they do not
 include fitted-parameter uncertainty or provide a calibrated goodness-of-fit
 p-value. Read the fit acceptance flag before interpreting an extrapolation.
+Fit plots keep the central **Power x Exp x Logistic** curve solid and draw all
+five alternatives dashed. A pale transparent orange **shape envelope** is
+drawn behind curves/points in both panels: central +/- the largest absolute
+alternative deviation, with the lower edge clipped at zero. The upper panel
+samples the smooth densities; the ratio band uses bin-averaged predictions,
+matching the additive maximum-deviation prescription of the production shape
+templates. This band contains functional choice only, without parameter-statistical
+or normalisation errors; the existing grey MC-statistical ratio band is separate.
+An unaccepted/missing required fit suppresses the shape band with a warning.
+These are display changes; fitted parameters and production ShapeUp/Down
+templates are unchanged.
 These MC-only controls do not write SS anchors or production ROOT templates.
 Without the range options, the existing 5--80 GeV fits and filenames are
 unchanged. `--mc-fit-range/--mc-plot-range` are rejected in SS-data mode.

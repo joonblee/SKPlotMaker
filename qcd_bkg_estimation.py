@@ -86,6 +86,12 @@ Fit modes and objectives
       ROOT bin edges and are protected before adaptive merging and --rebin.
       Custom ranges save separate PDF/PNG and held-out MC comparison JSON;
       ratio grey bands show MC statistics only, without fit uncertainty.
+All fit plots keep Power x Exp x Logistic solid and draw the other families
+dashed. A pale orange band shows the symmetric functional envelope around
+that central model (maximum absolute alternative deviation, lower edge clipped
+at zero). The upper band samples densities; the ratio band uses bin averages.
+It contains no parameter-statistical or normalisation uncertainty. If any of
+the six required fits is unaccepted, the shape band is omitted with a warning.
 The interval 9 < m(mumu) < 11 GeV is excluded from every QCD-MC fit objective
 and diagnostic.
 
@@ -2848,7 +2854,7 @@ def fit_all_models(
         ROOT.kBlue + 1, ROOT.kRed + 1, ROOT.kGreen + 2,
         ROOT.kOrange + 7, ROOT.kCyan + 2, ROOT.kViolet + 1,
     )
-    line_styles = (1, 1, 1, 1, 1, 1)
+    line_styles = tuple(1 if model.key == SS_NOMINAL_MODEL else 2 for model in FIT_MODELS)
     model_by_key = {m.key: m for m in FIT_MODELS}
 
     dynamic_catalog = load_dynamic_anchor_catalog(args)
@@ -3198,6 +3204,73 @@ def mc_extrapolation_report(args, mode: ModeConfig, plot_mode: ModeConfig,
     return report
 
 
+def symmetric_function_envelope(central: float, alternatives: Sequence[float]) -> Tuple[float, float]:
+    """Same additive maximum-deviation prescription as the ShapeUp/Down templates."""
+    values = (central, *alternatives)
+    if not all(math.isfinite(value) and value >= 0. for value in values):
+        raise ValueError("Functional envelope requires finite nonnegative predictions")
+    delta = max((abs(value-central) for value in alternatives), default=0.)
+    return max(0., central-delta), central+delta
+
+
+def make_fit_shape_bands(ROOT, mode: ModeConfig, plot_mode: ModeConfig, density,
+                         selected_fits: Sequence[SelectedFit]):
+    """Visual functional envelope only; never change fits or production templates."""
+    by_key = {selected.model.key: selected for selected in selected_fits}
+    invalid = [key for key in SS_REQUIRED_ROOT_MODELS if key not in by_key or not by_key[key].accepted]
+    if invalid:
+        print("[WARNING] Shape envelope not drawn: missing/unaccepted fits: " + ", ".join(invalid))
+        return [], None
+    central = by_key[SS_NOMINAL_MODEL]
+    alternatives = [by_key[key] for key in SS_SHAPE_ALTERNATIVES]
+
+    def style_band(graph):
+        graph.SetFillColorAlpha(ROOT.kOrange+7, .12)
+        graph.SetFillStyle(1001)
+        graph.SetLineWidth(0)
+        graph.SetMarkerSize(0)
+
+    # Keep the excluded resonance interval empty; no filled polygon crosses it.
+    segments = [(plot_mode.fit_min, plot_mode.fit_max)]
+    if mode.key == QCD_MODE.key:
+        for veto_low, veto_high in QCD_FIT_EXCLUDED_RANGES:
+            segments = [(a, b) for left, right in segments
+                        for a, b in ((left, min(right, veto_low)), (max(left, veto_high), right)) if a < b]
+    upper_bands = []
+    for left, right in segments:
+        graph = ROOT.TGraphAsymmErrors()
+        graph.SetName(_NAMES.unique("function_shape_envelope"))
+        for i in range(401):
+            x = left*(right/left)**(i/400.)
+            nominal = float(central.function.Eval(x))
+            low, high = symmetric_function_envelope(nominal, [float(alt.function.Eval(x)) for alt in alternatives])
+            # Log-y cannot display zero. Clip only the drawn lower edge.
+            low = max(low, min(nominal, float(density.GetMinimum())))
+            graph.SetPoint(i, x, nominal)
+            graph.SetPointError(i, 0., 0., nominal-low, high-nominal)
+        style_band(graph)
+        upper_bands.append(graph)
+
+    ratio_band = ROOT.TGraphAsymmErrors()
+    ratio_band.SetName(_NAMES.unique("ratio_shape_envelope"))
+    for i in range(1, density.GetNbinsX()+1):
+        left = float(density.GetXaxis().GetBinLowEdge(i))
+        right = float(density.GetXaxis().GetBinUpEdge(i))
+        if left < plot_mode.fit_min-1e-9 or right > plot_mode.fit_max+1e-9 or is_excluded(mode, left, right):
+            continue
+        value = float(density.GetBinContent(i))
+        if value <= 0.:
+            continue
+        x = (left+right)/2.
+        nominal = float(central.average_function.Eval(x))
+        low, high = symmetric_function_envelope(nominal, [float(alt.average_function.Eval(x)) for alt in alternatives])
+        index = ratio_band.GetN()
+        ratio_band.SetPoint(index, x, nominal/value)
+        ratio_band.SetPointError(index, (right-left)/2., (right-left)/2., (nominal-low)/value, (high-nominal)/value)
+    style_band(ratio_band)
+    return upper_bands, ratio_band
+
+
 def draw_fit_plot(
     ROOT,
     args: argparse.Namespace,
@@ -3240,6 +3313,9 @@ def draw_fit_plot(
         selected.function.SetRange(plot_mode.fit_min, plot_mode.fit_max)
         selected.average_function.SetRange(plot_mode.fit_min, plot_mode.fit_max)
     density.Draw("PE")
+    shape_bands, ratio_shape_band = make_fit_shape_bands(ROOT, mode, plot_mode, density, selected_fits)
+    for shape_band in shape_bands:
+        shape_band.Draw("3 SAME")
     for selected in selected_fits:
         selected.function.Draw("LSAME")
 
@@ -3256,6 +3332,9 @@ def draw_fit_plot(
     legend.AddEntry(density, mode.legend_label, "lep")
     for selected in selected_fits:
         legend.AddEntry(selected.function, selected.model.label, "l")
+    if shape_bands:
+        legend.AddEntry(shape_bands[0], "Shape envelope", "f")
+        legend.SetY1(0.51)
     legend.SetTextSize(0.032)
     legend.SetTextFont(42)
     legend.SetFillStyle(0)
@@ -3338,6 +3417,8 @@ def draw_fit_plot(
     band.SetLineColor(0)
     band.SetMarkerSize(0)
     band.Draw("E2 SAME")
+    if ratio_shape_band is not None:
+        ratio_shape_band.Draw("2 SAME")
 
     ratio_graphs = []
     for index, (values, colour, style) in enumerate(zip(ratio_values, colours, line_styles)):
@@ -3379,7 +3460,8 @@ def draw_fit_plot(
     png = plot_dir / f"{basename}.png"
     canvas.SaveAs(str(pdf))
     canvas.SaveAs(str(png))
-    keepalive.extend([canvas, upper, lower, legend, cms_header, latex, frame, band, line, *ratio_graphs])
+    keepalive.extend([canvas, upper, lower, legend, cms_header, latex, frame, band, line,
+                      *ratio_graphs, *shape_bands, ratio_shape_band])
     return pdf, png, keepalive
 
 
