@@ -1027,6 +1027,9 @@ The figure legend has a transparent background, and the lower panel uses the
 The compact legend sits at the upper right with a small inset from the frame.
 The reference/functional-envelope note is inside the upper panel; there is no
 canvas footer. Existing JSON files can be redrawn to apply these layout changes.
+The canvas has the same square proportions and margins as the DY/OS-SS
+comparison plots. Both panels use equal pixel sizes for axis titles and tick
+labels, with a larger legend and no reserved bottom strip.
 
 This diagnostic fits SS **Data - Top - Others** with the production six
 functions over 5--30, 5--20 and 5--80 GeV, and overlays all three predictions
@@ -1086,10 +1089,23 @@ bin-averaged prediction from the JSON, rather than its centre-point value.
 Negative data ratios are retained in the derived values. The three fits use
 the same data: no independent denominator uncertainty is added in quadrature.
 These are conditional comparison bands, not statistical confidence intervals.
-The ratio viewport defaults to 0--2; `--ratio-min` and `--ratio-max` adjust it
+The ratio viewport defaults to **linear 0--5**; `--ratio-min` and `--ratio-max` adjust it
 without changing any prediction. Nonpositive reference values are omitted
 from the ratio. All ratio values are derived from saved results, so
 `--plot-json` also produces both panels without refitting or changing JSON.
+
+`--ratio-scale hybrid` keeps physical ratios through **1.5 linear**, then uses
+a logarithmic display above 1.5. The two sections meet continuously; tick labels
+always give the original physical ratio. By default its upper bound includes
+the visible functional envelopes and data error bars, rounded up to a convenient
+value. `--ratio-max VALUE` sets an explicit physical bound instead. Statistical
+error-bar endpoints are transformed separately; the underlying values and bands
+are unchanged. For example, redraw all saved results with the hybrid axis:
+
+```bash
+python3 qcd_ss_fit_range_comparison.py --plot-json \
+    plots/SSFitRangeComparison/QCD_SS_FitRangeComparison_*.json --ratio-scale hybrid
+```
 
 If JSON was saved but plotting crashed, regenerate PDF/PNG directly:
 

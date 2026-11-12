@@ -160,6 +160,33 @@ class SSComparisonTest(unittest.TestCase):
         self.assertEqual((args.xmax, args.ymin, args.logx), (80., .001, True))
         self.assertEqual(ss.qcd.SS_NOMINAL_MODEL, "power_exp_logistic")
         self.assertEqual(len(ss.qcd.SS_SHAPE_ALTERNATIVES), 5)
+        self.assertEqual(args.ratio_scale, 'linear')
+        self.assertEqual(ss.ratio_display_max(args, [], []), 5.)
+
+    def test_hybrid_axis_is_continuous_monotonic_and_keeps_linear_core(self):
+        values = [-3., 0., .5, 1., 1.5, 2., 5., 10., 1000.]
+        transformed = [ss.ratio_display_value(x, 'hybrid', 1000.) for x in values]
+        self.assertEqual(transformed, sorted(transformed))
+        self.assertEqual(transformed[:5], values[:5])
+        self.assertEqual(transformed[-1], 2.5)
+        self.assertAlmostEqual(ss.ratio_display_value(1.5+1e-9, 'hybrid', 1000.), 1.5)
+        self.assertEqual(ss.ratio_display_value(1000., 'linear', 1000.), 1000.)
+        y = ss.ratio_display_value(2., 'hybrid', 1000.)
+        low = y-ss.ratio_display_value(1., 'hybrid', 1000.)
+        high = ss.ratio_display_value(3., 'hybrid', 1000.)-y
+        self.assertGreater(low, high)  # Physical symmetric errors display asymmetrically.
+
+    def test_hybrid_auto_range_covers_visible_high_band_and_data_errors(self):
+        args = ss.build_parser().parse_args(['--ratio-scale', 'hybrid', '--xmax', '50'])
+        reports = [dict(x=[5., 40., 80.], high=[1., 18., 1e6])]
+        self.assertEqual(ss.ratio_display_max(args, reports, []), 20.)
+        points = [dict(x=45., value=20., error=7.)]
+        self.assertEqual(ss.ratio_display_max(args, reports, points), 50.)
+        args.ratio_max = 10.
+        self.assertEqual(ss.ratio_display_max(args, reports, points), 10.)
+        args.ratio_max = None
+        reports[0]['high'][1] = 1.7e308
+        self.assertEqual(ss.ratio_display_max(args, reports, points), 1.7e308)
 
     def test_signed_log_preserves_sign_and_cross_zero_error_endpoints(self):
         values = [-100., -1., -.01, 0., .01, 1., 100.]

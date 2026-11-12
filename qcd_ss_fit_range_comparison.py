@@ -24,6 +24,12 @@ statistical data errors are divided by the same fixed denominator. Reference
 uncertainty is shown as a band around one, not added in quadrature to ratios.
 The reference/envelope note is inside the upper panel. Its transparent legend
 is compact and aligned near the right frame edge; no canvas footer is drawn.
+Canvas proportions match the DY/OS-SS comparison plots, with no extra bottom
+strip. Axis titles use one pixel font size across both panels; legend text is
+enlarged. Ratio default: linear 0--5. --ratio-scale hybrid keeps ratios <=1.5
+linear and compresses larger values logarithmically, with physical-value ticks.
+Its upper bound is automatic unless --ratio-max is specified. Display options
+never change the saved fits, envelopes or JSON.
 
 For combined periods, sum the SS data and each subtraction MC histogram over
 the requested eras first, then fit that summed histogram once per range.
@@ -85,7 +91,10 @@ def build_parser():
     parser.add_argument("--xmax", type=qcd.positive_float, default=80.,
                         help="Displayed upper mass bound only, 5 < xmax <= 80 (default: 80 GeV)")
     parser.add_argument("--ratio-min", type=float, default=0., help="Lower ratio-panel bound (default: 0)")
-    parser.add_argument("--ratio-max", type=float, default=2., help="Upper ratio-panel bound (default: 2)")
+    parser.add_argument("--ratio-max", type=float,
+                        help="Upper physical ratio bound (default: 5 for linear; automatic for hybrid)")
+    parser.add_argument("--ratio-scale", choices=("linear", "hybrid"), default="linear",
+                        help="Linear ratio axis (default), or linear through 1.5 then logarithmic")
     xscale = parser.add_mutually_exclusive_group()
     xscale.add_argument("--logx", dest="logx", action="store_true", help="Logarithmic x axis (default)")
     xscale.add_argument("--linear-x", dest="logx", action="store_false", help="Linear x axis")
@@ -253,10 +262,36 @@ def ratio_to_reference(points, reports):
     return ratios, data
 
 
+def ratio_display_max(args, reports, points):
+    """Physical ratio bound; automatic hybrid range includes visible high bands."""
+    if args.ratio_max is not None:
+        return args.ratio_max
+    if args.ratio_scale == "linear":
+        return 5.
+    values = [5., args.ratio_min+1.]
+    values.extend(value for report in reports for x, value in zip(report["x"], report["high"])
+                  if 5. <= x <= args.xmax and math.isfinite(value))
+    values.extend(p["value"]+p["error"] for p in points
+                  if 5. <= p["x"] <= args.xmax and math.isfinite(p["value"]+p["error"]))
+    peak = max(values)
+    decade = 10.**math.floor(math.log10(peak))
+    return next((factor*decade for factor in (1., 2., 5., 10.)
+                 if math.isfinite(factor*decade) and factor*decade >= peak), peak)
+
+
+def ratio_display_value(value, scale, upper):
+    """Continuous hybrid display: 0--1.5 linear; 1.5--upper log into 1.5--2.5."""
+    if scale == "linear" or value <= 1.5:
+        return value
+    return 1.5 + (math.log(value)-math.log(1.5))/(math.log(upper)-math.log(1.5))
+
+
 def plot(args, points, reports, stem, ROOT=None):
     """Draw the physical prediction above and fixed-reference ratios below."""
     validate_plot_data(points, reports)
     ratio_reports, ratio_points = ratio_to_reference(points, reports)
+    ratio_max = ratio_display_max(args, ratio_reports, ratio_points)
+    ratio_transform = lambda value: ratio_display_value(value, args.ratio_scale, ratio_max)
     ROOT = ROOT if ROOT is not None else qcd.import_root()
     log_y = args.ymin > 0.
     transform = (lambda y: max(y, args.ymin)) if log_y else (lambda y: signed_log(y, args.linthresh))
@@ -265,21 +300,21 @@ def plot(args, points, reports, stem, ROOT=None):
                      if 5. <= x <= args.xmax]
     ymin = args.ymin
     ymax = max(args.linthresh, ymin*10.,
-               2.*max([p["value"]+p["error"] for p in visible_points] + visible_highs))
+               20.*max([p["value"]+p["error"] for p in visible_points] + visible_highs))
     bottom, top = transform(ymin), transform(ymax)
     margin = .025*(top-bottom)
-    canvas = ROOT.TCanvas("ss_range_comparison", "", 1100, 1100)
-    upper = ROOT.TPad("ss_range_upper", "", 0., .35, 1., 1.)
-    lower = ROOT.TPad("ss_range_ratio", "", 0., .08, 1., .35)
+    canvas = ROOT.TCanvas("ss_range_comparison", "", 900, 900)
+    upper = ROOT.TPad("ss_range_upper", "", 0., .32, 1., 1.)
+    lower = ROOT.TPad("ss_range_ratio", "", 0., 0., 1., .32)
     for pad in (upper, lower):
         pad.SetLeftMargin(.14)
-        pad.SetRightMargin(.035)
+        pad.SetRightMargin(.05)
         pad.SetLogx(args.logx)
         pad.SetTicks(1, 1)
         pad.Draw()
-    upper.SetTopMargin(.09)
-    upper.SetBottomMargin(.025)
-    lower.SetTopMargin(.03)
+    upper.SetTopMargin(.10)
+    upper.SetBottomMargin(.03)
+    lower.SetTopMargin(.04)
     lower.SetBottomMargin(.32)
     upper.cd()
     upper.SetLogy(log_y)
@@ -292,14 +327,17 @@ def plot(args, points, reports, stem, ROOT=None):
     if args.logx:
         frame.GetXaxis().SetMoreLogLabels()
         frame.GetXaxis().SetNoExponent()
-    frame.GetYaxis().SetTitleSize(.045)
-    frame.GetYaxis().SetTitleOffset(1.35)
-    frame.GetYaxis().SetLabelSize(.04 if log_y else 0.)
+    for axis in (frame.GetXaxis(), frame.GetYaxis()):
+        axis.SetTitleFont(43)
+        axis.SetLabelFont(43)
+        axis.SetTitleSize(32)
+    frame.GetYaxis().SetTitleOffset(1.45)
+    frame.GetYaxis().SetLabelSize(25 if log_y else 0.)
     frame.GetYaxis().SetTickLength(.02 if log_y else 0.)
     keepalive = [frame, upper, lower]
     labels = ROOT.TLatex()
-    labels.SetTextFont(42)
-    labels.SetTextSize(.033)
+    labels.SetTextFont(43)
+    labels.SetTextSize(25)
     labels.SetTextAlign(32)
     max_abs = max(abs(ymin), abs(ymax))
     ticks = [0.] if not log_y else []
@@ -334,12 +372,12 @@ def plot(args, points, reports, stem, ROOT=None):
     if log_y:
         upper.SetGridy()
     legend_right = 1.-upper.GetRightMargin()-.015
-    legend = ROOT.TLegend(legend_right-.39, .735, legend_right, .905)
+    legend = ROOT.TLegend(legend_right-.54, .68, legend_right, .89)
     legend.SetBorderSize(0)
     legend.SetFillStyle(0)
-    legend.SetTextFont(42)
-    legend.SetTextSize(.028)
-    legend.SetMargin(.18)
+    legend.SetTextFont(43)
+    legend.SetTextSize(25)
+    legend.SetMargin(.13)
     curves = []
     for report, hex_colour in zip(reports, ("#2166ac", "#d95f02", "#1b9e77")):
         colour = ROOT.TColor.GetColor(hex_colour)
@@ -383,29 +421,62 @@ def plot(args, points, reports, stem, ROOT=None):
     legend.Draw()
     text = ROOT.TLatex()
     text.SetNDC()
-    text.SetTextFont(42)
-    text.SetTextSize(.034)
-    text.DrawLatex(.14, .95, f"SS fit-range comparison: {args.era}")
-    text.SetTextSize(.026)
+    text.SetTextFont(43)
+    text.SetTextSize(25)
+    text.DrawLatex(.14, .94, f"SS fit-range comparison: {args.era}")
+    text.SetTextSize(19)
     text.DrawLatex(.17, .10, "Reference: fixed 5-30 GeV nominal fit. Bands: functional envelope only.")
     upper.RedrawAxis()
 
     lower.cd()
-    lower.SetGridy()
-    ratio_frame = lower.DrawFrame(5., args.ratio_min, args.xmax, args.ratio_max)
+    lower.SetGridy(args.ratio_scale == "linear")
+    ratio_frame = lower.DrawFrame(5., ratio_transform(args.ratio_min), args.xmax, ratio_transform(ratio_max))
     ratio_frame.SetTitle("")
     ratio_frame.GetXaxis().SetTitle("m_{#mu#mu} [GeV]")
-    ratio_frame.GetXaxis().SetTitleSize(.12)
-    ratio_frame.GetXaxis().SetLabelSize(.10)
+    for axis in (ratio_frame.GetXaxis(), ratio_frame.GetYaxis()):
+        axis.SetTitleFont(43)
+        axis.SetLabelFont(43)
+        axis.SetTitleSize(32)
+        axis.SetLabelSize(25)
+    ratio_frame.GetXaxis().SetTitleOffset(1.05)
     if args.logx:
         ratio_frame.GetXaxis().SetMoreLogLabels()
         ratio_frame.GetXaxis().SetNoExponent()
     ratio_frame.GetYaxis().SetTitle("Ratio to 5-30")
-    ratio_frame.GetYaxis().SetTitleSize(.085)
-    ratio_frame.GetYaxis().SetTitleOffset(.65)
-    ratio_frame.GetYaxis().SetLabelSize(.085)
+    ratio_frame.GetYaxis().SetTitleOffset(1.45)
     ratio_frame.GetYaxis().SetNdivisions(505)
     keepalive.append(ratio_frame)
+    if args.ratio_scale == "hybrid":
+        ratio_frame.GetYaxis().SetLabelSize(0.)
+        ratio_frame.GetYaxis().SetTickLength(0.)
+        candidates = [0., .5, 1., 1.5]
+        for exponent in range(0, min(308, math.ceil(math.log10(ratio_max)))+1):
+            candidates.extend(factor*10.**exponent for factor in (1., 2., 5.))
+        candidates = sorted(set(v for v in candidates if args.ratio_min <= v <= ratio_max))
+        span = ratio_transform(ratio_max)-ratio_transform(args.ratio_min)
+        height = canvas.GetWh()*.32*(1.-lower.GetTopMargin()-lower.GetBottomMargin())
+        gap = 25.*span/height
+        ticks = []
+        for value in candidates:
+            if not ticks or ratio_transform(value)-ratio_transform(ticks[-1]) >= gap:
+                ticks.append(value)
+        if not ticks or ticks[-1] != ratio_max:
+            if ticks and ratio_transform(ratio_max)-ratio_transform(ticks[-1]) < gap:
+                ticks.pop()
+            ticks.append(ratio_max)
+        tick_text = ROOT.TLatex()
+        tick_text.SetTextFont(43)
+        tick_text.SetTextSize(25)
+        tick_text.SetTextAlign(32)
+        label_x = 5./1.04 if args.logx else 5.-.015*(args.xmax-5.)
+        for value in ticks:
+            y = ratio_transform(value)
+            grid = ROOT.TLine(5., y, args.xmax, y)
+            grid.SetLineColor(ROOT.kGray+1)
+            grid.SetLineStyle(3)
+            grid.Draw()
+            keepalive.extend((grid, tick_text.DrawLatex(label_x, y, f"{value:g}")))
+        keepalive.append(tick_text)
     ratio_curves = []
     for report, hex_colour in zip(ratio_reports, ("#2166ac", "#d95f02", "#1b9e77")):
         colour = ROOT.TColor.GetColor(hex_colour)
@@ -419,9 +490,9 @@ def plot(args, points, reports, stem, ROOT=None):
             graph.SetLineWidth(2)
         for i, (x, value, low, high) in enumerate(zip(report["x"], report["central"],
                                                       report["low"], report["high"])):
-            band.SetPoint(i, x, low)
-            band.SetPoint(2*n-1-i, x, high)
-            curve.SetPoint(i, x, value)
+            band.SetPoint(i, x, ratio_transform(low))
+            band.SetPoint(2*n-1-i, x, ratio_transform(high))
+            curve.SetPoint(i, x, ratio_transform(value))
         band.SetFillColorAlpha(colour, .17)
         band.Draw("F SAME")
         ratio_curves.append(curve)
@@ -432,19 +503,29 @@ def plot(args, points, reports, stem, ROOT=None):
     unity.SetLineColor(ROOT.kGray+2)
     unity.SetLineStyle(2)
     unity.Draw()
-    ratio_data = ROOT.TGraphErrors()
+    ratio_data = ROOT.TGraphAsymmErrors()
     ratio_data.SetBit(ROOT.TGraph.kClipFrame)
     for point in ratio_points:
         if not 5. <= point["x"] <= args.xmax:
             continue
         i = ratio_data.GetN()
-        ratio_data.SetPoint(i, point["x"], point["value"])
-        ratio_data.SetPointError(i, point["half_width"], point["error"])
+        value, error = point["value"], point["error"]
+        y = ratio_transform(value)
+        ratio_data.SetPoint(i, point["x"], y)
+        ratio_data.SetPointError(i, point["half_width"], point["half_width"],
+                                y-ratio_transform(value-error), ratio_transform(value+error)-y)
     ratio_data.SetMarkerStyle(20)
     ratio_data.SetMarkerSize(.5)
     ratio_data.SetLineColor(ROOT.kBlack)
     ratio_data.Draw("PZ SAME")
     keepalive.extend((unity, ratio_data))
+    if args.ratio_scale == "hybrid":
+        note = ROOT.TLatex()
+        note.SetNDC()
+        note.SetTextFont(43)
+        note.SetTextSize(17)
+        keepalive.append(note.DrawLatex(.17, .87, "Linear up to 1.5; log above"))
+        keepalive.append(note)
     lower.RedrawAxis()
     canvas.cd()
     canvas.Update()
@@ -497,8 +578,14 @@ def main(argv=None):
         parser.error("--ymin must be finite and nonnegative")
     if not 5. < args.xmax <= 80.:
         parser.error("--xmax must satisfy 5 < xmax <= 80 GeV (display only)")
-    if not all(map(math.isfinite, (args.ratio_min, args.ratio_max))) or args.ratio_min >= args.ratio_max:
+    if not math.isfinite(args.ratio_min) or (args.ratio_max is not None and
+            (not math.isfinite(args.ratio_max) or args.ratio_min >= args.ratio_max)):
         parser.error("Require finite --ratio-min < --ratio-max")
+    if args.ratio_max is None and args.ratio_scale == "linear" and args.ratio_min >= 5.:
+        parser.error("--ratio-min must be below the default linear maximum of 5")
+    if args.ratio_scale == "hybrid" and (args.ratio_min >= 1.5 or
+            (args.ratio_max is not None and args.ratio_max <= 1.5)):
+        parser.error("Hybrid ratio bounds must straddle 1.5")
     if args.all_periods:
         if args.plot_json:
             parser.error("--all-periods runs fits; use --plot-json separately to redraw saved results")
