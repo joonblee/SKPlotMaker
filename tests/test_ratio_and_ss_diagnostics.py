@@ -284,7 +284,7 @@ class SSRatioInsetTest(unittest.TestCase):
 
 @unittest.skipIf(ROOT is None, 'PyROOT is not installed')
 class SSFixedTailBinningTest(unittest.TestCase):
-    def test_fixed_tail_preserves_signed_yields_variances_and_low_mass_grid(self):
+    def test_fixed_tail_preserves_yields_and_only_merges_last_adaptive_bin(self):
         ROOT.TH1.AddDirectory(False)
         source = ROOT.TH1D('ss_fixed_tail_input', '', 1000, 0., 100.)
         source.Sumw2()
@@ -296,6 +296,9 @@ class SSFixedTailBinningTest(unittest.TestCase):
             source, ss.replace(ss.qcd.SS_MODE, fit_max=50.),
             args.ss_min_effective_count, args.ss_max_bin_width, protected_edges=(20., 30.))
         expected_low = sorted(set([round(x, 9) for x in original if x < 30.] + [20.]))
+        # The dense fixture has at least two adaptive bins inside 20--30.
+        self.assertGreater(expected_low[-2], 20.)
+        expected_low.pop()
         prepared = ss.common_histograms(ROOT, source, args)
         self.assertEqual([x for x in prepared.edges if x < 30.], expected_low)
         self.assertEqual([x for x in prepared.edges if 30. <= x <= 50.],
@@ -326,6 +329,30 @@ class SSFixedTailBinningTest(unittest.TestCase):
         with patch.object(ss.qcd, 'make_adaptive_ss_binning', return_value=[0., 5., 80., 100.]), \
              self.assertRaisesRegex(ValueError, '30 GeV is not a native bin edge'):
             ss.common_histograms(ROOT, source, ss.build_parser().parse_args([]))
+
+    def test_terminal_merge_adds_signed_contents_and_errors_without_crossing_30(self):
+        source = ROOT.TH1D('ss_terminal_merge_signed', '', 1000, 0., 100.)
+        source.SetDirectory(0)
+        for i in range(1, 1001):
+            x = source.GetBinCenter(i)
+            source.SetBinContent(i, -2. if 29. <= x < 30. else 1.)
+            source.SetBinError(i, 3.)
+        with patch.object(ss.qcd, 'make_adaptive_ss_binning',
+                          return_value=[0., 5., 20., 27., 29., 30., 40., 50., 100.]):
+            prepared = ss.common_histograms(ROOT, source, ss.build_parser().parse_args([]))
+        self.assertEqual(prepared.edges, [0., 5., 20., 27., 30., 50., 100.])
+        i = prepared.counts.FindBin(28.5)
+        self.assertAlmostEqual(prepared.counts.GetBinContent(i), 20.*1.-10.*2.)
+        self.assertAlmostEqual(prepared.counts.GetBinError(i)**2, 30.*9.)
+        self.assertAlmostEqual(prepared.density.GetBinError(i), math.sqrt(270.)/3.)
+
+    def test_single_terminal_segment_does_not_merge_across_20(self):
+        source = ROOT.TH1D('ss_terminal_merge_protected', '', 1000, 0., 100.)
+        source.SetDirectory(0)
+        with patch.object(ss.qcd, 'make_adaptive_ss_binning',
+                          return_value=[0., 5., 18., 20., 30., 50., 100.]):
+            prepared = ss.common_histograms(ROOT, source, ss.build_parser().parse_args([]))
+        self.assertEqual(prepared.edges, [0., 5., 18., 20., 30., 50., 100.])
 
 
 if __name__ == "__main__":

@@ -13,6 +13,11 @@ The common-grid edges and all fit diagnostics are exported.
 Below 30 GeV, whole adaptive bins are merged to width >=
 max(0.1 GeV, 0.02*final bin centre), independently in 5--20 and 20--30 GeV
 so the protected boundaries never create narrow remainder bins.
+The final adaptive bin ending at 30 GeV is then merged once with its previous
+bin inside 20--30 GeV. If that segment already has one bin, it is kept.
+This terminal merge may exceed the adaptive width cap; 20 and 30 GeV remain
+protected, and the fixed 30--50 GeV bin is unchanged. Refit to apply this rule;
+--plot-json keeps the binning of the saved result.
 
 Bands are pointwise nominal +/- max_alternative |alternative - nominal|,
 without zero-clipping. They are functional envelopes, not confidence intervals
@@ -127,6 +132,12 @@ def common_histograms(ROOT, source, args):
     edges = sorted(set([round(x, 9) for x in edges
                         if x < FIXED_HIGH_MASS_EDGES[0] or x > FIXED_HIGH_MASS_EDGES[-1]]
                        + list(FORCED_EDGES)))
+    tail_index = edges.index(FIXED_HIGH_MASS_EDGES[0])
+    if tail_index >= 2 and edges[tail_index-2] >= 20.:
+        left, middle, right = edges[tail_index-2:tail_index+1]
+        del edges[tail_index-1]
+        print(f"[SS COMPARISON BINNING] merged terminal adaptive bins "
+              f"[{left:g},{middle:g}] + [{middle:g},{right:g}] -> [{left:g},{right:g}] GeV")
     print("[SS COMPARISON BINNING] final edges [GeV] = " + ", ".join(f"{x:g}" for x in edges))
     counts_raw = source.Rebin(len(edges)-1, "ss_comparison_counts_raw", array("d", edges))
     counts_raw.SetDirectory(0)
@@ -764,6 +775,7 @@ def main(argv=None):
                        binning=dict(edges=prepared.edges, min_effective_count=args.ss_min_effective_count,
                                     max_width=args.ss_max_bin_width,
                                     adaptive_range=[5., 30.],
+                                    merge_terminal_adaptive_bin_backward=True,
                                     minimum_width=dict(absolute_gev=.1, relative_to_bin_centre=.02),
                                     fixed_high_mass_edges=list(FIXED_HIGH_MASS_EDGES),
                                     forced_edges=list(FORCED_EDGES)),

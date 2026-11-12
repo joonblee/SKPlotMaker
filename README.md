@@ -1134,7 +1134,13 @@ count 10, maximum width 5 GeV), split at 20 and 30 GeV so no bin crosses a fit
 boundary. The shared SS/MC minimum-width rule,
 `width >= max(0.1 GeV, 0.02 * final bin centre)`, is applied independently in
 5--20 and 20--30 GeV, preserving those boundaries without narrow
-remainders. This **SS-data comparison only** uses one fixed **30--50 GeV bin**
+remainders. The last adaptive bin ending at **30 GeV is then merged backward
+once** with the preceding bin inside 20--30 GeV. A single existing 20--30 GeV
+bin stays intact, so the 20 GeV fit boundary is protected. This extra merge can
+exceed the adaptive width cap; signed yields and variances are summed before
+all three fits. It applies only to `qcd_ss_fit_range_comparison.py`.
+Refit to apply the new binning: `--plot-json` preserves saved bin edges.
+This **SS-data comparison only** uses one fixed **30--50 GeV bin**
 (edges **30, 50 GeV**); there are no additional adaptive edges inside that interval.
 QCD-MC fits in `qcd_bkg_estimation.py --mode qcd-mc` retain statistical adaptive
 binning at high mass, with the same `max(0.1 GeV, 0.02 * bin centre)` width floor;
