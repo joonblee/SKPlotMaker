@@ -241,7 +241,12 @@ Adaptive binning starts at 5 GeV and merges adjacent native ROOT bins (currently
 equivalent to at most 20% relative statistical error for a positive sum), or
 before the next native bin would exceed `--ss-max-bin-width` (default 5 GeV).
 It stops at 30 GeV. An under-target final remainder merges backwards if the
-width cap allows it. The selected edges are printed and can vary by era;
+base width cap allows it. As for QCD MC, **whole adaptive bins are then merged**
+until `width >= max(0.1 GeV, 0.02 * final bin centre)`. Native boundaries are
+respected, and a narrow final remainder merges backwards; this final step can
+exceed the base adaptive width cap. The statistical target is unchanged.
+This rule applies to `--ss-binning adaptive`; fixed `auto/regular/legacy`
+selection is unchanged. The selected edges are printed and can vary by era;
 combined periods use the histogram summed over their eras before selecting edges.
 
 All original positive **and negative** `Data - Top - Others` bin contents enter
@@ -503,7 +508,8 @@ the minimum widths at 10, 30 and 70 GeV are 0.2, 0.6 and 1.4 GeV. Widths round
 up to available adaptive boundaries. A narrow final remainder merges backwards
 within its segment; the final width can therefore exceed the base adaptive cap.
 Signed yields and Sumw2 are preserved, and no bin crosses 9 or 11 GeV.
-The 9--11 GeV fit veto, objective and SS-data binning remain unchanged.
+The 9--11 GeV fit veto and objective remain unchanged. SS adaptive fits use the
+same minimum-width rule, with their own statistical target and fit boundaries.
 Use `--mc-binning legacy` to restore the previous fixed MC binning. These MC
 options have no effect in `ss-data` mode. To inspect without fitting or writing:
 
@@ -1033,9 +1039,13 @@ components jointly, including their MC uncertainties.
 
 All three fits share one grid: adaptive below 40 GeV (default target effective
 count 10, maximum width 5 GeV), split at 20 and 30 GeV so no bin crosses a fit
-boundary. At high mass the edges are fixed at **40, 45, 50, 60, 70, 80 GeV**;
+boundary. The shared SS/MC minimum-width rule,
+`width >= max(0.1 GeV, 0.02 * final bin centre)`, is applied independently in
+5--20, 20--30 and 30--40 GeV, preserving those boundaries without narrow
+remainders. At high mass the edges are fixed at **40, 45, 50, 60, 70, 80 GeV**;
 there are no additional adaptive edges inside that interval. These fixed bins
-override the adaptive width cap. This diagnostic grid can differ from production
+override the base adaptive width cap, as can final minimum-width merging.
+This diagnostic grid can differ from production
 5--30 adaptive bins. The fit ranges remain 5--20, 5--30 and 5--80 GeV.
 The nominal function remains Power x Exp x Logistic; the five alternatives give
 the **pointwise symmetric functional envelope**,

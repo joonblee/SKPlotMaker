@@ -218,12 +218,17 @@ class SSFixedTailBinningTest(unittest.TestCase):
         args = ss.build_parser().parse_args([])
         original = ss.qcd.make_adaptive_ss_binning(
             source, ss.replace(ss.qcd.SS_MODE, fit_max=80.),
-            args.ss_min_effective_count, args.ss_max_bin_width)
+            args.ss_min_effective_count, args.ss_max_bin_width, protected_edges=(20., 30., 40.))
         expected_low = sorted(set([round(x, 9) for x in original if x < 40.] + [20., 30.]))
         prepared = ss.common_histograms(ROOT, source, args)
         self.assertEqual([x for x in prepared.edges if x < 40.], expected_low)
         self.assertEqual([x for x in prepared.edges if 40. <= x <= 80.],
                          [40., 45., 50., 60., 70., 80.])
+        for left, right in zip(prepared.edges, prepared.edges[1:]):
+            if left >= 5. and right <= 80.:
+                self.assertGreaterEqual(right-left+1e-9, max(.1, .02*(left+right)/2.))
+        for boundary in (20., 30., 40.):
+            self.assertIn(boundary, prepared.edges)
         for left, right in zip(ss.FIXED_HIGH_MASS_EDGES, ss.FIXED_HIGH_MASS_EDGES[1:]):
             i = prepared.counts.FindBin((left+right)/2.)
             n_native = round((right-left)/.1)

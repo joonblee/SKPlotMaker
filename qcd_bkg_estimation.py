@@ -65,6 +65,10 @@ Fit modes and objectives
       contents are summed with their signs and all errors are retained;
       only the bin-selection score is zero for a nonpositive merged yield.
       Width-limited bins may miss the target and remain in the chi-square.
+      Whole adaptive bins are then merged until width >=
+      max(0.1 GeV, 0.02 * final bin centre), using the same rule as QCD MC.
+      A narrow final remainder merges backwards within its protected segment;
+      this minimum-width step may exceed the base adaptive width cap.
   --mode qcd-mc
       Fits the QCD MC shape.  --fit-objective auto selects ROOT weighted
       likelihood; chi2 and log-chi2 are available as cross-checks.  QCD-MC
@@ -74,8 +78,8 @@ Fit modes and objectives
       followed by merging whole adaptive bins until width >=
       max(0.1 GeV, 0.02 * bin centre). Undersized final bins merge backwards
       within each of 5--9, 9--11 and 11--80 GeV; this may exceed the base cap.
-      Native boundaries and signed yields/Sumw2 are preserved. SS binning is
-      unaffected. --mc-binning legacy restores the previous fixed MC edges.
+      Native boundaries and signed yields/Sumw2 are preserved.
+      --mc-binning legacy restores the previous fixed MC edges.
 The interval 9 < m(mumu) < 11 GeV is excluded from every QCD-MC fit objective
 and diagnostic.
 
@@ -1149,8 +1153,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--ss-max-bin-width", type=positive_float, default=5.0,
-        help=("Maximum adaptive SS bin width in GeV, before --rebin; "
-              "bins at the cap may miss the statistical target. Default: %(default)s"),
+        help=("Base adaptive SS bin width cap in GeV; minimum-width merging "
+              "and --rebin may exceed it. Capped bins may miss the statistical target. Default: %(default)s"),
     )
     parser.add_argument(
         "--inspect-binning", action="store_true",
@@ -1574,7 +1578,7 @@ def ss_effective_count(total: float, variance: float) -> float:
 
 def make_adaptive_ss_binning(
     source_hist, mode: ModeConfig, min_effective_count: float = 25.0,
-    max_bin_width: float = 5.0,
+    max_bin_width: float = 5.0, protected_edges: Sequence[float] = (),
 ) -> List[float]:
     """Merge native bins from low to high mass using the signed SS precision.
 
@@ -1582,8 +1586,12 @@ def make_adaptive_ss_binning(
     before adding another native bin would exceed the width cap. Keep bins
     that miss the target: a negative tail must not consume the entire fit
     range in a search for positive yield. Merge an under-target final remainder
-    backwards only while the width cap permits it. No contents/errors change.
-    Existing non-fit edges and the exact fit boundaries are retained.
+    backwards only while the base width cap permits it. Then merge whole
+    adaptive bins until width >= max(0.1 GeV, 0.02*final bin centre), merging
+    any narrow final remainder backwards. This final step may exceed the cap.
+    Additional native protected edges split the minimum-width merging into
+    independent segments. No contents/errors change. Non-fit edges and exact
+    fit/protected boundaries are retained.
     """
     if mode.key != SS_MODE.key:
         raise ValueError("Adaptive SS binning is only available in ss-data mode.")
@@ -1636,7 +1644,21 @@ def make_adaptive_ss_binning(
             break
         groups[-2:] = [(left[0], right[1], left[2] + right[2], left[3] + right[3])]
 
-    fit_edges = [native_edges[start_index], *[native_edges[group[1]] for group in groups]]
+    adaptive_edges = [native_edges[start_index], *[native_edges[group[1]] for group in groups]]
+    boundaries = [native_edges[start_index], native_edges[stop_index]]
+    for boundary in protected_edges:
+        if not mode.fit_min < boundary < mode.fit_max:
+            raise ValueError("Protected SS boundaries must be inside the fit range")
+        matches = [x for x in native_edges if math.isclose(x, boundary, abs_tol=1e-9, rel_tol=0.)]
+        if not matches:
+            raise ValueError(f"SS edge {boundary:g} GeV is not an input ROOT bin edge; cannot split native bins.")
+        boundaries.append(matches[0])
+    boundaries = sorted(set(boundaries))
+    adaptive_edges = sorted(set(adaptive_edges + boundaries))
+    fit_edges = []
+    for left, right in zip(boundaries, boundaries[1:]):
+        segment = bound_adaptive_bin_widths([x for x in adaptive_edges if left <= x <= right])
+        fit_edges.extend(segment if not fit_edges else segment[1:])
     edges = ([native_edges[native_indices[x]] for x in fixed_edges if x < mode.fit_min]
              + fit_edges
              + [native_edges[native_indices[x]] for x in fixed_edges if x > mode.fit_max])
@@ -1644,15 +1666,16 @@ def make_adaptive_ss_binning(
     below_target = sum(ss_effective_count(y, var) < min_effective_count for _, _, y, var in groups)
     negative = sum(y < 0.0 for _, _, y, _ in groups)
     print(
-        f"[SS BINNING] adaptive: fitBins={len(groups)} targetNeff={min_effective_count:g} "
-        f"maxWidth={max_bin_width:g} GeV belowTarget={below_target} negativeBins={negative}; "
+        f"[SS BINNING] adaptive: baseBins={len(groups)} finalFitBins={len(fit_edges)-1} targetNeff={min_effective_count:g} "
+        f"baseMaxWidth={max_bin_width:g} GeV baseBelowTarget={below_target} baseNegativeBins={negative}; "
+        "final width >= max(0.1 GeV, 0.02*bin centre); "
         "signed yields/errors retained"
     )
     print("[SS BINNING] adaptive fit edges [GeV] = " + ", ".join(f"{x:g}" for x in fit_edges))
     return edges
 
 
-def bound_mc_bin_widths(edges: Sequence[float]) -> List[float]:
+def bound_adaptive_bin_widths(edges: Sequence[float]) -> List[float]:
     """Coarsen one protected segment; mass means the final bin centre."""
     def wide_enough(left, right):
         return right-left >= max(.1, .02*(left+right)/2.) - 1e-9
@@ -1668,8 +1691,12 @@ def bound_mc_bin_widths(edges: Sequence[float]) -> List[float]:
         else:
             merged.append(edges[-1])
     if any(not wide_enough(left, right) for left, right in zip(merged, merged[1:])):
-        raise ValueError("Protected MC segment is narrower than the minimum MC bin width")
+        raise ValueError("Protected segment is narrower than the minimum adaptive bin width")
     return merged
+
+
+# Compatibility name for existing MC callers; both modes share one rule.
+bound_mc_bin_widths = bound_adaptive_bin_widths
 
 
 def make_adaptive_mc_binning(source_hist, mode: ModeConfig,

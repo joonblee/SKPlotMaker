@@ -8,6 +8,9 @@ and fixed edges 40, 45, 50, 60, 70, 80 GeV above. The adaptive width cap does
 not apply to these fixed high-mass bins. Thus only the fit range changes.
 This diagnostic grid can differ from production 5--30 adaptive binning.
 The common-grid edges and all fit diagnostics are exported.
+Below 40 GeV, whole adaptive bins are merged to width >=
+max(0.1 GeV, 0.02*final bin centre), independently in 5--20, 20--30 and
+30--40 GeV so the protected boundaries never create narrow remainder bins.
 
 Bands are pointwise nominal +/- max_alternative |alternative - nominal|,
 without zero-clipping. They are functional envelopes, not confidence intervals
@@ -72,7 +75,7 @@ def build_parser():
                         help="Redraw saved JSON results only: no input histograms, fits or JSON writes")
     parser.add_argument("--ss-min-effective-count", type=qcd.positive_float, default=10.)
     parser.add_argument("--ss-max-bin-width", type=qcd.positive_float, default=5.,
-                        help="Adaptive width cap below 40 GeV (default: 5); high-mass bins are fixed")
+                        help="Base adaptive width cap below 40 GeV (default: 5); minimum-width merging can exceed it; high-mass bins are fixed")
     parser.add_argument("--fit-max-attempts", type=qcd.positive_integer, default=30)
     parser.add_argument("--fit-attempt-details", action="store_true")
     parser.add_argument("--linthresh", type=qcd.positive_float, default=.1,
@@ -94,7 +97,7 @@ def common_histograms(ROOT, source, args):
     """Keep adaptive bins below 40; replace the tail with fixed high-mass bins."""
     mode = replace(qcd.SS_MODE, fit_max=80.)
     edges = qcd.make_adaptive_ss_binning(source, mode, args.ss_min_effective_count,
-                                        args.ss_max_bin_width)
+                                        args.ss_max_bin_width, protected_edges=(20., 30., 40.))
     native = [float(source.GetXaxis().GetBinLowEdge(i))
               for i in range(1, source.GetNbinsX()+2)]
     for boundary in FORCED_EDGES:
@@ -530,6 +533,7 @@ def main(argv=None):
                        binning=dict(edges=prepared.edges, min_effective_count=args.ss_min_effective_count,
                                     max_width=args.ss_max_bin_width,
                                     adaptive_range=[5., 40.],
+                                    minimum_width=dict(absolute_gev=.1, relative_to_bin_centre=.02),
                                     fixed_high_mass_edges=list(FIXED_HIGH_MASS_EDGES),
                                     forced_edges=list(FORCED_EDGES)),
                        points=points, fits=reports)
