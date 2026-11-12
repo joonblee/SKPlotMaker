@@ -1131,7 +1131,13 @@ components jointly, including their MC uncertainties.
 
 All three fits share one grid: adaptive below 30 GeV (default target effective
 count 10, maximum width 5 GeV), split at 20 and 30 GeV so no bin crosses a fit
-boundary. The shared SS/MC minimum-width rule,
+boundary. When the statistical target is reached but the **next native bin has
+signed yield <= 0**, keep merging until the next native bin is positive, the
+base adaptive width cap is reached (default **5 GeV**), or a protected boundary
+is reached. Never cross a protected edge or add a native bin that would exceed
+the base cap. Nonpositive sums at the cap are retained with their errors.
+This lookahead is enabled only by `qcd_ss_fit_range_comparison.py`; production
+SS and MC defaults are unchanged. The shared SS/MC minimum-width rule,
 `width >= max(0.1 GeV, 0.02 * final bin centre)`, is applied independently in
 5--20 and 20--30 GeV, preserving those boundaries without narrow
 remainders. The last adaptive bin ending at **30 GeV is then merged backward

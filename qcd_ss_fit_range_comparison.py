@@ -10,6 +10,10 @@ minimum-width rule. The adaptive width cap does
 not apply to these fixed high-mass bins. Thus only the fit range changes.
 This diagnostic grid can differ from production 5--30 adaptive binning.
 The common-grid edges and all fit diagnostics are exported.
+When the effective-count target is reached, continue merging while the next
+native bin has signed yield <=0, stopping at the base adaptive width cap
+(default 5 GeV) or a protected 20/30 GeV boundary. A positive next native bin
+allows the usual precision-target stop. Capped negative bins remain signed.
 Below 30 GeV, whole adaptive bins are merged to width >=
 max(0.1 GeV, 0.02*final bin centre), independently in 5--20 and 20--30 GeV
 so the protected boundaries never create narrow remainder bins.
@@ -123,7 +127,8 @@ def common_histograms(ROOT, source, args):
     """Keep adaptive bins below 30; replace the tail with fixed high-mass bins."""
     mode = replace(qcd.SS_MODE, fit_max=FIT_MAX)
     edges = qcd.make_adaptive_ss_binning(source, mode, args.ss_min_effective_count,
-                                        args.ss_max_bin_width, protected_edges=(20., 30.))
+                                        args.ss_max_bin_width, protected_edges=(20., 30.),
+                                        merge_nonpositive_next=True)
     native = [float(source.GetXaxis().GetBinLowEdge(i))
               for i in range(1, source.GetNbinsX()+2)]
     for boundary in FORCED_EDGES:
@@ -775,6 +780,7 @@ def main(argv=None):
                        binning=dict(edges=prepared.edges, min_effective_count=args.ss_min_effective_count,
                                     max_width=args.ss_max_bin_width,
                                     adaptive_range=[5., 30.],
+                                    merge_nonpositive_next_native_bin=True,
                                     merge_terminal_adaptive_bin_backward=True,
                                     minimum_width=dict(absolute_gev=.1, relative_to_bin_centre=.02),
                                     fixed_high_mass_edges=list(FIXED_HIGH_MASS_EDGES),

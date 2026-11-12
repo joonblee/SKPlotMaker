@@ -1774,6 +1774,7 @@ def ss_effective_count(total: float, variance: float) -> float:
 def make_adaptive_ss_binning(
     source_hist, mode: ModeConfig, min_effective_count: float = 25.0,
     max_bin_width: float = 5.0, protected_edges: Sequence[float] = (),
+    merge_nonpositive_next: bool = False,
 ) -> List[float]:
     """Merge native bins from low to high mass using the signed SS precision.
 
@@ -1787,6 +1788,10 @@ def make_adaptive_ss_binning(
     Additional native protected edges split the minimum-width merging into
     independent segments. No contents/errors change. Non-fit edges and exact
     fit/protected boundaries are retained.
+    With merge_nonpositive_next=True, reaching the precision target does not
+    close a group while the next native signed yield is <=0. Continue to the
+    base width cap or a protected boundary. This opt-in diagnostic rule also
+    protects boundaries during native grouping; production defaults are unchanged.
     """
     if mode.key != SS_MODE.key:
         raise ValueError("Adaptive SS binning is only available in ss-data mode.")
@@ -1812,6 +1817,18 @@ def make_adaptive_ss_binning(
            for i in range(start_index, stop_index)):
         raise ValueError("--ss-max-bin-width is smaller than an input ROOT bin in the fit range.")
 
+    boundaries = [native_edges[start_index], native_edges[stop_index]]
+    protected_indices = {stop_index}
+    for boundary in protected_edges:
+        if not mode.fit_min < boundary < mode.fit_max:
+            raise ValueError("Protected SS boundaries must be inside the fit range")
+        matches = [i for i, x in enumerate(native_edges) if math.isclose(x, boundary, abs_tol=1e-9, rel_tol=0.)]
+        if not matches:
+            raise ValueError(f"SS edge {boundary:g} GeV is not an input ROOT bin edge; cannot split native bins.")
+        protected_indices.add(matches[0])
+        boundaries.append(native_edges[matches[0]])
+    boundaries = sorted(set(boundaries))
+
     # Each group stores (start edge index, stop edge index, signed yield, variance).
     groups: List[Tuple[int, int, float, float]] = []
     start = start_index
@@ -1824,9 +1841,12 @@ def make_adaptive_ss_binning(
         total += content
         variance += error * error
         stop = i + 1
-        at_end = stop == stop_index
+        at_end = stop == stop_index or (merge_nonpositive_next and stop in protected_indices)
         at_cap = not at_end and native_edges[stop + 1] - native_edges[start] > max_bin_width + 1e-9
-        if ss_effective_count(total, variance) >= min_effective_count or at_cap or at_end:
+        next_nonpositive = (merge_nonpositive_next and not at_end
+                            and float(source_hist.GetBinContent(stop+1)) <= 0.)
+        target_reached = ss_effective_count(total, variance) >= min_effective_count
+        if (target_reached and not next_nonpositive) or at_cap or at_end:
             groups.append((start, stop, total, variance))
             start = stop
             total = variance = 0.0
@@ -1835,20 +1855,13 @@ def make_adaptive_ss_binning(
     # This is not a positivity requirement: a capped negative group is retained.
     while len(groups) > 1 and ss_effective_count(groups[-1][2], groups[-1][3]) < min_effective_count:
         left, right = groups[-2:]
+        if merge_nonpositive_next and any(left[0] < i < right[1] for i in protected_indices):
+            break
         if native_edges[right[1]] - native_edges[left[0]] > max_bin_width + 1e-9:
             break
         groups[-2:] = [(left[0], right[1], left[2] + right[2], left[3] + right[3])]
 
     adaptive_edges = [native_edges[start_index], *[native_edges[group[1]] for group in groups]]
-    boundaries = [native_edges[start_index], native_edges[stop_index]]
-    for boundary in protected_edges:
-        if not mode.fit_min < boundary < mode.fit_max:
-            raise ValueError("Protected SS boundaries must be inside the fit range")
-        matches = [x for x in native_edges if math.isclose(x, boundary, abs_tol=1e-9, rel_tol=0.)]
-        if not matches:
-            raise ValueError(f"SS edge {boundary:g} GeV is not an input ROOT bin edge; cannot split native bins.")
-        boundaries.append(matches[0])
-    boundaries = sorted(set(boundaries))
     adaptive_edges = sorted(set(adaptive_edges + boundaries))
     fit_edges = []
     for left, right in zip(boundaries, boundaries[1:]):
@@ -1867,6 +1880,9 @@ def make_adaptive_ss_binning(
         "signed yields/errors retained"
     )
     print("[SS BINNING] adaptive fit edges [GeV] = " + ", ".join(f"{x:g}" for x in fit_edges))
+    if merge_nonpositive_next:
+        print("[SS BINNING] nonpositive-next-native-bin lookahead enabled; "
+              f"native groups stop at the {max_bin_width:g} GeV base cap or protected boundaries")
     return edges
 
 

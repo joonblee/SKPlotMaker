@@ -1,4 +1,5 @@
 """SS adaptive width floors preserve native signed yields and Sumw2."""
+from array import array
 from contextlib import redirect_stdout
 import io
 import math
@@ -55,6 +56,54 @@ class SSAdaptiveWidthTest(unittest.TestCase):
     def test_protected_edge_must_be_native(self):
         with redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, 'cannot split native bins'):
             q.make_adaptive_ss_binning(self.source(), q.SS_MODE, protected_edges=(20.01,))
+
+    def gap_source(self, gap_low, gap_high, gap_yield=0.):
+        hist = ROOT.TH1D(q._NAMES.unique('ss_lookahead_gap'), '', 1000, 0., 100.)
+        hist.SetDirectory(0)
+        for i in range(1, 1001):
+            x = hist.GetBinCenter(i)
+            hist.SetBinContent(i, gap_yield if gap_low <= x < gap_high else 50.)
+            hist.SetBinError(i, 1.)
+        # Start with an empty native bin, so the first statistical group has
+        # width 0.2 GeV and already satisfies the separate minimum-width rule.
+        hist.SetBinContent(hist.FindBin(5.05), 0.)
+        return hist
+
+    def test_zero_and_negative_next_bins_are_absorbed_after_target_is_met(self):
+        for gap_yield in (0., -1.):
+            source = self.gap_source(5.2, 7., gap_yield)
+            with redirect_stdout(io.StringIO()):
+                baseline = q.make_adaptive_ss_binning(source, q.SS_MODE, 10.)
+                extended = q.make_adaptive_ss_binning(source, q.SS_MODE, 10., merge_nonpositive_next=True)
+            next_edge = lambda edges: next(x for x in edges if x > 5.+1e-9)
+            self.assertLess(next_edge(baseline), 7.)
+            self.assertAlmostEqual(next_edge(extended), 7.)
+            # Rebin actual signed yields/errors: the absorbed negative bins
+            # contribute with their signs and full variance, without clipping.
+            first, last = source.FindBin(5.+1e-6), source.FindBin(7.-1e-6)
+            self.assertAlmostEqual(sum(source.GetBinContent(i) for i in range(first, last+1)),
+                                   50.+18.*gap_yield)
+            counts = source.Rebin(len(extended)-1, q._NAMES.unique('ss_lookahead_counts'), array('d', extended))
+            counts.SetDirectory(0)
+            i = counts.FindBin(6.)
+            self.assertAlmostEqual(counts.GetBinContent(i), 50.+18.*gap_yield)
+            self.assertAlmostEqual(counts.GetBinError(i)**2, 20.)
+            self.assertAlmostEqual(counts.Integral(), source.Integral())
+
+    def test_nonpositive_run_stops_at_five_gev_even_if_next_bin_is_still_zero(self):
+        source = self.gap_source(5.2, 12.)
+        with redirect_stdout(io.StringIO()):
+            edges = q.make_adaptive_ss_binning(source, q.SS_MODE, 10., merge_nonpositive_next=True)
+        self.assertAlmostEqual(next(x for x in edges if x > 5.+1e-9), 10.)
+        self.assertEqual(source.GetBinContent(source.FindBin(10.1)), 0.)
+
+    def test_lookahead_stops_at_protected_boundary_before_five_gev(self):
+        source = self.gap_source(18.1, 22.)
+        with redirect_stdout(io.StringIO()):
+            edges = q.make_adaptive_ss_binning(source, q.SS_MODE, 10.,
+                                              protected_edges=(20.,), merge_nonpositive_next=True)
+        self.assertIn(20., edges)
+        self.assertFalse(any(18.1 <= x < 20. for x in edges))
 
 
 if __name__ == '__main__':
