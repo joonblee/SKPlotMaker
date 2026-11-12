@@ -11,10 +11,26 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import ratio_fits as r
+import dy_mc_shape_comparison as dy
 import qcd_ss_fit_range_comparison as ss
 
 
 class RatioFitsTest(unittest.TestCase):
+    def test_dy_reference_defaults_reach_plot_and_matching(self):
+        expected = [11., 13., 15., 17., 19., 22., 26., 40., 70.]
+        self.assertEqual(dy.DEFAULT_MASS_BINS, expected)
+        with patch.object(dy, 'import_root'), \
+             patch.object(dy, 'load_dy_pair', return_value=('b', 'l')), \
+             patch.object(dy, 'match_lightjet', return_value=('scaled', 1.)) as match, \
+             patch.object(dy, 'rebin_hist'), patch.object(dy, 'integral_and_error'), \
+             patch.object(dy, 'scale_to_yield_per_gev'), patch.object(dy, 'draw') as draw:
+            self.assertEqual(dy.main([]), 0)
+            args = draw.call_args.args[1]
+            self.assertEqual((args.xmin, args.xmax), (11., 70.))
+            self.assertEqual(r.fit_range(args), (11., 70.))
+            self.assertEqual(args.normalisation_range, [11., 70.])
+            self.assertEqual(match.call_args.args[-2:], (11., 70.))
+
     def test_linear_solution_and_known_error_covariance(self):
         points = [(x, .5, 2*x-5, 1.) for x in (0., 1., 2., 3.)]
         fit = r.fit_points(points, "linear")

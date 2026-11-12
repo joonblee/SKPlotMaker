@@ -874,8 +874,9 @@ python3 dy_mc_shape_comparison.py --era Run2+3 --logx
 The default is Run2+3: 2016preVFP, 2016postVFP, 2017, 2018, 2022, 2022EE,
 2023 and 2023BPix. Run3 contains only the 2022--2023 eras.
 All era histograms are summed with their stored MC weights **before** multiplying
-LightJet by `integral(BJet) / integral(LightJet)` in 11--80 GeV by default.
-The default displayed range is now 5--80 GeV, with ratio fits in 5--70 GeV.
+LightJet by `integral(BJet) / integral(LightJet)` in 11--70 GeV by default.
+The default displayed and ratio-fit ranges are also 11--70 GeV, matching the
+original DY reference plot.
 For a restricted plot, matching defaults to its overlap with 11--80 GeV;
 `--normalisation-range LOW HIGH` sets an explicit matching interval inside the
 plot. There is no per-era shape normalisation or additional luminosity
@@ -884,9 +885,8 @@ rescaling. Missing era inputs cause an error.
 The upper panel shows event yields per GeV and the lower panel shows
 BJet / scaled LightJet. Errors are finite-MC Sumw2 errors with the matching
 factor held fixed; they exclude total systematic and matching-factor uncertainties.
-The default variable edges in 5--80 GeV match `os_ss_comparison.py`:
-5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10, 11, 11.5, 12, 12.5, 13,
-13.5, 14, 14.5, 15, 16, 17, 18, 19, 20, 21, 23, 25, 30, 35, 40, 50, 60, 70, 80.
+The default DY variable edges are **11, 13, 15, 17, 19, 22, 26, 40, 70 GeV**.
+They are independent of the unchanged OS/SS binning and its 5--80 GeV range.
 These are defined by `DEFAULT_MASS_BINS` in `dy_mc_shape_comparison.py`.
 The script requires
 PyROOT and the shared `ratio_fits.py` helper (no background-estimator imports).
@@ -909,18 +909,20 @@ background. Numerical equations replace the parameter-name listing, with errors
 as superscript symmetric `+/-` values (for example `y = 0.993^{+/-0.004}` and
 `y = (0.00973^{+/-0.002}) x + 0.836^{+/-0.03}`). Chi-square/ndf is shown as
 the evaluated decimal ratio, for example `1.234`, rather than `12.34/10`.
-These appear at the upper right of the ratio panel. A JSON sidecar
+Fit lines and result text are green in both plotters. The transparent result
+box is placed in the upper panel below the process legend, away from the ratio
+points, fits and error bars. A JSON sidecar
 records the selected whole bins, coefficients, covariance and diagnostics.
 Use `--ratio-fits none`, `const` or `linear` to change the displayed fits.
 `--ratio-fit-range LOW HIGH` restricts them without changing the plot range,
 binning or the DY integral-matching interval.
-Default fit intervals are 5--70 GeV for DY and 11--80 GeV for OS/SS,
+Default fit intervals are 11--70 GeV for DY and 11--80 GeV for OS/SS,
 intersected with a restricted plot range. Explicit fit intervals must lie
 inside the plot. OS/SS fits use **QCD MC only**, irrespective of the data
 blinding option; low-mass data points and the existing summaries stay visible.
 
 ```bash
-python3 dy_mc_shape_comparison.py --era Run2+3 --ratio-fit-range 30 80
+python3 dy_mc_shape_comparison.py --era Run2+3 --ratio-fit-range 26 70
 python3 os_ss_comparison.py --era full --blind --ratio-fit-range 11 80
 ```
 
@@ -937,10 +939,12 @@ both panels and adds `_logx` to the output filename.
 
 PDF and PNG are saved under `/data6/Users/joonblee/PlotMaker/plots` by default:
 ```text
-DY_BJet_vs_LightJet_Run2+3_POGMedium_NIsoDimuon_yieldPerGeV_LightJetScaled_m5to80_varBin.{pdf,png}
+DY_BJet_vs_LightJet_Run2+3_POGMedium_NIsoDimuon_yieldPerGeV_LightJetScaled_m11to70_varBin.{pdf,png}
 ```
 Use `--base-dir` to change the input base and `--output-dir` to change the
 plot destination. The same code supports each individual era, Run2 and Run3.
+Already-stored Sumw2 arrays are retained; the plotters allocate them only when
+missing, avoiding duplicate-allocation warnings without changing the errors.
 
 ## SS fit-range comparison
 

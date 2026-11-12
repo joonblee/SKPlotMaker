@@ -105,8 +105,12 @@ def equation(result):
     return "y = (" + number(p["a"], e["a"]) + ") x" + sign + number(abs(p["b"]), e["b"])
 
 
-def draw(ROOT, series):
-    """Draw fits and an upper-right results box; return ROOT keepalive objects."""
+def draw(ROOT, series, results_pad=None):
+    """Draw fits on the current pad and labels on a separate optional pad.
+
+    The comparison plotters supply their upper pad, keeping all result text
+    out of the ratio points/error bars. Colours are shared by lines and text.
+    """
     objects, lines = [], []
     for label, colour, report in series:
         if not report["fits"]:
@@ -143,12 +147,18 @@ def draw(ROOT, series):
                 fn.Draw("SAME")
                 objects.append(fn)
     if lines:
-        box = ROOT.TPaveText(.54, max(.36, .95 - .075*len(lines)), .945, .95, "NDC")
+        if results_pad is not None:
+            results_pad.cd()
+            box = ROOT.TPaveText(.57, .555, .945, .69, "NDC")
+            text_size = .024
+        else:
+            box = ROOT.TPaveText(.54, max(.36, .95 - .075*len(lines)), .945, .95, "NDC")
+            text_size = .05
         box.SetBorderSize(0)
         box.SetFillStyle(0)
         box.SetTextFont(42)
         box.SetTextAlign(12)
-        box.SetTextSize(.05)
+        box.SetTextSize(text_size)
         for colour, line in lines:
             box.AddText(line).SetTextColor(colour)
         box.Draw()

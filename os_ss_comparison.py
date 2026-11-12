@@ -12,8 +12,9 @@ summaries retain the integrated ratios and the existing blinding.
 
 --ratio-fits {none,const,linear,both} adds conditional diagonal-statistical
 fits y=c (dashed) and y=ax+b (solid) to QCD MC only, by default in 11--80 GeV.
-The transparent ratio-panel box shows numerical equations with superscript
-symmetric errors and decimal chi-square/ndf, plus a JSON report.
+Green lines show the fits; a transparent upper-panel box shows matching green
+numerical equations with superscript symmetric errors and decimal
+chi-square/ndf, plus a JSON report. Plot binning and 5--80 GeV range are retained.
 --ratio-fit-range LOW HIGH selects whole bins. Fits exclude 9--11 GeV;
 data points/summaries and their blinding are unchanged. No data ratio is fitted.
 No closure p-value is inferred from these ratio fits.
@@ -67,12 +68,15 @@ def open_hist(ROOT, fn, path, name):
     if not f or f.IsZombie(): raise PlotError(f"Could not open ROOT file: {fn}")
     h = f.Get(path)
     if not h: f.Close(); raise PlotError(f"Missing histogram: {fn}:{path}")
-    out = h.Clone(name); out.SetDirectory(0); out.Sumw2(); f.Close(); return out
+    out = h.Clone(name); out.SetDirectory(0)
+    if int(out.GetSumw2N()) == 0: out.Sumw2()
+    f.Close(); return out
 
 def load(ROOT, args, relfile, sign, prefix):
     reg = region(sign, args); p = hpath(reg, args); hs = []
     for y in years(args.era): hs.append(open_hist(ROOT, os.path.join(edir(args,y),relfile), p, f"{prefix}_{sign}_{y}"))
-    out = hs[0].Clone(f"{prefix}_{sign}_{era_name(args.era)}"); out.SetDirectory(0); out.Sumw2()
+    out = hs[0].Clone(f"{prefix}_{sign}_{era_name(args.era)}"); out.SetDirectory(0)
+    if int(out.GetSumw2N()) == 0: out.Sumw2()
     for h in hs[1:]: out.Add(h)
     return out
 
@@ -93,7 +97,9 @@ def edges(args):
     return e
 
 def rebin(h,e,name):
-    out = h.Rebin(len(e)-1,name,array("d",e)); out.SetDirectory(0); out.Sumw2(); return out
+    out = h.Rebin(len(e)-1,name,array("d",e)); out.SetDirectory(0)
+    if int(out.GetSumw2N()) == 0: out.Sumw2()
+    return out
 
 def integ(h,a,b):
     v=var=0.
@@ -125,7 +131,8 @@ def per_width(h):
         if w>0: h.SetBinContent(i,h.GetBinContent(i)/w); h.SetBinError(i,h.GetBinError(i)/w)
 
 def ratio_hist(num,den,name):
-    out=num.Clone(name); out.SetDirectory(0); out.Reset("ICES"); out.Sumw2()
+    out=num.Clone(name); out.SetDirectory(0); out.Reset("ICES")
+    if int(out.GetSumw2N()) == 0: out.Sumw2()
     for i in range(1,num.GetNbinsX()+1):
         n,en=num.GetBinContent(i),num.GetBinError(i); d,ed=den.GetBinContent(i),den.GetBinError(i)
         if d <= 0: out.SetBinContent(i,-999.); continue
@@ -177,7 +184,7 @@ def main():
     ymin=args.ymin if args.ymin is not None else (max(1e-6,.4*min(pos)) if args.logy and pos else 0.); ymax=args.ymax if args.ymax is not None else maxy*(100 if args.logy else 1.55)
     qos.SetMinimum(ymin); qos.SetMaximum(max(ymax,ymin*10 if args.logy else ymax)); qos.GetYaxis().SetTitle("Events / GeV" if args.divide_by_width else "Events / bin"); qos.GetXaxis().SetRangeUser(args.xmin,args.xmax); qos.GetXaxis().SetLabelSize(0)
     qos.Draw("HIST"); qss.Draw("HIST SAME"); dos.Draw("E1P SAME"); dss.Draw("E1P SAME")
-    leg=ROOT.TLegend(.56,.67,.94,.86); leg.SetBorderSize(0); leg.SetFillStyle(0); leg.AddEntry(qos,"QCD MC, OS","l"); leg.AddEntry(qss,"QCD MC, SS","l"); leg.AddEntry(dos,"Data - nonQCD BKG, OS","lep"); leg.AddEntry(dss,"Data - nonQCD BKG, SS","lep"); leg.Draw()
+    leg=ROOT.TLegend(.56,.71,.94,.88); leg.SetBorderSize(0); leg.SetFillStyle(0); leg.AddEntry(qos,"QCD MC, OS","l"); leg.AddEntry(qss,"QCD MC, SS","l"); leg.AddEntry(dos,"Data - nonQCD BKG, OS","lep"); leg.AddEntry(dss,"Data - nonQCD BKG, SS","lep"); leg.Draw()
     tx=ROOT.TLatex(); tx.SetNDC(); tx.SetTextFont(42); tx.SetTextSize(.047); tx.DrawLatex(.12,.925,"#bf{CMS} #it{Preliminary}"); tx.SetTextAlign(31); tx.SetTextSize(.038); tx.DrawLatex(.95,.925,lumi_label(args.era)); tx.SetTextAlign(11); tx.SetTextSize(.035); tx.DrawLatex(.15,.8,"BJet category: OS vs SS")
     box=ROOT.TPaveText(.12,.07,.8,.45,"NDC"); box.SetBorderSize(0); box.SetFillStyle(0); box.SetTextAlign(12); box.SetTextSize(.03); box.AddText("OS/SS summaries"); box.AddText("5<m_{#mu#mu}<9:"); box.AddText(f"  QCD MC = {fmt(qlow)}"); box.AddText(f"  Data = {fmt(dlow)}"); box.AddText("11<m_{#mu#mu}<80 (QCD: equal mean):"); box.AddText(f"  QCD MC = {fmt(qhigh)}"); box.AddText(f"  Data (integrated) = blinded" if args.blind else f"  Data (integrated) = {fmt(dhigh)}"); box.Draw()
     lo.cd(); qr=ratio_hist(qos,qss,"qr"); dr=ratio_hist(dos,dss,"dr"); qr.SetLineColor(ROOT.kRed+1); qr.SetMarkerColor(ROOT.kRed+1); qr.SetMarkerStyle(20); dr.SetMarkerColor(ROOT.kBlack); dr.SetLineColor(ROOT.kBlack); dr.SetMarkerStyle(20)
@@ -195,10 +202,11 @@ def main():
         qcd_ratio_lines.append(reference)
     qr.Draw("E1P SAME"); dr.Draw("E1P SAME"); lo.SetGridy()
     fit_series = [
-        ("QCD MC", ROOT.kRed+1, ratio_fits.analyse(
+        ("QCD MC", ROOT.kGreen+2, ratio_fits.analyse(
             ratio_fits.histogram_points(qr), args, excluded=((9., 11.),))),
     ]
-    fit_objects = ratio_fits.draw(ROOT, fit_series)
+    fit_objects = ratio_fits.draw(ROOT, fit_series, results_pad=up)
+    lo.cd()
     #rleg=ROOT.TLegend(.58,.74,.94,.94); rleg.SetBorderSize(0); rleg.SetFillStyle(0); rleg.SetTextSize(.075); rleg.AddEntry(qr,"QCD MC","lep"); rleg.AddEntry(dr,"Data - nonQCD MC","lep"); rleg.Draw()
     out=Path(args.output_dir); out.mkdir(parents=True,exist_ok=True); tag="Blind" if args.blind else "Unblind"; tag += "_LogX" if args.logx else ""; tag += "_LogY" if args.logy else ""; base=f"OS_SS_Comparison_{era_name(args.era)}_BJet_QCDMC_DataMinusNonQCDMC_{tag}"
     for ext in [x.strip().lstrip('.') for x in args.extensions.split(',') if x.strip()]: c.SaveAs(str(out/f"{base}.{ext}")); print("[SAVED]",out/f"{base}.{ext}")

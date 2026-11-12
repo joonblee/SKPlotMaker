@@ -2,7 +2,7 @@
 """Compare BJet and LightJet dimuon-mass shapes using only nominal NLO DY MC.
 
 Default: sum 2016preVFP, 2016postVFP, 2017, 2018, 2022, 2022EE,
-2023 and 2023BPix, then match the LightJet integral to BJet in 11--80 GeV.
+2023 and 2023BPix, then match the LightJet integral to BJet in 11--70 GeV.
 Stored MC event weights are retained: eras are summed before matching, with
 no extra luminosity rescaling and no per-era shape normalisation.
 
@@ -14,10 +14,11 @@ or a closure-test p-value.
 The ratio panel fits y=c (dashed) and y=ax+b (solid), using diagonal statistical
 errors with the matching factor fixed. Use --ratio-fits none to hide them or
 --ratio-fit-range LOW HIGH to restrict the fit to whole bins in that range.
-Default plot range: 5--80 GeV, with the same variable edges as the OS/SS
-comparison. Ratio fits use 5--70 GeV. Integral matching remains in the overlap
-of 11--80 GeV and the plot; --normalisation-range LOW HIGH overrides it.
-Fit equations/errors and decimal chi-square/ndf use a transparent results box.
+Default mass edges: 11, 13, 15, 17, 19, 22, 26, 40, 70 GeV, matching the
+reference DY plot. Default plot, ratio-fit and integral-matching ranges are
+11--70 GeV. --normalisation-range LOW HIGH overrides integral matching.
+Fit lines are green; numerical equations/errors and decimal chi-square/ndf
+appear in a transparent, consistently coloured box in the upper panel.
 
 Examples:
   python3 dy_mc_shape_comparison.py
@@ -59,10 +60,7 @@ PLOT_DIR = "/data6/Users/joonblee/PlotMaker/plots"
 DY_AMC_DEFAULT_FILE = "NIsoMuon_DYJets_Inclusive.root"
 
 DEFAULT_MASS_BINS = [
-    0., 5., 5.5, 6., 6.5, 7., 7.5, 8., 8.5, 9., 9.5, 10., 11.,
-    11.5, 12., 12.5, 13., 13.5, 14., 14.5, 15.,
-    16., 17., 18., 19., 20., 21., 23., 25., 30., 35., 40.,
-    50., 60., 70., 80., 90., 100., 110., 150.
+    11., 13., 15., 17., 19., 22., 26., 40., 70.
 ]
 
 LUMI_FB = {
@@ -129,7 +127,8 @@ def import_root():
 def clone_hist(hist, name: str):
     out = hist.Clone(name)
     out.SetDirectory(0)
-    out.Sumw2()
+    if int(out.GetSumw2N()) == 0:
+        out.Sumw2()
     return out
 
 
@@ -228,7 +227,8 @@ def rebin_hist(hist, name, args):
     if not out:
         raise ValueError(f"Could not rebin {hist.GetName()}")
     out.SetDirectory(0)
-    out.Sumw2()
+    if int(out.GetSumw2N()) == 0:
+        out.Sumw2()
     return out
 
 
@@ -375,7 +375,7 @@ def draw(ROOT, args, b_hist, l_hist, factor):
     line.Draw("HIST SAME")
     b_hist.Draw("E1 SAME")
 
-    legend = ROOT.TLegend(0.49, 0.66, 0.94, 0.83)
+    legend = ROOT.TLegend(0.49, 0.71, 0.94, 0.83)
     legend.SetBorderSize(0)
     legend.SetFillStyle(0)
     legend.SetTextFont(42)
@@ -429,7 +429,8 @@ def draw(ROOT, args, b_hist, l_hist, factor):
     ratio.Draw("PE SAME")
     fit_series = [("DY MC", ROOT.kGreen + 2, ratio_fits.analyse(
         ratio_points(b_hist, l_hist, args.xmin, args.xmax), args))]
-    fit_objects = ratio_fits.draw(ROOT, fit_series)
+    fit_objects = ratio_fits.draw(ROOT, fit_series, results_pad=upper)
+    lower.cd()
     lower.RedrawAxis()
     upper.cd()
     upper.RedrawAxis()
@@ -465,8 +466,8 @@ def build_parser():
     parser.add_argument("--era", choices=VALID_ERAS, default="Run2+3")
     parser.add_argument("--base-dir", default=DEFAULT_BASE_DIR)
     parser.add_argument("--output-dir", default=PLOT_DIR)
-    parser.add_argument("--xmin", type=float, help="Lower mass bound (default: 5 GeV or first custom edge)")
-    parser.add_argument("--xmax", type=float, help="Upper mass bound (default: 80 GeV or last custom edge)")
+    parser.add_argument("--xmin", type=float, help="Lower mass bound (default: 11 GeV or first custom edge)")
+    parser.add_argument("--xmax", type=float, help="Upper mass bound (default: 70 GeV or last custom edge)")
     binning = parser.add_mutually_exclusive_group()
     binning.add_argument(
         "--rebin", type=int, default=0,
@@ -480,7 +481,7 @@ def build_parser():
     parser.add_argument("--ratio-max", type=float, default=2.0)
     parser.add_argument("--normalisation-range", type=float, nargs=2, metavar=("LOW", "HIGH"),
                         help="Integral-matching interval; default: overlap of plot with 11--80 GeV")
-    ratio_fits.add_arguments(parser, default_range=(5., 70.))
+    ratio_fits.add_arguments(parser, default_range=(11., 70.))
     return parser
 
 
@@ -494,9 +495,9 @@ def main(argv=None):
     ):
         parser.error("--bin-edges requires at least two finite, increasing edges")
     if args.xmin is None:
-        args.xmin = edges[0] if edges is not None else 5.0
+        args.xmin = edges[0] if edges is not None else 11.0
     if args.xmax is None:
-        args.xmax = edges[-1] if edges is not None else 80.0
+        args.xmax = edges[-1] if edges is not None else 70.0
     if edges is not None and (args.xmin != edges[0] or args.xmax != edges[-1]):
         parser.error("--xmin and --xmax must match the first and last custom bin edges")
     if not (math.isfinite(args.xmin) and math.isfinite(args.xmax)
@@ -531,7 +532,7 @@ def main(argv=None):
     integral_and_error(l_plot, *args.normalisation_range)
     for hist in (b_plot, l_plot):
         scale_to_yield_per_gev(hist)
-    print("[ERRORS] Finite-MC Sumw2 only; integral-matching factor held fixed")
+    print("[STATISTICS] Finite-MC Sumw2 only; integral-matching factor held fixed")
     draw(ROOT, args, b_plot, l_plot, factor)
     return 0
 
