@@ -3,9 +3,9 @@
 
 """BJet OS/SS overlay: QCD MC vs Data - nonQCD BKG.
 
-The ratio panel includes separate QCD MC OS/SS reference lines. The 5 < m < 9
-GeV line uses the integrated ratio; the 11 < m < 80 GeV line uses the equal
-mean of the integrated 11--30 and 30--80 GeV ratios. Statistical errors for the
+The upper-panel QCD MC OS/SS summaries use the integrated 5--9 GeV ratio and
+the equal mean of the integrated 11--30 and 30--80 GeV ratios. No red horizontal
+reference lines are drawn in the ratio panel. Statistical errors for the
 mean are combined in quadrature for the disjoint regions. These summaries use
 the original weighted yields before rebinning or bin-width normalisation. Data
 summaries retain the integrated ratios and the existing blinding.
@@ -191,16 +191,6 @@ def main():
     lo.cd(); qr=ratio_hist(qos,qss,"qr"); dr=ratio_hist(dos,dss,"dr"); qr.SetLineColor(ROOT.kRed+1); qr.SetMarkerColor(ROOT.kRed+1); qr.SetMarkerStyle(20); dr.SetMarkerColor(ROOT.kBlack); dr.SetLineColor(ROOT.kBlack); dr.SetMarkerStyle(20)
     qr.GetYaxis().SetRangeUser(args.ratio_min,args.ratio_max); qr.GetYaxis().SetTitle("OS / SS"); qr.GetYaxis().SetTitleSize(.11); qr.GetYaxis().SetTitleOffset(.50); qr.GetYaxis().SetLabelSize(.09); qr.GetYaxis().SetNdivisions(505); qr.GetXaxis().SetTitle("m_{#mu#mu} [GeV]"); qr.GetXaxis().SetTitleSize(.13); qr.GetXaxis().SetLabelSize(.10); qr.GetXaxis().SetRangeUser(args.xmin,args.xmax)
     qr.Draw("E1P"); dr.Draw("E1P SAME"); line=ROOT.TLine(args.xmin,1,args.xmax,1); line.SetLineStyle(2); line.SetLineColor(ROOT.kGray+2); line.Draw("SAME")
-    # Keep separate ROOT objects alive through SaveAs; leave 9--11 GeV empty.
-    qcd_ratio_lines = []
-    for low, high, (value, _) in ((5., 9., qlow), (11., 80., qhigh)):
-        left, right = max(low, args.xmin), min(high, args.xmax)
-        if left >= right or not math.isfinite(value):
-            continue
-        reference = ROOT.TLine(left, value, right, value)
-        reference.SetLineColor(ROOT.kRed+1); reference.SetLineStyle(7); reference.SetLineWidth(3)
-        reference.Draw("SAME")
-        qcd_ratio_lines.append(reference)
     qr.Draw("E1P SAME"); dr.Draw("E1P SAME"); lo.SetGridy()
     fit_series = [
         ("QCD MC", ROOT.kGreen+2, ratio_fits.analyse(

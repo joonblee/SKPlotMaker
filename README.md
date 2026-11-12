@@ -928,6 +928,8 @@ Default fit intervals are 11--70 GeV for DY and 11--80 GeV for OS/SS,
 intersected with a restricted plot range. Explicit fit intervals must lie
 inside the plot. OS/SS fits use **QCD MC only**, irrespective of the data
 blinding option; low-mass data points and the existing summaries stay visible.
+The old red horizontal OS/SS reference lines are omitted; the grey unity
+reference and green constant/linear fits are retained.
 
 ```bash
 python3 dy_mc_shape_comparison.py --era Run2+3 --ratio-fit-range 26 70
