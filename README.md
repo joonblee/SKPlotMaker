@@ -1089,10 +1089,18 @@ bin-averaged prediction from the JSON, rather than its centre-point value.
 Negative data ratios are retained in the derived values. The three fits use
 the same data: no independent denominator uncertainty is added in quadrature.
 These are conditional comparison bands, not statistical confidence intervals.
-The ratio viewport defaults to **linear 0--5**; `--ratio-min` and `--ratio-max` adjust it
+The ratio viewport defaults to **linear 0--2**; `--ratio-min` and `--ratio-max` adjust it
 without changing any prediction. Nonpositive reference values are omitted
 from the ratio. All ratio values are derived from saved results, so
 `--plot-json` also produces both panels without refitting or changing JSON.
+
+A small inset at the top right of the ratio panel shows the same three curves,
+functional envelopes and data over **20--80 GeV**, with a **logarithmic y axis
+from ratio 1 to 1000**. It shares the main x-axis scale. The inset uses the full
+saved high-mass range, independently of the main viewport's `--xmax` and ratio
+bounds. Signed band endpoints are clipped only for this positive log viewport;
+nonpositive data points cannot be shown on its log axis. Physical predictions,
+errors and JSON remain unchanged. Use `--no-ratio-inset` to hide it.
 
 `--ratio-scale hybrid` keeps physical ratios through **1.5 linear**, then uses
 a logarithmic display above 1.5. The two sections meet continuously; tick labels

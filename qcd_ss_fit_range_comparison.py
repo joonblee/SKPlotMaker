@@ -26,7 +26,10 @@ The reference/envelope note is inside the upper panel. Its transparent legend
 is compact and aligned near the right frame edge; no canvas footer is drawn.
 Canvas proportions match the DY/OS-SS comparison plots, with no extra bottom
 strip. Axis titles use one pixel font size across both panels; legend text is
-enlarged. Ratio default: linear 0--5. --ratio-scale hybrid keeps ratios <=1.5
+enlarged. Ratio default: linear 0--2, with a top-right inset showing 20--80 GeV
+and physical ratios 1--1000 on a logarithmic y axis. It uses the same curves,
+functional bands and data, with display clipping only. --no-ratio-inset hides it.
+--ratio-scale hybrid keeps ratios <=1.5
 linear and compresses larger values logarithmically, with physical-value ticks.
 Its upper bound is automatic unless --ratio-max is specified. Display options
 never change the saved fits, envelopes or JSON.
@@ -92,9 +95,11 @@ def build_parser():
                         help="Displayed upper mass bound only, 5 < xmax <= 80 (default: 80 GeV)")
     parser.add_argument("--ratio-min", type=float, default=0., help="Lower ratio-panel bound (default: 0)")
     parser.add_argument("--ratio-max", type=float,
-                        help="Upper physical ratio bound (default: 5 for linear; automatic for hybrid)")
+                        help="Upper physical ratio bound (default: 2 for linear; automatic for hybrid)")
     parser.add_argument("--ratio-scale", choices=("linear", "hybrid"), default="linear",
                         help="Linear ratio axis (default), or linear through 1.5 then logarithmic")
+    parser.add_argument("--no-ratio-inset", dest="ratio_inset", action="store_false", default=True,
+                        help="Hide the default 20--80 GeV, ratio 1--1000 log-y inset")
     xscale = parser.add_mutually_exclusive_group()
     xscale.add_argument("--logx", dest="logx", action="store_true", help="Logarithmic x axis (default)")
     xscale.add_argument("--linear-x", dest="logx", action="store_false", help="Linear x axis")
@@ -267,7 +272,7 @@ def ratio_display_max(args, reports, points):
     if args.ratio_max is not None:
         return args.ratio_max
     if args.ratio_scale == "linear":
-        return 5.
+        return 2.
     values = [5., args.ratio_min+1.]
     values.extend(value for report in reports for x, value in zip(report["x"], report["high"])
                   if 5. <= x <= args.xmax and math.isfinite(value))
@@ -284,6 +289,77 @@ def ratio_display_value(value, scale, upper):
     if scale == "linear" or value <= 1.5:
         return value
     return 1.5 + (math.log(value)-math.log(1.5))/(math.log(upper)-math.log(1.5))
+
+
+def draw_ratio_inset(ROOT, parent, reports, points, logx):
+    """Log-y view of the same physical ratios; never modify their stored values."""
+    parent.cd()
+    inset = ROOT.TPad("ss_ratio_high_mass", "", .54, .66, .94, .945)
+    inset.SetFillColor(ROOT.kWhite)
+    inset.SetFillStyle(1001)
+    inset.SetFrameFillColor(ROOT.kWhite)
+    inset.SetBorderMode(0)
+    inset.SetLeftMargin(.12)
+    inset.SetRightMargin(.035)
+    inset.SetBottomMargin(.24)
+    inset.SetTopMargin(.10)
+    inset.SetLogx(logx)
+    inset.SetLogy()
+    inset.SetTicks(1, 1)
+    inset.Draw()
+    inset.cd()
+    frame = inset.DrawFrame(20., 1., 80., 1000.)
+    frame.SetTitle("")
+    for axis in (frame.GetXaxis(), frame.GetYaxis()):
+        axis.SetTitle("")
+        axis.SetLabelFont(43)
+        axis.SetLabelSize(13)
+        axis.SetNdivisions(505)
+    frame.GetXaxis().SetNoExponent()
+    frame.GetXaxis().SetMoreLogLabels(logx)
+    frame.GetYaxis().SetNoExponent(False)
+    keepalive, curves = [inset, frame], []
+    for report, hex_colour in zip(reports, ("#2166ac", "#d95f02", "#1b9e77")):
+        selected = [i for i, x in enumerate(report["x"]) if 20. <= x <= 80.]
+        if not selected:
+            continue
+        colour = ROOT.TColor.GetColor(hex_colour)
+        n = len(selected)
+        band, curve = ROOT.TGraph(2*n), ROOT.TGraph(n)
+        for graph in (band, curve):
+            graph.SetBit(ROOT.TGraph.kClipFrame)
+            graph.SetLineColor(colour)
+            graph.SetLineWidth(1)
+        for i, j in enumerate(selected):
+            x = report["x"][j]
+            # Clip signed band endpoints for this log viewport only.
+            band.SetPoint(i, x, min(1000., max(1., report["low"][j])))
+            band.SetPoint(2*n-1-i, x, min(1000., max(1., report["high"][j])))
+            curve.SetPoint(i, x, max(1e-300, report["central"][j]))
+        band.SetFillColorAlpha(colour, .17)
+        band.Draw("F SAME")
+        curves.append(curve)
+        keepalive.extend((band, curve))
+    for curve in curves:
+        curve.Draw("L SAME")
+    data = ROOT.TGraphAsymmErrors()
+    data.SetBit(ROOT.TGraph.kClipFrame)
+    for point in points:
+        if not 20. <= point["x"] <= 80. or point["value"] <= 0.:
+            continue
+        i, value, error = data.GetN(), point["value"], point["error"]
+        data.SetPoint(i, point["x"], value)
+        data.SetPointError(i, point["half_width"], point["half_width"],
+                           min(error, max(0., value-1e-300)), error)
+    data.SetMarkerStyle(20)
+    data.SetMarkerSize(.25)
+    data.SetMarkerColor(ROOT.kBlack)
+    data.SetLineColor(ROOT.kBlack)
+    data.Draw("PZ SAME")
+    keepalive.append(data)
+    inset.RedrawAxis()
+    parent.cd()
+    return keepalive
 
 
 def plot(args, points, reports, stem, ROOT=None):
@@ -527,6 +603,8 @@ def plot(args, points, reports, stem, ROOT=None):
         keepalive.append(note.DrawLatex(.17, .87, "Linear up to 1.5; log above"))
         keepalive.append(note)
     lower.RedrawAxis()
+    if args.ratio_inset:
+        keepalive.extend(draw_ratio_inset(ROOT, lower, ratio_reports, ratio_points, args.logx))
     canvas.cd()
     canvas.Update()
     try:
@@ -581,8 +659,8 @@ def main(argv=None):
     if not math.isfinite(args.ratio_min) or (args.ratio_max is not None and
             (not math.isfinite(args.ratio_max) or args.ratio_min >= args.ratio_max)):
         parser.error("Require finite --ratio-min < --ratio-max")
-    if args.ratio_max is None and args.ratio_scale == "linear" and args.ratio_min >= 5.:
-        parser.error("--ratio-min must be below the default linear maximum of 5")
+    if args.ratio_max is None and args.ratio_scale == "linear" and args.ratio_min >= 2.:
+        parser.error("--ratio-min must be below the default linear maximum of 2")
     if args.ratio_scale == "hybrid" and (args.ratio_min >= 1.5 or
             (args.ratio_max is not None and args.ratio_max <= 1.5)):
         parser.error("Hybrid ratio bounds must straddle 1.5")

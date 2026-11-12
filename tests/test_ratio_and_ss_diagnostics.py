@@ -161,7 +161,8 @@ class SSComparisonTest(unittest.TestCase):
         self.assertEqual(ss.qcd.SS_NOMINAL_MODEL, "power_exp_logistic")
         self.assertEqual(len(ss.qcd.SS_SHAPE_ALTERNATIVES), 5)
         self.assertEqual(args.ratio_scale, 'linear')
-        self.assertEqual(ss.ratio_display_max(args, [], []), 5.)
+        self.assertEqual(ss.ratio_display_max(args, [], []), 2.)
+        self.assertTrue(args.ratio_inset)
 
     def test_hybrid_axis_is_continuous_monotonic_and_keeps_linear_core(self):
         values = [-3., 0., .5, 1., 1.5, 2., 5., 10., 1000.]
@@ -231,6 +232,36 @@ class SSComparisonTest(unittest.TestCase):
                 declare.assert_not_called()
                 fit.assert_not_called()
             self.assertEqual(path.read_bytes(), original)
+
+
+@unittest.skipIf(ROOT is None, 'PyROOT is not installed')
+class SSRatioInsetTest(unittest.TestCase):
+    def test_log_inset_preserves_signed_inputs_and_clips_only_display_band(self):
+        ROOT.gROOT.SetBatch(True)
+        reports = [dict(x=[5., 20., 80.], central=[1., 1., 2.],
+                        low=[-10., -5., -1.], high=[10., 5., 2000.])]
+        points = [dict(x=25., half_width=1., value=-2., error=3.),
+                  dict(x=50., half_width=2., value=.5, error=2.)]
+        original = copy.deepcopy((reports, points))
+        canvas = ROOT.TCanvas('ss_inset_test', '', 600, 600)
+        try:
+            objects = ss.draw_ratio_inset(ROOT, canvas, reports, points, True)
+            inset, frame = objects[:2]
+            self.assertEqual(inset.GetLogy(), 1)
+            self.assertAlmostEqual(frame.GetXaxis().GetXmin(), 20.)
+            self.assertAlmostEqual(frame.GetXaxis().GetXmax(), 80.)
+            self.assertAlmostEqual(frame.GetMinimum(), 1.)
+            self.assertAlmostEqual(frame.GetMaximum(), 1000.)
+            bands = [obj for obj in objects if obj.InheritsFrom('TGraph') and obj.GetN() == 4]
+            self.assertEqual(len(bands), 1)
+            self.assertEqual([bands[0].GetPointY(i) for i in range(4)], [1., 1., 1000., 5.])
+            data = [obj for obj in objects if obj.InheritsFrom('TGraphAsymmErrors')][0]
+            self.assertEqual(data.GetN(), 1)
+            self.assertEqual(data.GetPointY(0), .5)
+            self.assertGreaterEqual(data.GetErrorYlow(0), 0.)
+            self.assertEqual((reports, points), original)
+        finally:
+            canvas.Close()
 
 
 @unittest.skipIf(ROOT is None, 'PyROOT is not installed')
