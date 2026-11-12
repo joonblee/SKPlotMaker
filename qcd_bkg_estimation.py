@@ -87,12 +87,15 @@ Fit modes and objectives
       ROOT bin edges and are protected before adaptive merging and --rebin.
       Custom ranges save separate PDF/PNG and held-out MC comparison JSON;
       ratio grey bands show MC statistics only, without fit uncertainty.
-      MC chi2 fits of Power x Exp x ERF/Logistic add the one-sided soft
-      constraint [max(0,1-n)/0.2]^2 to the objective by default. This does not
+      All MC objectives for Power x Exp x ERF/Logistic use the one-sided soft
+      constraint P=[max(0,1-n)/0.2]^2 by default: chi2+P, log-chi2+P, or
+      weighted NLL+P/2. Weighted covariance uses ROOT's weight correction,
+      with the independent constraint included once in both Hessians. This does not
       change the existing n bounds or guarantee n>=1. Use
       --power-exp-n-soft-width WIDTH to vary its strength, or 0 to disable it.
-      SS data and explicit log-chi2/weighted-likelihood fits remain unchanged.
-      Plot chi2/ndf is data-only; logs/JSON store data chi2, penalty and total
+      SS data fits remain unchanged.
+      Every plot shows the ordinary data chi2/ndf, regardless of fit objective;
+      logs/JSON store the actual data objective, penalty and total
       separately. Enabled outputs have an -Nsoft1wWIDTH suffix.
 All fit plots draw points like qcd_ss_fit_range_comparison.py: a black
 TGraphAsymmErrors with marker 20, size 0.5, horizontal half-bin widths,
@@ -124,7 +127,7 @@ Main optional controls
   --mc-max-bin-width GEV           base adaptive width cap, default: 5; MC only
   --mc-fit-range LOW HIGH          default: 5 80; MC only
   --mc-plot-range LOW HIGH         default: 5 80; MC only
-  --power-exp-n-soft-width WIDTH   MC chi2: default 0.2; 0 disables
+  --power-exp-n-soft-width WIDTH   all MC objectives: default 0.2; 0 disables
   --transfer-method {run-common,era-specific,data-low}
       --qcd-transfer-method and mc-double-ratio remain compatibility aliases
   --data-period {F,G,H}           2016postVFP SS-only period diagnostic;
@@ -245,6 +248,7 @@ with the production central integral guard against frozen or truncated copies.
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
 import datetime
 import glob
@@ -585,6 +589,7 @@ class FitData:
     n_points: int
     keepalive: List[object] = field(default_factory=list)
     power_exp_n_soft_width: float = 0.0
+    bin_edges: List[float] = field(default_factory=list)
 
 
 @dataclass
@@ -599,6 +604,7 @@ class FitDiagnostics:
     boundary_parameters: List[str] = field(default_factory=list)
     data_objective_value: float = math.inf
     penalty_value: float = 0.0
+    penalty_chi2: float = 0.0
     power_exp_n_soft_width: float = 0.0
 
     @property
@@ -613,7 +619,8 @@ class FitDiagnostics:
         # covariance matrix had to be made positive definite.  This affects
         # parameter-error/correlation reliability, not necessarily the central
         # fitted shape.  CovMatrixStatus=2 carries the same warning.
-        return self.status == 1 and self.covariance_status >= 2
+        return ((self.status == 1 and self.covariance_status >= 2)
+                or (self.status == 0 and self.covariance_status == 2))
 
     @property
     def accepted(self) -> bool:
@@ -878,6 +885,9 @@ CPP_FIT_FUNCTIONS = r"""
 #include <TFitResult.h>
 #include <TFitResultPtr.h>
 #include <Fit/Fitter.h>
+#include <Math/Functor.h>
+#include <Math/Minimizer.h>
+#include <Math/Util.h>
 #include <TMath.h>
 #include <algorithm>
 #include <cmath>
@@ -1084,51 +1094,129 @@ namespace BkgFitFnVariationPy {
     return pull*pull;
   }
 
-  TFitResultPtr FitPowerExpSoftChi2(TF1 *function, int model,
+  class OwnedObjectiveFitter : public ROOT::Fit::Fitter {
+  public:
+    bool FitOwned(const ROOT::Math::IMultiGenFunction &fcn, unsigned int npoints, int fitType) {
+      // The external-FCN overload caches a pointer that takes precedence over
+      // the squared-weight FCN in ApplyWeightCorrection. Own a clone instead,
+      // so the Hessian correction actually switches objective functions.
+      return DoSetFCN(false, fcn, nullptr, npoints, fitType) && FitFCN();
+    }
+  };
+
+  class SoftObjectiveFitResult : public TFitResult {
+  public:
+    SoftObjectiveFitResult(const ROOT::Fit::FitResult &result,
+                          bool corrected=true, int weightCovStatus=3) : TFitResult(result) {
+      corrected = corrected && std::all_of(fErrors.begin(), fErrors.end(),
+          [](double x) { return std::isfinite(x); })
+          && std::all_of(fCovMatrix.begin(), fCovMatrix.end(),
+          [](double x) { return std::isfinite(x); });
+      if (!corrected || weightCovStatus <= 0) {
+        fValid = false;
+        fStatus = 1000 + std::max(0, fStatus);
+        fCovStatus = 0;
+      } else {
+        fCovStatus = std::min(fCovStatus, weightCovStatus);
+      }
+    }
+  };
+
+  TFitResultPtr FitPowerExpSoftObjective(TF1 *function, int model,
       const std::vector<double>& low, const std::vector<double>& high,
       const std::vector<double>& value, const std::vector<double>& error,
-      double width) {
+      double width, int kind) {
+    // kind: 0 = chi2, 1 = weighted NLL, 2 = log-chi2.
     // A single penalty belongs to the objective, never to the mass prediction
-    // or to each data bin. These are the same bin averages as the MC TF1 path.
-    auto objective = [&](const double *p) {
+    // or to each data bin. Reuse the existing bin integrals/averages exactly.
+    const bool likelihood = kind == 1;
+    double sumY=0., sumError2=0.;
+    for (std::size_t i=0; i<value.size(); ++i) {
+      sumY += value[i];
+      // BinData::SumOfError2 ignores empty bins even when AdjustError sets 1.
+      if (value[i] > 0.) sumError2 += error[i]*error[i];
+    }
+    const double averageWeight = sumY > 0. ? sumError2/sumY : 1.;
+    auto evaluate = [=](const double *p, bool squaredWeights) {
       double physical[5];
       std::copy(p, p+5, physical);
-      double chi2 = 0.;
+      double dataObjective = 0.;
       for (std::size_t i=0; i<value.size(); ++i) {
-        const double prediction = std::max(1e-300,
-            IntegrateDensity(model, low[i], high[i], physical)/(high[i]-low[i]));
-        const double pull = (prediction-value[i])/error[i];
-        chi2 += pull*pull;
+        const double integral = IntegrateDensity(model, low[i], high[i], physical);
+        double prediction = std::max(1e-300, likelihood ? integral : integral/(high[i]-low[i]));
+        if (likelihood) {
+          // ROOT FitUtil::EvaluatePoissonLogL: ordinary weighted counts for
+          // the central NLL, squared weights only for the covariance Hessian.
+          const double y = value[i];
+          if (squaredWeights) {
+            const double weight = y > 0. ? error[i]*error[i]/y : averageWeight;
+            dataObjective += weight*(prediction-y);
+            if (y > 0.) dataObjective -= weight*y*ROOT::Math::Util::EvalLog(prediction/y);
+          } else {
+            dataObjective += prediction-y;
+            if (y > 0.) dataObjective += y*(ROOT::Math::Util::EvalLog(y)-ROOT::Math::Util::EvalLog(prediction));
+          }
+        } else {
+          if (kind == 2) prediction = std::log(prediction);
+          const double pull = (prediction-value[i])/error[i];
+          dataObjective += pull*pull;
+        }
       }
-      const double total = chi2 + PowerExpNPenalty(p[1], width);
+      // The independent constraint is never multiplied by event weights.
+      const double total = dataObjective + (likelihood ? .5 : 1.)*PowerExpNPenalty(p[1], width);
       return std::isfinite(total) ? total : 1e300;
     };
-    ROOT::Fit::Fitter fitter;
     const int npar = function->GetNpar();
+    ROOT::Math::Functor objective([=](const double *p) { return evaluate(p, false); }, npar);
+    OwnedObjectiveFitter fitter;
     fitter.Config().SetParamsSettings(npar, function->GetParameters());
     fitter.Config().SetMinimizer("Minuit2", "Migrad");
-    fitter.Config().MinimizerOptions().SetErrorDef(1.);
+    fitter.Config().MinimizerOptions().SetErrorDef(likelihood ? .5 : 1.);
     fitter.Config().MinimizerOptions().SetPrintLevel(0);
     for (int i=0; i<npar; ++i) {
       auto &setting = fitter.Config().ParSettings(i);
       double lower=0., upper=0.;
       function->GetParLimits(i, lower, upper);
       setting.SetName(function->GetParName(i));
-      setting.SetStepSize(std::max(std::abs(function->GetParError(i)),
-          1e-6*std::max(1., std::abs(function->GetParameter(i)))));
+      const double fallbackStep = 1e-6*std::max(1., std::abs(function->GetParameter(i)));
+      const double previousStep = std::abs(function->GetParError(i));
+      setting.SetStepSize(std::isfinite(previousStep) ? std::max(previousStep, fallbackStep) : fallbackStep);
       // TF1 uses nonzero equal limits for fixed parameters, including fixed 0.
       if (lower >= upper && (lower != 0. || upper != 0.)) setting.Fix();
       else if (lower < upper) setting.SetLimits(lower, upper);
     }
     // ndf counts actual data bins and free parameters; the penalty is not an
-    // extra observed data point. MinFcnValue retains data chi2 + penalty.
-    fitter.FitFCN(npar, objective, nullptr, value.size(), 1);
+    // extra observed data point. MinFcnValue retains the actual total objective.
+    fitter.FitOwned(objective, value.size(), likelihood ? 3 : 1);
+    bool corrected = true;
+    int weightCovStatus = 3;
+    if (likelihood) {
+      ROOT::Math::Functor squaredObjective([=](const double *p) { return evaluate(p, true); }, npar);
+      // F_w2+P/2 is not stationary at the original minimum in general. Compute
+      // its Hessian in physical coordinates: a bounded Minuit transform would
+      // otherwise add gradient-dependent terms. FitResult keeps the original
+      // fit bounds; this affects only the Hessian calculation, without refitting.
+      for (int i=0; i<npar; ++i) {
+        auto &setting = fitter.Config().ParSettings(i);
+        if (!setting.IsFixed()) setting.RemoveLimits();
+      }
+      // C = H_total^-1 H_(weights^2+constraint) H_total^-1. Do not refit the
+      // squared-weight objective: it is evaluated at the original minimum.
+      corrected = fitter.ApplyWeightCorrection(squaredObjective, false);
+      weightCovStatus = fitter.GetMinimizer() ? fitter.GetMinimizer()->CovMatrixStatus() : 0;
+    }
     const auto &result = fitter.Result();
     for (int i=0; i<npar; ++i) {
       function->SetParameter(i, result.Parameter(i));
       function->SetParError(i, result.Error(i));
     }
-    return TFitResultPtr(new TFitResult(result));
+    return TFitResultPtr(new SoftObjectiveFitResult(result, corrected, weightCovStatus));
+  }
+
+  TFitResultPtr FitPowerExpSoftChi2(TF1 *function, int model,
+      const std::vector<double>& low, const std::vector<double>& high,
+      const std::vector<double>& value, const std::vector<double>& error, double width) {
+    return FitPowerExpSoftObjective(function, model, low, high, value, error, width, 0);
   }
 }
 """
@@ -1279,8 +1367,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fit-max-attempts", type=positive_integer, default=30)
     parser.add_argument(
         "--power-exp-n-soft-width", type=float,
-        help=("MC chi2 only: add [max(0,1-n)/WIDTH]^2 once to the Power x Exp objective. "
-              "Default: 0.2 for MC chi2; off for SS data/other objectives. 0 disables; smaller is stronger."),
+        help=("MC Power x Exp soft constraint P=[max(0,1-n)/WIDTH]^2: chi2+P, log-chi2+P, "
+              "weighted NLL+P/2. Default: 0.2 for all MC objectives; off for SS data. 0 disables; smaller is stronger."),
     )
     parser.add_argument("--fit-attempt-details", action="store_true")
     parser.add_argument(
@@ -1348,11 +1436,11 @@ def resolve_objective(requested: str, mode: ModeConfig) -> str:
 def resolve_power_exp_n_soft_width(args, mode: ModeConfig, objective: str) -> float:
     width = getattr(args, "power_exp_n_soft_width", None)
     if width is None:
-        return .2 if mode.key == QCD_MODE.key and objective == "chi2" else 0.
+        return .2 if mode.key == QCD_MODE.key else 0.
     if not math.isfinite(width) or width < 0.:
         raise ValueError("--power-exp-n-soft-width must be finite and nonnegative; 0 disables")
-    if width > 0. and (mode.key != QCD_MODE.key or objective != "chi2"):
-        raise ValueError("--power-exp-n-soft-width > 0 requires --mode qcd-mc with chi2 objective")
+    if width > 0. and mode.key != QCD_MODE.key:
+        raise ValueError("--power-exp-n-soft-width > 0 requires --mode qcd-mc")
     return width
 
 
@@ -2076,7 +2164,7 @@ def build_fit_data(ROOT, prepared: PreparedHistograms, mode: ModeConfig, objecti
         return FitData(objective, prepared.counts, "S R WL Q 0 N", n_points)
 
     graph = make_log_graph(ROOT, prepared.density, mode, log_floor)
-    return FitData(objective, graph, "S R Q 0 N", int(graph.GetN()), [graph])
+    return FitData(objective, graph, "S R Q 0 N", int(graph.GetN()), [graph], bin_edges=list(prepared.edges))
 
 
 # =============================================================================
@@ -2540,7 +2628,8 @@ def extract_diagnostics(
     parameters = [float(function.GetParameter(i)) for i in range(model.npar)]
     if model.key in POWER_EXP_MODELS and fit_data.power_exp_n_soft_width > 0.:
         diag.power_exp_n_soft_width = fit_data.power_exp_n_soft_width
-        diag.penalty_value = (max(0., 1.-parameters[1])/diag.power_exp_n_soft_width)**2
+        diag.penalty_chi2 = (max(0., 1.-parameters[1])/diag.power_exp_n_soft_width)**2
+        diag.penalty_value = diag.penalty_chi2*(.5 if fit_data.objective == "weighted-likelihood" else 1.)
     diag.data_objective_value = diag.objective_value-diag.penalty_value
     diag.finite_parameters = all(math.isfinite(x) for x in parameters)
     for index, (name, low, high) in enumerate(shape_bounds(model, constraint), start=1):
@@ -2578,24 +2667,41 @@ def run_objective_fit(ROOT, fit_data: FitData, function, model: FitModelConfig,
     width = fit_data.power_exp_n_soft_width
     if model.key not in POWER_EXP_MODELS or width == 0.:
         return fit_data.data.Fit(function, fit_data.options, "", mode.fit_min, mode.fit_max)
-    if mode.key != QCD_MODE.key or objective != "chi2":
-        raise ValueError("Power x Exp soft constraint currently requires MC chi2")
-    if not hasattr(fit_data, "_soft_chi2_bins"):
+    if mode.key != QCD_MODE.key:
+        raise ValueError("Power x Exp soft constraint requires MC mode")
+    if not hasattr(fit_data, "_soft_objective_bins"):
         vectors = [ROOT.std.vector("double")() for _ in range(4)]
-        hist = fit_data.data
-        for i in range(1, hist.GetNbinsX()+1):
-            low, high = float(hist.GetXaxis().GetBinLowEdge(i)), float(hist.GetXaxis().GetBinUpEdge(i))
-            x = float(hist.GetBinCenter(i))
-            value, error = float(hist.GetBinContent(i)), float(hist.GetBinError(i))
-            if not mode.fit_min <= x <= mode.fit_max or is_excluded(mode, low, high) or error <= 0.:
+        data = fit_data.data
+        if objective == "log-chi2":
+            points = []
+            for i in range(data.GetN()):
+                x = float(data.GetPointX(i))
+                index = bisect.bisect_right(fit_data.bin_edges, x)-1
+                if not 0 <= index < len(fit_data.bin_edges)-1:
+                    raise ValueError("Missing native bin interval for log-chi2 point")
+                low, high = fit_data.bin_edges[index:index+2]
+                points.append((low, high, x, float(data.GetPointY(i)), float(data.GetErrorY(i))))
+        else:
+            points = [(float(data.GetXaxis().GetBinLowEdge(i)), float(data.GetXaxis().GetBinUpEdge(i)),
+                       float(data.GetBinCenter(i)), float(data.GetBinContent(i)), float(data.GetBinError(i)))
+                      for i in range(1, data.GetNbinsX()+1)]
+        for low, high, x, value, error in points:
+            if not mode.fit_min <= x <= mode.fit_max or is_excluded(mode, low, high):
                 continue
             if not math.isfinite(value) or not math.isfinite(error):
-                raise ValueError("Nonfinite MC chi2 input bin")
+                raise ValueError("Nonfinite MC objective input bin")
+            if objective == "weighted-likelihood":
+                if value < 0.:
+                    raise ValueError("Weighted likelihood cannot use negative bins")
+                error = error if error > 0. else 1.  # ROOT HFitInterface::AdjustError with UseEmpty.
+            elif error <= 0.:
+                continue
             for vector, number in zip(vectors, (low, high, value, error)):
                 vector.push_back(number)
-        fit_data._soft_chi2_bins = vectors
-    return ROOT.BkgFitFnVariationPy.FitPowerExpSoftChi2(
-        function, model.cpp_id, *fit_data._soft_chi2_bins, width)
+        fit_data._soft_objective_bins = vectors
+    kind = {"chi2": 0, "weighted-likelihood": 1, "log-chi2": 2}[objective]
+    return ROOT.BkgFitFnVariationPy.FitPowerExpSoftObjective(
+        function, model.cpp_id, *fit_data._soft_objective_bins, width, kind)
 
 
 def run_fit_attempt(
@@ -2833,7 +2939,8 @@ def print_candidate(model: FitModelConfig, candidate: FitCandidate, selected: bo
     print(f"               {format_parameters(candidate.fit_function, model)}")
     if diag.power_exp_n_soft_width > 0.:
         print(f"[SOFT CONSTRAINT] model={model.key} width={diag.power_exp_n_soft_width:g} "
-              f"dataChi2={diag.data_objective_value:.8g} penalty={diag.penalty_value:.8g} "
+              f"dataObjective={diag.data_objective_value:.8g} penalty={diag.penalty_value:.8g} "
+              f"penaltyChi2={diag.penalty_chi2:.8g} "
               f"total={diag.objective_value:.8g}")
 
 
@@ -2898,7 +3005,8 @@ def fit_one_model(
     print(" ".join(quality_parts))
     if selected.diagnostics.covariance_warning_only:
         print(
-            f"[WARNING] {model.label}: Minuit2 status=1 and covariance status=2. "
+            f"[WARNING] {model.label}: Minuit2 status={selected.diagnostics.status} "
+            f"and covariance status={selected.diagnostics.covariance_status}. "
             "The central minimum is retained, but the parameter errors and "
             "correlations should not be interpreted as accurate."
         )
@@ -2953,6 +3061,8 @@ def build_log_prefit_constraint(
 
 
 def selected_fit_rank(selected: SelectedFit, objective: str) -> Tuple[float, ...]:
+    if getattr(selected.diagnostics, "power_exp_n_soft_width", 0.) > 0.:
+        return diagnostics_score(selected.diagnostics)
     if objective == "log-chi2":
         log_metric = selected.metrics.log_chi2_ndf
         stat_metric = selected.metrics.stat_chi2_ndf
@@ -2973,6 +3083,8 @@ def fit_all_models(
     prefit_data: Optional[FitData] = None,
 ):
     fit_data.power_exp_n_soft_width = resolve_power_exp_n_soft_width(args, mode, objective)
+    if prefit_data is not None:
+        prefit_data.power_exp_n_soft_width = fit_data.power_exp_n_soft_width
     colours = (
         ROOT.kBlue + 1, ROOT.kRed + 1, ROOT.kGreen + 2,
         ROOT.kOrange + 7, ROOT.kCyan + 2, ROOT.kViolet + 1,
@@ -3127,7 +3239,7 @@ def objective_metric_for_display(selected: SelectedFit, objective: str) -> Tuple
     if objective == "chi2":
         return "chi2/ndf", selected.metrics.stat_chi2_ndf
     if objective == "weighted-likelihood":
-        value = 2.0 * selected.diagnostics.objective_ndf
+        value = FitMetrics.ratio(2.0*selected.diagnostics.data_objective_value, selected.diagnostics.ndf)
         return "2NLLw/ndf", value
     if objective == "log-chi2":
         return "logChi2/ndf", selected.metrics.log_chi2_ndf
@@ -3135,17 +3247,10 @@ def objective_metric_for_display(selected: SelectedFit, objective: str) -> Tuple
 
 
 def objective_metric_for_plot(selected: SelectedFit, objective: str) -> str:
-    name, value = objective_metric_for_display(selected, objective)
+    """Use the same data statistical chi2/ndf on every fit plot."""
+    value = selected.metrics.stat_chi2_ndf
     if not math.isfinite(value):
-        if objective == "weighted-likelihood":
-            return "2NLL_{w}/ndf = n/a"
-        if objective == "log-chi2":
-            return "#chi^{2}_{log}/ndf = n/a"
         return "#chi^{2}/ndf = n/a"
-    if objective == "weighted-likelihood":
-        return f"2NLL_{{w}}/ndf = {value:.3f}"
-    if objective == "log-chi2":
-        return f"#chi^{{2}}_{{log}}/ndf = {value:.3f}"
     return f"#chi^{{2}}/ndf = {value:.3f}"
 
 
@@ -3324,6 +3429,7 @@ def mc_extrapolation_report(args, mode: ModeConfig, plot_mode: ModeConfig,
             "fit_data_ndf": getattr(getattr(selected, "metrics", None), "stat_ndf", None),
             "data_objective_value": finite(getattr(diag, "data_objective_value", math.nan)),
             "soft_penalty": getattr(diag, "penalty_value", 0.),
+            "soft_penalty_chi2": getattr(diag, "penalty_chi2", 0.),
             "power_exp_n_soft_width": getattr(diag, "power_exp_n_soft_width", 0.),
             "minimised_objective": finite(getattr(diag, "objective_value", math.nan)),
             "held_out_bins": bins, "held_out_chi2": finite(chi2), "held_out_n_bins": n_bins,
@@ -4631,7 +4737,8 @@ def run(args: argparse.Namespace) -> int:
     print(f"[INFO] fit objective   = {objective}")
     if soft_width > 0.:
         print(f"[INFO] Power x Exp soft constraint: [max(0,1-n)/{soft_width:g}]^2; "
-              "existing hard bounds retained; plot chi2/ndf excludes this penalty")
+              f"objective multiplier={.5 if objective == 'weighted-likelihood' else 1.:g}; "
+              "existing hard bounds retained; plot chi2/ndf is data-only")
     if mode.key == QCD_MODE.key:
         anchor_mode = (
             "initial-values-only"
@@ -4727,6 +4834,9 @@ def run(args: argparse.Namespace) -> int:
             report["power_exp_n_soft_constraint"] = {
                 "models": list(POWER_EXP_MODELS), "minimum": 1., "width": soft_width,
                 "enabled": soft_width > 0., "formula": "[max(0,1-n)/width]^2",
+                "objective_multiplier": .5 if objective == "weighted-likelihood" else 1.,
+                "covariance_method": ("ROOT weight-square Hessian correction in physical coordinates; constraint once in each Hessian"
+                                      if objective == "weighted-likelihood" else "penalised objective Hessian"),
                 "plot_quality": "data-only chi2/ndf; no penalty included",
             }
             report["bin_edges"] = prepared.edges

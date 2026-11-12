@@ -143,13 +143,16 @@ weighted effective count 10; SS binning defaults are unchanged. For clarity:
 python3 qcd_bkg_estimation.py --mode qcd-mc --year <ERA> --fit-objective chi2
 ```
 
-MC chi2 Power x Exp fits default to the one-sided objective penalty
-`[max(0,1-n)/0.2]^2`; `--power-exp-n-soft-width 0` disables it. This is MC-only:
-SS production fits and explicit log-chi2/weighted-likelihood fits retain their
-previous behaviour. Preserve the existing exponent bounds, include the penalty
+All MC Power x Exp objectives default to the one-sided penalty
+`P=[max(0,1-n)/0.2]^2`; `--power-exp-n-soft-width 0` disables it. Add `P` to
+chi2/log-chi2 and `P/2` to weighted NLL. This is MC-only: SS production fits
+retain their previous behaviour. Preserve the existing exponent bounds, include the penalty
 once in every fit/transfer/recovery stage, rank candidates by the penalised
 objective, and keep plot chi2/ndf data-only. Logs/JSON must separate the penalty
-from data chi2. Penalised outputs use a width-specific `-Nsoft1w...` suffix.
+from the actual data objective. Preserve ROOT's weighted covariance correction
+with the independent constraint included once in both Hessians; correction
+failures must invalidate the fit. Propagate the width through log-chi2 prefits.
+Penalised outputs use a width-specific `-Nsoft1w...` suffix.
 
 Do not replace the final SS-data QCD prediction with QCD MC unless explicitly requested.
 
@@ -304,7 +307,8 @@ Key rules:
 
 - do not change fit objective, mass range, exclusion region, anchor priority, model envelope, or normalisation prescription silently;
 - current QCD-MC default is bin-error `chi2`; explicit weighted-likelihood and
-  `log-chi2` remain available and must retain their own quality-statistic labels;
+  `log-chi2` retain their actual objective statistics in logs/JSON, while every
+  plot's fit-function annotation displays ordinary data `chi2/ndf`;
 - combined-period anchor behaviour is intentional;
 - preserve per-era output-template behaviour.
 

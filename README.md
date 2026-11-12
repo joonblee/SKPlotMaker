@@ -496,27 +496,34 @@ objective now selects the same bin-error **chi-square** family as the SS fit,
 using MC Sumw2 errors and bin-averaged predictions. Plot quality labels show
 `chi2/ndf`. Weighted likelihood and log-chi-square remain explicit cross-checks
 (`--fit-objective weighted-likelihood` or `--fit-objective log-chi2`), with their
-own correctly labelled quality statistics.
+actual objective statistics retained in logs/JSON. All plot annotations show
+the same ordinary **data `chi2/ndf`**, even when a different objective is fitted.
 
-MC chi2 fits now apply a **one-sided soft constraint** to the exponent `n` in
-the two Power x Exp families (ERF and Logistic):
-`F = chi2_data + [max(0, 1-n)/width]^2`, with default width **0.2**.
+All MC fit objectives apply a **one-sided soft constraint** to the exponent `n`
+in the two Power x Exp families (ERF and Logistic), with default width **0.2**.
+Writing `P = [max(0, 1-n)/width]^2`, the minimised functions are
+`chi2_data + P`, `log_chi2_data + P`, and `NLL_weighted + P/2`, respectively.
 The penalty is zero above 1; it discourages smaller values without forbidding
 them. The existing hard bounds (including `n=0`) and mass predictions are
 unchanged. The penalty is added once to a custom Minuit2 objective, including
 all multistart, ERF-to-Logistic transfer and recovery stages. Candidate selection
 uses the total objective. The plotted `chi2/ndf` contains **data chi2 only**;
 logs and MC JSON record data chi2, penalty and total separately. Covariance
-comes from the penalised objective. This is a regularisation preference, not
+comes from the penalised objective. Weighted likelihood retains ROOT's
+weight-square Hessian covariance correction at the fitted minimum, including
+the independent `P/2` constraint once in each Hessian, without multiplying it
+by event weights. The squared-weight Hessian is evaluated in physical parameter
+coordinates without refitting. A failed correction marks the fit invalid. log-chi2's
+weighted-likelihood prefit uses the same width as its refinement. This is a regularisation preference, not
 an extra measured event or a calibrated goodness-of-fit contribution.
 
 Use `--power-exp-n-soft-width 0.1` for a stronger preference, `0.5` for a weaker
 one, or **`--power-exp-n-soft-width 0`** for the previous unconstrained fit.
 Enabled outputs receive `-Nsoft1w0p2` (or the chosen width) so different choices
 do not overwrite one another. A fit JSON is also saved for full-range MC fits
-when this constraint is enabled. SS fits/production templates and explicitly
-selected log-chi2/weighted-likelihood fits remain unchanged; a positive width
-is supported only for MC chi2.
+when this constraint is enabled. `soft_penalty` is the actual objective
+contribution (`P/2` for NLL); `soft_penalty_chi2` stores `P`. SS fits/production
+templates remain unchanged; a positive width is supported only in MC mode.
 
 ```bash
 for era in Run2 Run3 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix; do
