@@ -1094,13 +1094,19 @@ without changing any prediction. Nonpositive reference values are omitted
 from the ratio. All ratio values are derived from saved results, so
 `--plot-json` also produces both panels without refitting or changing JSON.
 
-A small inset at the top right of the ratio panel shows the same three curves,
+A small inset at the lower left of the upper panel shows the same three curves,
 functional envelopes and data over **20--80 GeV**, with a **logarithmic y axis
-from ratio 1 to 1000**. It shares the main x-axis scale. The inset uses the full
+from ratio 1 to an automatically chosen upper bound covering the highest
+functional band in that interval**. Reference and Bands notes appear above it
+on separate lines. A dashed box marks **20--80 GeV, ratio 0.9--1.9** in the main
+ratio panel, with two connectors to the inset. The box identifies the mass
+region; the inset expands its y range to show the full high-mass bands.
+The box is clipped to the main viewport when custom bounds are used.
+The inset shares the main x-axis scale and uses the full
 saved high-mass range, independently of the main viewport's `--xmax` and ratio
 bounds. Signed band endpoints are clipped only for this positive log viewport;
 nonpositive data points cannot be shown on its log axis. Physical predictions,
-errors and JSON remain unchanged. Use `--no-ratio-inset` to hide it.
+errors and JSON remain unchanged. Use `--no-ratio-inset` to hide it and its callout.
 
 `--ratio-scale hybrid` keeps physical ratios through **1.5 linear**, then uses
 a logarithmic display above 1.5. The two sections meet continuously; tick labels

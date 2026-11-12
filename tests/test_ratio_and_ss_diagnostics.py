@@ -90,6 +90,18 @@ class RatioFitsTest(unittest.TestCase):
 
 
 class SSComparisonTest(unittest.TestCase):
+    def test_callout_coordinates_follow_log_x_and_pad_margins(self):
+        pad = SimpleNamespace(GetAbsXlowNDC=lambda: 0., GetAbsYlowNDC=lambda: 0.,
+                              GetAbsWNDC=lambda: 1., GetAbsHNDC=lambda: .32,
+                              GetLeftMargin=lambda: .14, GetRightMargin=lambda: .05,
+                              GetBottomMargin=lambda: .32, GetTopMargin=lambda: .04)
+        x, y = ss.pad_point_to_canvas(pad, 20., 1.9, 5., 80., 0., 2., True)
+        self.assertAlmostEqual(x, .545)  # 20 is the geometric midpoint of 5--80.
+        self.assertAlmostEqual(y, .29696)
+        x, y = ss.pad_point_to_canvas(pad, 20., 1., 5., 80., 0., 2., False)
+        self.assertAlmostEqual(x, .302)
+        self.assertAlmostEqual(y, .2048)
+
     def test_all_periods_includes_run2_and_run3_and_forwards_options(self):
         with patch.object(ss.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as run, \
              patch('builtins.print'):
@@ -239,7 +251,7 @@ class SSRatioInsetTest(unittest.TestCase):
     def test_log_inset_preserves_signed_inputs_and_clips_only_display_band(self):
         ROOT.gROOT.SetBatch(True)
         reports = [dict(x=[5., 20., 80.], central=[1., 1., 2.],
-                        low=[-10., -5., -1.], high=[10., 5., 2000.])]
+                        low=[-10., -5., -1.], high=[1e8, 5., 2000.])]
         points = [dict(x=25., half_width=1., value=-2., error=3.),
                   dict(x=50., half_width=2., value=.5, error=2.)]
         original = copy.deepcopy((reports, points))
@@ -251,10 +263,10 @@ class SSRatioInsetTest(unittest.TestCase):
             self.assertAlmostEqual(frame.GetXaxis().GetXmin(), 20.)
             self.assertAlmostEqual(frame.GetXaxis().GetXmax(), 80.)
             self.assertAlmostEqual(frame.GetMinimum(), 1.)
-            self.assertAlmostEqual(frame.GetMaximum(), 1000.)
+            self.assertAlmostEqual(frame.GetMaximum(), 2000.)
             bands = [obj for obj in objects if obj.InheritsFrom('TGraph') and obj.GetN() == 4]
             self.assertEqual(len(bands), 1)
-            self.assertEqual([bands[0].GetPointY(i) for i in range(4)], [1., 1., 1000., 5.])
+            self.assertEqual([bands[0].GetPointY(i) for i in range(4)], [1., 1., 2000., 5.])
             data = [obj for obj in objects if obj.InheritsFrom('TGraphAsymmErrors')][0]
             self.assertEqual(data.GetN(), 1)
             self.assertEqual(data.GetPointY(0), .5)

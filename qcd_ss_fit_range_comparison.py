@@ -26,9 +26,12 @@ The reference/envelope note is inside the upper panel. Its transparent legend
 is compact and aligned near the right frame edge; no canvas footer is drawn.
 Canvas proportions match the DY/OS-SS comparison plots, with no extra bottom
 strip. Axis titles use one pixel font size across both panels; legend text is
-enlarged. Ratio default: linear 0--2, with a top-right inset showing 20--80 GeV
-and physical ratios 1--1000 on a logarithmic y axis. It uses the same curves,
-functional bands and data, with display clipping only. --no-ratio-inset hides it.
+enlarged. Ratio default: linear 0--2. An inset at the lower left of the upper
+panel shows 20--80 GeV on a logarithmic ratio y axis from 1 to an automatic
+upper bound covering all functional bands in that mass interval. A box at
+20--80 GeV, ratio 0.9--1.9 and connectors identify its source mass region;
+the inset expands the y range beyond the box. Reference/Bands notes sit above
+the inset on separate lines. --no-ratio-inset hides the inset and callout.
 --ratio-scale hybrid keeps ratios <=1.5
 linear and compresses larger values logarithmically, with physical-value ticks.
 Its upper bound is automatic unless --ratio-max is specified. Display options
@@ -99,7 +102,7 @@ def build_parser():
     parser.add_argument("--ratio-scale", choices=("linear", "hybrid"), default="linear",
                         help="Linear ratio axis (default), or linear through 1.5 then logarithmic")
     parser.add_argument("--no-ratio-inset", dest="ratio_inset", action="store_false", default=True,
-                        help="Hide the default 20--80 GeV, ratio 1--1000 log-y inset")
+                        help="Hide the upper-panel 20--80 GeV log-ratio inset and its box/connectors")
     xscale = parser.add_mutually_exclusive_group()
     xscale.add_argument("--logx", dest="logx", action="store_true", help="Logarithmic x axis (default)")
     xscale.add_argument("--linear-x", dest="logx", action="store_false", help="Linear x axis")
@@ -291,29 +294,51 @@ def ratio_display_value(value, scale, upper):
     return 1.5 + (math.log(value)-math.log(1.5))/(math.log(upper)-math.log(1.5))
 
 
+def ratio_inset_max(reports):
+    """Cover every high-band value in 20--80 GeV with a convenient log bound."""
+    peak = max([2.] + [value for report in reports
+                       for x, value in zip(report["x"], report["high"])
+                       if 20. <= x <= 80. and math.isfinite(value)])
+    decade = 10.**math.floor(math.log10(peak))
+    return next((factor*decade for factor in (1., 2., 5., 10.)
+                 if math.isfinite(factor*decade) and factor*decade >= peak), peak)
+
+
+def pad_point_to_canvas(pad, x, y, xmin, xmax, ymin, ymax, logx):
+    """Map a frame point to canvas NDC, respecting margins and the log x axis."""
+    fraction_x = ((math.log(x)-math.log(xmin))/(math.log(xmax)-math.log(xmin))
+                  if logx else (x-xmin)/(xmax-xmin))
+    fraction_y = (y-ymin)/(ymax-ymin)
+    return (pad.GetAbsXlowNDC() + pad.GetAbsWNDC()*(pad.GetLeftMargin()
+            + fraction_x*(1.-pad.GetLeftMargin()-pad.GetRightMargin())),
+            pad.GetAbsYlowNDC() + pad.GetAbsHNDC()*(pad.GetBottomMargin()
+            + fraction_y*(1.-pad.GetBottomMargin()-pad.GetTopMargin())))
+
+
 def draw_ratio_inset(ROOT, parent, reports, points, logx):
     """Log-y view of the same physical ratios; never modify their stored values."""
     parent.cd()
-    inset = ROOT.TPad("ss_ratio_high_mass", "", .54, .66, .94, .945)
+    ratio_max = ratio_inset_max(reports)
+    inset = ROOT.TPad("ss_ratio_high_mass", "", .18, .055, .58, .34)
     inset.SetFillColor(ROOT.kWhite)
     inset.SetFillStyle(1001)
     inset.SetFrameFillColor(ROOT.kWhite)
     inset.SetBorderMode(0)
-    inset.SetLeftMargin(.12)
+    inset.SetLeftMargin(.14)
     inset.SetRightMargin(.035)
-    inset.SetBottomMargin(.24)
+    inset.SetBottomMargin(.20)
     inset.SetTopMargin(.10)
     inset.SetLogx(logx)
     inset.SetLogy()
     inset.SetTicks(1, 1)
     inset.Draw()
     inset.cd()
-    frame = inset.DrawFrame(20., 1., 80., 1000.)
+    frame = inset.DrawFrame(20., 1., 80., ratio_max)
     frame.SetTitle("")
     for axis in (frame.GetXaxis(), frame.GetYaxis()):
         axis.SetTitle("")
         axis.SetLabelFont(43)
-        axis.SetLabelSize(13)
+        axis.SetLabelSize(16)
         axis.SetNdivisions(505)
     frame.GetXaxis().SetNoExponent()
     frame.GetXaxis().SetMoreLogLabels(logx)
@@ -333,8 +358,8 @@ def draw_ratio_inset(ROOT, parent, reports, points, logx):
         for i, j in enumerate(selected):
             x = report["x"][j]
             # Clip signed band endpoints for this log viewport only.
-            band.SetPoint(i, x, min(1000., max(1., report["low"][j])))
-            band.SetPoint(2*n-1-i, x, min(1000., max(1., report["high"][j])))
+            band.SetPoint(i, x, min(ratio_max, max(1., report["low"][j])))
+            band.SetPoint(2*n-1-i, x, min(ratio_max, max(1., report["high"][j])))
             curve.SetPoint(i, x, max(1e-300, report["central"][j]))
         band.SetFillColorAlpha(colour, .17)
         band.Draw("F SAME")
@@ -501,7 +526,8 @@ def plot(args, points, reports, stem, ROOT=None):
     text.SetTextSize(25)
     text.DrawLatex(.14, .94, f"SS fit-range comparison: {args.era}")
     text.SetTextSize(19)
-    text.DrawLatex(.17, .10, "Reference: fixed 5-30 GeV nominal fit. Bands: functional envelope only.")
+    text.DrawLatex(.17, .415, "Reference: fixed 5-30 GeV nominal fit.")
+    text.DrawLatex(.17, .375, "Bands: functional envelope only.")
     upper.RedrawAxis()
 
     lower.cd()
@@ -604,7 +630,36 @@ def plot(args, points, reports, stem, ROOT=None):
         keepalive.append(note)
     lower.RedrawAxis()
     if args.ratio_inset:
-        keepalive.extend(draw_ratio_inset(ROOT, lower, ratio_reports, ratio_points, args.logx))
+        inset_objects = draw_ratio_inset(ROOT, upper, ratio_reports, ratio_points, args.logx)
+        keepalive.extend(inset_objects)
+        inset = inset_objects[0]
+        # The box identifies the mass interval; the inset expands its y range.
+        xleft, xright = 20., min(80., args.xmax)
+        ybottom, ytop = max(.9, args.ratio_min), min(1.9, ratio_max)
+        if xleft < xright and ybottom < ytop:
+            lower.cd()
+            box = ROOT.TBox(xleft, ratio_transform(ybottom), xright, ratio_transform(ytop))
+            box.SetFillStyle(0)
+            box.SetLineColor(ROOT.kGray+2)
+            box.SetLineStyle(2)
+            box.SetLineWidth(2)
+            box.Draw("SAME")
+            keepalive.append(box)
+            canvas.cd()
+            canvas.Update()
+            target_left = inset.GetAbsXlowNDC()+inset.GetAbsWNDC()*inset.GetLeftMargin()
+            target_right = inset.GetAbsXlowNDC()+inset.GetAbsWNDC()*(1.-inset.GetRightMargin())
+            target_y = inset.GetAbsYlowNDC()+inset.GetAbsHNDC()*inset.GetBottomMargin()
+            for x, target_x in ((xleft, target_left), (xright, target_right)):
+                origin = pad_point_to_canvas(lower, x, ratio_transform(ytop), 5., args.xmax,
+                                             ratio_transform(args.ratio_min), ratio_transform(ratio_max), args.logx)
+                connector = ROOT.TLine(*origin, target_x, target_y)
+                connector.SetNDC(True)
+                connector.SetLineColor(ROOT.kGray+2)
+                connector.SetLineStyle(2)
+                connector.SetLineWidth(1)
+                connector.Draw()
+                keepalive.append(connector)
     canvas.cd()
     canvas.Update()
     try:
