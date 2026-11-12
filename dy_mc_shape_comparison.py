@@ -5,6 +5,8 @@ Default: sum 2016preVFP, 2016postVFP, 2017, 2018, 2022, 2022EE,
 2023 and 2023BPix, then match the LightJet integral to BJet in 11--70 GeV.
 Stored MC event weights are retained: eras are summed before matching, with
 no extra luminosity rescaling and no per-era shape normalisation.
+Input histograms are copied to TH1D before summation/scaling, preserving bin
+contents, stored Sumw2 and flow bins. This avoids TH1F rounding in Run-3 inputs.
 
 Only NIsoMuon_DYJets_Inclusive.root is opened, in READ mode. No collision data,
 data-driven templates or MG LO samples are used, and no ROOT files are written.
@@ -126,7 +128,32 @@ def import_root():
     return ROOT
 
 def clone_hist(hist, name: str):
-    out = hist.Clone(name)
+    """Detach a double-precision copy, preserving stored yields and variances."""
+    if hist.InheritsFrom("TH1D"):
+        out = hist.Clone(name)
+    else:
+        import ROOT # type: ignore
+        if hist.GetDimension() != 1:
+            raise ValueError("DY shape comparison requires one-dimensional histograms")
+        out = ROOT.TH1D(name, hist.GetTitle(), hist.GetNbinsX(), array("d", axis_edges(hist)))
+        out.SetDirectory(0)
+        if int(out.GetSumw2N()) == 0:
+            out.Sumw2()
+        stored_errors = int(hist.GetSumw2N()) > 0
+        for i in range(hist.GetNbinsX() + 2):
+            out.SetBinContent(i, float(hist.GetBinContent(i)))
+            if stored_errors:
+                out.GetSumw2()[i] = float(hist.GetSumw2()[i])
+            else:
+                out.SetBinError(i, float(hist.GetBinError(i)))
+        for source, target in ((hist.GetXaxis(), out.GetXaxis()),
+                               (hist.GetYaxis(), out.GetYaxis()),
+                               (hist.GetZaxis(), out.GetZaxis())):
+            target.SetTitle(source.GetTitle())
+        stats = array("d", [0.]*13)
+        hist.GetStats(stats)
+        out.PutStats(stats)
+        out.SetEntries(hist.GetEntries())
     out.SetDirectory(0)
     if int(out.GetSumw2N()) == 0:
         out.Sumw2()
@@ -293,7 +320,8 @@ def match_lightjet(ROOT, b_hist, l_hist, low, high):
     print(f"[SCALE] LightJet *= {factor:.9g}; sum eras before matching")
     matched, _ = integral_and_error(scaled, low, high)
     if not math.isclose(matched, b_yield, rel_tol=1e-10, abs_tol=1e-9):
-        raise ValueError("LightJet integral matching failed")
+        raise ValueError(f"LightJet integral matching failed: matched={matched:.16g}, "
+                         f"target={b_yield:.16g}, relative difference={(matched-b_yield)/b_yield:.3g}")
     return scaled, factor
 
 

@@ -881,6 +881,11 @@ For a restricted plot, matching defaults to its overlap with 11--80 GeV;
 `--normalisation-range LOW HIGH` sets an explicit matching interval inside the
 plot. There is no per-era shape normalisation or additional luminosity
 rescaling. Missing era inputs cause an error.
+Inputs are detached as double-precision `TH1D` histograms before era summation,
+matching, rebinning and density conversion. In particular, Run-3 `TH1F` inputs
+would otherwise round scaled contents at float precision and fail the strict
+integral-matching check. Conversion preserves the stored bin values, Sumw2,
+variable edges and underflow/overflow; the matching tolerance is unchanged.
 
 The upper panel shows event yields per GeV and the lower panel shows
 BJet / scaled LightJet. Errors are finite-MC Sumw2 errors with the matching
