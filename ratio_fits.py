@@ -95,38 +95,35 @@ def analyse(points, args, excluded=()):
 
 
 def equation(result):
-    """ROOT TLatex equation with symmetric errors as superscript +/- values."""
+    """ROOT TLatex equation with each coefficient and error in parentheses."""
     p, e = result["parameters"], result["errors"]
     def number(value, error):
-        return f"{value:.4g}^{{#pm {error:.2g}}}"
+        return f"({value:.4g} #pm {error:.2g})"
     if result["kind"] == "const":
         return "y = " + number(p["c"], e["c"])
     sign = " - " if p["b"] < 0 else " + "
-    return "y = (" + number(p["a"], e["a"]) + ") x" + sign + number(abs(p["b"]), e["b"])
+    return "y = " + number(p["a"], e["a"]) + " x" + sign + number(abs(p["b"]), e["b"])
 
 
-def draw(ROOT, series, results_pad=None):
-    """Draw fits on the current pad and labels on a separate optional pad.
+def draw(ROOT, series, results_pad=None, label_box=None, text_size=.058):
+    """Draw fit curves and two compact, transparent numerical result lines.
 
-    The comparison plotters supply their upper pad, keeping all result text
-    out of the ratio points/error bars. Colours are shared by lines and text.
+    No sample/range header is drawn. Curves use the current pad; optional
+    results_pad and label_box control text placement. Line/text colours match.
     """
     objects, lines = [], []
     for label, colour, report in series:
         if not report["fits"]:
             continue
-        low, high = report["range"]
-        if report["bins"]:
-            low, high = report["bins"][0][0], report["bins"][-1][1]
-        lines.append((colour, f"{label}: {low:g}--{high:g} GeV (stat., fixed scale)"))
         for result in report["fits"]:
             kind = result["kind"]
+            style = "Dashed" if kind == "const" else "Solid"
             if result["status"] != "ok":
-                lines.append((colour, f"{kind}: {result['status']}"))
+                lines.append((colour, f"{style}: {result['status']}"))
                 continue
             p = result["parameters"]
             quality = f"#chi^{{2}}/ndf = {result['chi2_ndf']:.3f}"
-            lines.append((colour, equation(result) + ";  " + quality))
+            lines.append((colour, style + ": " + equation(result) + ",  " + quality))
             # Draw within the support of eligible bins, leaving veto/blind gaps.
             segments = []
             for left, right in report["bins"]:
@@ -149,13 +146,10 @@ def draw(ROOT, series, results_pad=None):
     if lines:
         if results_pad is not None:
             results_pad.cd()
-            box = ROOT.TPaveText(.57, .555, .945, .69, "NDC")
-            text_size = .024
-        else:
-            box = ROOT.TPaveText(.54, max(.36, .95 - .075*len(lines)), .945, .95, "NDC")
-            text_size = .05
+        box = ROOT.TPaveText(*(label_box or (.16, .74, .945, .95)), "NDC")
         box.SetBorderSize(0)
         box.SetFillStyle(0)
+        box.SetMargin(0.)
         box.SetTextFont(42)
         box.SetTextAlign(12)
         box.SetTextSize(text_size)

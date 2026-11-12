@@ -905,13 +905,16 @@ Custom binning adds `_customBins` to the output filename.
 
 Both this plotter and `os_ss_comparison.py` now fit the displayed ratio with
 `y=c` (dashed) and `y=ax+b` (solid) by default. The results box has a transparent
-background. Numerical equations replace the parameter-name listing, with errors
-as superscript symmetric `+/-` values (for example `y = 0.993^{+/-0.004}` and
-`y = (0.00973^{+/-0.002}) x + 0.836^{+/-0.03}`). Chi-square/ndf is shown as
+background. Each coefficient and its symmetric error are grouped in parentheses,
+for example `y = (0.993 +/- 0.004)` and
+`y = (0.00973 +/- 0.002) x + (0.836 +/- 0.03)`. Chi-square/ndf is shown as
 the evaluated decimal ratio, for example `1.234`, rather than `12.34/10`.
-Fit lines and result text are green in both plotters. The transparent result
-box is placed in the upper panel below the process legend, away from the ratio
-points, fits and error bars. A JSON sidecar
+Fit lines and result text are green in both plotters. The transparent result box
+contains only two lines, `Dashed: y = ..., chi2/ndf = ...` and
+`Solid: y = ..., chi2/ndf = ...`, without a sample/range header. The comma
+separates the fit equation from its quality statistic. DY places the box at the
+bottom left of the ratio panel; OS/SS places it at the top of the ratio panel,
+anchored at m=10 GeV (in log or linear x). A JSON sidecar
 records the selected whole bins, coefficients, covariance and diagnostics.
 Use `--ratio-fits none`, `const` or `linear` to change the displayed fits.
 `--ratio-fit-range LOW HIGH` restricts them without changing the plot range,

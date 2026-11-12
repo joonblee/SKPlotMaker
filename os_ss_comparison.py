@@ -12,9 +12,10 @@ summaries retain the integrated ratios and the existing blinding.
 
 --ratio-fits {none,const,linear,both} adds conditional diagonal-statistical
 fits y=c (dashed) and y=ax+b (solid) to QCD MC only, by default in 11--80 GeV.
-Green lines show the fits; a transparent upper-panel box shows matching green
-numerical equations with superscript symmetric errors and decimal
-chi-square/ndf, plus a JSON report. Plot binning and 5--80 GeV range are retained.
+Green lines show the fits. Two green Dashed/Solid numerical equations appear
+near m=10 GeV at the top of the ratio panel, with coefficient errors in
+parentheses and decimal chi-square/ndf after a comma; no sample/range header.
+A JSON report is also saved. Plot binning and 5--80 GeV range are retained.
 --ratio-fit-range LOW HIGH selects whole bins. Fits exclude 9--11 GeV;
 data points/summaries and their blinding are unchanged. No data ratio is fitted.
 No closure p-value is inferred from these ratio fits.
@@ -205,7 +206,12 @@ def main():
         ("QCD MC", ROOT.kGreen+2, ratio_fits.analyse(
             ratio_fits.histogram_points(qr), args, excluded=((9., 11.),))),
     ]
-    fit_objects = ratio_fits.draw(ROOT, fit_series, results_pad=up)
+    # Anchor the left edge at m=10 GeV in either logarithmic or linear x.
+    fraction = (math.log(10./args.xmin)/math.log(args.xmax/args.xmin)
+                if args.logx else (10.-args.xmin)/(args.xmax-args.xmin))
+    result_x = max(.14, min(.40, .12 + .83*fraction))
+    fit_objects = ratio_fits.draw(ROOT, fit_series,
+                                 label_box=(result_x, .74, .945, .95))
     lo.cd()
     #rleg=ROOT.TLegend(.58,.74,.94,.94); rleg.SetBorderSize(0); rleg.SetFillStyle(0); rleg.SetTextSize(.075); rleg.AddEntry(qr,"QCD MC","lep"); rleg.AddEntry(dr,"Data - nonQCD MC","lep"); rleg.Draw()
     out=Path(args.output_dir); out.mkdir(parents=True,exist_ok=True); tag="Blind" if args.blind else "Unblind"; tag += "_LogX" if args.logx else ""; tag += "_LogY" if args.logy else ""; base=f"OS_SS_Comparison_{era_name(args.era)}_BJet_QCDMC_DataMinusNonQCDMC_{tag}"

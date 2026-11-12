@@ -17,8 +17,9 @@ errors with the matching factor fixed. Use --ratio-fits none to hide them or
 Default mass edges: 11, 13, 15, 17, 19, 22, 26, 40, 70 GeV, matching the
 reference DY plot. Default plot, ratio-fit and integral-matching ranges are
 11--70 GeV. --normalisation-range LOW HIGH overrides integral matching.
-Fit lines are green; numerical equations/errors and decimal chi-square/ndf
-appear in a transparent, consistently coloured box in the upper panel.
+Fit lines are green. The ratio panel's bottom-left transparent box contains
+only Dashed/Solid numerical equations, with coefficient errors in parentheses
+and decimal chi-square/ndf after a comma. No sample/range header is displayed.
 
 Examples:
   python3 dy_mc_shape_comparison.py
@@ -429,7 +430,7 @@ def draw(ROOT, args, b_hist, l_hist, factor):
     ratio.Draw("PE SAME")
     fit_series = [("DY MC", ROOT.kGreen + 2, ratio_fits.analyse(
         ratio_points(b_hist, l_hist, args.xmin, args.xmax), args))]
-    fit_objects = ratio_fits.draw(ROOT, fit_series, results_pad=upper)
+    fit_objects = ratio_fits.draw(ROOT, fit_series, label_box=(.16, .36, .945, .55))
     lower.cd()
     lower.RedrawAxis()
     upper.cd()
