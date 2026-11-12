@@ -1129,19 +1129,22 @@ are retained. This chi-square is an approximation for sparse subtracted data;
 an exact count likelihood would instead model raw SS data and the nonQCD
 components jointly, including their MC uncertainties.
 
-All three fits share one adaptive grid over **5--50 GeV** (default target
-effective count 10, base maximum width 5 GeV). There are **no forced 20 or
-30 GeV edges**, no fixed 30--50 GeV bin, and no special backward merge at
-30 GeV. When the statistical target is reached and the next native bin has
-signed yield <=0, continue merging **only if the combined yield stays >0**.
-A positive group is closed before a nonpositive next bin would make its sum
-zero or negative. Later minimum-width/remainder merging preserves these veto
-edges, even if that leaves a bin narrower than the usual width floor.
-The shared minimum-width rule `width >= max(0.1 GeV, 0.02 * final bin centre)`
-and base width cap (default 5 GeV) otherwise remain unchanged. This diagnostic
-rule does not change production SS or QCD-MC defaults. All signed yields and
-variances are retained. Refit to apply the grid: `--plot-json` preserves saved
-edges. The fit ranges remain 5--20, 5--30 and 5--50 GeV.
+All three fits share one grid (default effective-count target 10, base adaptive
+maximum width 5 GeV). First complete ordinary adaptive binning over 5--50 GeV,
+including `width >= max(0.1 GeV, 0.02 * final bin centre)`. Then, working from
+low to high mass, merge whole adjacent adaptive bins while the **next adaptive
+bin** has signed yield <=0, the combined yield stays **>0**, and the extra merge
+respects the base width cap. This step only removes edges: no native-bin early
+stop, extra protected yield-veto edge or width-floor exemption is introduced.
+Keep the **first resulting edge strictly above 30 GeV**, then merge everything
+from that edge to **50 GeV into one tail bin**. For example, a first crossing
+edge of 31.2 GeV gives a final 31.2--50 GeV bin. If that edge is already 50 GeV,
+no extra tail bin is needed. The tail is exempt from the adaptive width cap and
+retains its full signed yield and variance even if its yield is nonpositive.
+There are no forced 20/30 GeV edges and no special backward merge at 30 GeV.
+These diagnostic rules do not change production SS or QCD-MC defaults. Refit
+to apply the grid: `--plot-json` preserves saved edges. Fit ranges remain
+5--20, 5--30 and 5--50 GeV.
 The nominal function remains Power x Exp x Logistic; the five alternatives give
 the **pointwise symmetric functional envelope**,
 `nominal +/- max(abs(alternative - nominal))`. The lower edge is not clipped;

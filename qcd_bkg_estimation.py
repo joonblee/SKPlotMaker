@@ -1788,11 +1788,11 @@ def make_adaptive_ss_binning(
     Additional native protected edges split the minimum-width merging into
     independent segments. No contents/errors change. Non-fit edges and exact
     fit/protected boundaries are retained.
-    With merge_nonpositive_next=True, reaching the precision target does not
-    close a group while the next native signed yield is <=0 and the combined
-    yield remains positive. A positive group is closed before a nonpositive
-    next bin would make its yield <=0; later width/remainder merging cannot
-    undo that veto. Continue to the base width cap or a protected boundary.
+    With merge_nonpositive_next=True, finish the ordinary adaptive grid and
+    width floor first. Then merge whole adjacent adaptive bins when the next
+    bin has signed yield <=0, the combined yield stays positive and the base
+    width cap permits it. This extra step only removes existing edges; it
+    never closes a native group early or exempts it from the width floor.
     Production defaults are unchanged.
     """
     if mode.key != SS_MODE.key:
@@ -1834,7 +1834,6 @@ def make_adaptive_ss_binning(
     # Each group stores (start edge index, stop edge index, signed yield, variance).
     groups: List[Tuple[int, int, float, float]] = []
     start = start_index
-    yield_veto_indices = set()
     total = variance = 0.0
     for i in range(start_index, stop_index):
         content = float(source_hist.GetBinContent(i + 1))
@@ -1846,14 +1845,8 @@ def make_adaptive_ss_binning(
         stop = i + 1
         at_end = stop == stop_index or (merge_nonpositive_next and stop in protected_indices)
         at_cap = not at_end and native_edges[stop + 1] - native_edges[start] > max_bin_width + 1e-9
-        next_yield = float(source_hist.GetBinContent(stop+1)) if not at_end else 0.
-        next_nonpositive = merge_nonpositive_next and not at_end and next_yield <= 0.
-        yield_veto = next_nonpositive and total > 0. and total + next_yield <= 0.
-        if yield_veto:
-            yield_veto_indices.add(stop)
-        extend_nonpositive = next_nonpositive and total + next_yield > 0.
         target_reached = ss_effective_count(total, variance) >= min_effective_count
-        if (target_reached and not extend_nonpositive) or yield_veto or at_cap or at_end:
+        if target_reached or at_cap or at_end:
             groups.append((start, stop, total, variance))
             start = stop
             total = variance = 0.0
@@ -1862,25 +1855,21 @@ def make_adaptive_ss_binning(
     # This is not a positivity requirement: a capped negative group is retained.
     while len(groups) > 1 and ss_effective_count(groups[-1][2], groups[-1][3]) < min_effective_count:
         left, right = groups[-2:]
-        if merge_nonpositive_next and any(left[0] < i < right[1] for i in protected_indices | yield_veto_indices):
+        if merge_nonpositive_next and any(left[0] < i < right[1] for i in protected_indices):
             break
         if native_edges[right[1]] - native_edges[left[0]] > max_bin_width + 1e-9:
             break
         groups[-2:] = [(left[0], right[1], left[2] + right[2], left[3] + right[3])]
 
     adaptive_edges = [native_edges[start_index], *[native_edges[group[1]] for group in groups]]
-    boundaries = sorted(set(boundaries + [native_edges[i] for i in yield_veto_indices]))
     adaptive_edges = sorted(set(adaptive_edges + boundaries))
     fit_edges = []
     for left, right in zip(boundaries, boundaries[1:]):
-        segment_edges = [x for x in adaptive_edges if left <= x <= right]
-        # A yield veto takes precedence over the width floor. Do not merge a
-        # narrow segment across that edge and turn a positive group nonpositive.
-        if yield_veto_indices and right-left < max(.1, .02*(left+right)/2.) - 1e-9:
-            segment = segment_edges
-        else:
-            segment = bound_adaptive_bin_widths(segment_edges)
+        segment = bound_adaptive_bin_widths([x for x in adaptive_edges if left <= x <= right])
         fit_edges.extend(segment if not fit_edges else segment[1:])
+    if merge_nonpositive_next:
+        fit_edges = merge_nonpositive_ss_adaptive_bins(source_hist, fit_edges,
+                                                       max_bin_width, boundaries[1:-1])
     edges = ([native_edges[native_indices[x]] for x in fixed_edges if x < mode.fit_min]
              + fit_edges
              + [native_edges[native_indices[x]] for x in fixed_edges if x > mode.fit_max])
@@ -1895,11 +1884,41 @@ def make_adaptive_ss_binning(
     )
     print("[SS BINNING] adaptive fit edges [GeV] = " + ", ".join(f"{x:g}" for x in fit_edges))
     if merge_nonpositive_next:
-        print("[SS BINNING] nonpositive-next-native-bin lookahead enabled; "
-              f"native groups stop at the {max_bin_width:g} GeV base cap or protected boundaries; "
-              "nonpositive next bin accepted only if the combined yield stays positive; "
-              f"yield-veto edges retained={len(yield_veto_indices)} (override width floor)")
+        print("[SS BINNING] whole-adaptive-bin nonpositive merging enabled after width floor; "
+              f"combined yield must stay positive; extra merges respect {max_bin_width:g} GeV cap")
     return edges
+
+
+def merge_nonpositive_ss_adaptive_bins(source_hist, edges: Sequence[float],
+                                       max_bin_width: float,
+                                       protected_edges: Sequence[float] = ()) -> List[float]:
+    """Coarsen a completed grid; never create edges or override its width floor."""
+    def signed_yield(left, right):
+        first = source_hist.FindBin(left + 1e-7)
+        last = source_hist.FindBin(right - 1e-7)
+        return float(source_hist.Integral(first, last))
+
+    merged = [edges[0]]
+    i = 0
+    while i < len(edges)-1:
+        left, right = edges[i:i+2]
+        total = signed_yield(left, right)
+        j = i+1
+        while j < len(edges)-1:
+            if any(math.isclose(right, x, abs_tol=1e-9, rel_tol=0.) for x in protected_edges):
+                break
+            next_right = edges[j+1]
+            if next_right-left > max_bin_width+1e-9:
+                break
+            next_yield = signed_yield(right, next_right)
+            if next_yield > 0. or total+next_yield <= 0.:
+                break
+            total += next_yield
+            right = next_right
+            j += 1
+        merged.append(right)
+        i = j
+    return merged
 
 
 def bound_adaptive_bin_widths(edges: Sequence[float]) -> List[float]:

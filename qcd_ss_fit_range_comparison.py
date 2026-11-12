@@ -3,15 +3,16 @@
 
 Reuse the production six function families, nominal Power x Exp x Logistic,
 bin-integrated chi-square and fit-validity rules. Signed bins are never clipped.
-All ranges use one common adaptive grid over 5--50 GeV, without forced
-20/30 GeV edges, a fixed high-mass tail or a special backward merge at 30 GeV.
-This diagnostic grid can differ from production 5--30 adaptive binning.
+All ranges use one common grid, with no forced 20/30 GeV edges and no special
+backward merge at 30 GeV. First complete the statistical adaptive grid over
+5--50 GeV, including width >= max(0.1 GeV, 0.02*final bin centre). Then merge
+whole adjacent adaptive bins only when the next signed yield is <=0, the
+combined yield stays positive and the extra merge respects the base width cap
+(default 5 GeV). No early native-bin yield veto or width-floor exemption is used.
+Keep the first resulting edge strictly above 30 GeV and merge the remainder
+from that edge to 50 GeV into one bin. This final tail overrides the adaptive
+width cap and may have nonpositive signed yield; it is never clipped.
 The common-grid edges and all fit diagnostics are exported.
-When the effective-count target is reached, continue merging while the next
-native bin has signed yield <=0, provided the combined yield remains positive.
-Otherwise keep that bin separate. The base adaptive width cap remains 5 GeV.
-Whole adaptive bins are merged to width >= max(0.1 GeV, 0.02*final bin centre),
-except where doing so would undo a nonpositive-yield merge veto.
 Refit to apply the new grid; --plot-json keeps saved bin edges.
 
 Bands are pointwise nominal +/- max_alternative |alternative - nominal|,
@@ -69,7 +70,7 @@ import qcd_bkg_estimation as qcd
 
 FIT_MAX = 50.
 RANGES = (30., 20., FIT_MAX)
-FIXED_HIGH_MASS_EDGES = ()
+TAIL_MERGE_THRESHOLD = 30.
 FORCED_EDGES = ()
 ALL_PERIODS = (*qcd.RUN2_ERAS, *qcd.RUN3_ERAS, "Run2", "Run3", "Run2+3")
 DEFAULT_BASE = str(Path(qcd.DEFAULT_BASE_DIR) / "NIsoMuon")
@@ -91,7 +92,7 @@ def build_parser():
                         help="Redraw saved JSON results only: no input histograms, fits or JSON writes")
     parser.add_argument("--ss-min-effective-count", type=qcd.positive_float, default=10.)
     parser.add_argument("--ss-max-bin-width", type=qcd.positive_float, default=5.,
-                        help="Base adaptive width cap over 5--50 GeV (default: 5); minimum-width merging can exceed it")
+                        help="Base adaptive width cap (default: 5); width-floor merging and the single tail bin can exceed it")
     parser.add_argument("--fit-max-attempts", type=qcd.positive_integer, default=30)
     parser.add_argument("--fit-attempt-details", action="store_true")
     parser.add_argument("--linthresh", type=qcd.positive_float, default=.1,
@@ -115,11 +116,15 @@ def build_parser():
 
 
 def common_histograms(ROOT, source, args):
-    """Use the common adaptive grid without forced 20/30 GeV boundaries."""
+    """Keep adaptive bins through the first edge above 30, then one tail bin."""
     mode = replace(qcd.SS_MODE, fit_max=FIT_MAX)
     edges = qcd.make_adaptive_ss_binning(source, mode, args.ss_min_effective_count,
                                         args.ss_max_bin_width,
                                         merge_nonpositive_next=True)
+    tail_start = next(x for x in edges if x > TAIL_MERGE_THRESHOLD+1e-9 and x <= FIT_MAX+1e-9)
+    edges = [x for x in edges if x <= tail_start or x >= FIT_MAX]
+    print(f"[SS COMPARISON BINNING] tail starts at first edge above 30 GeV: {tail_start:g}; "
+          f"merge [{tail_start:g}, {FIT_MAX:g}] GeV when nonempty")
     print("[SS COMPARISON BINNING] final edges [GeV] = " + ", ".join(f"{x:g}" for x in edges))
     counts_raw = source.Rebin(len(edges)-1, "ss_comparison_counts_raw", array("d", edges))
     counts_raw.SetDirectory(0)
@@ -757,11 +762,16 @@ def main(argv=None):
                        binning=dict(edges=prepared.edges, min_effective_count=args.ss_min_effective_count,
                                     max_width=args.ss_max_bin_width,
                                     adaptive_range=[5., FIT_MAX],
-                                    merge_nonpositive_next_native_bin=True,
+                                    merge_nonpositive_next_native_bin=False,
+                                    merge_nonpositive_next_adaptive_bin=True,
                                     merge_terminal_adaptive_bin_backward=False,
                                     nonpositive_next_requires_positive_sum=True,
                                     minimum_width=dict(absolute_gev=.1, relative_to_bin_centre=.02),
-                                    fixed_high_mass_edges=list(FIXED_HIGH_MASS_EDGES),
+                                    tail_merge_threshold=TAIL_MERGE_THRESHOLD,
+                                    tail_merge_start=next(x for x in prepared.edges
+                                                         if x > TAIL_MERGE_THRESHOLD+1e-9 and x <= FIT_MAX+1e-9),
+                                    fixed_high_mass_edges=[x for x in prepared.edges
+                                                           if TAIL_MERGE_THRESHOLD+1e-9 < x <= FIT_MAX+1e-9],
                                     forced_edges=list(FORCED_EDGES)),
                        points=points, fits=reports)
         stem.with_suffix(".json").write_text(json.dumps(finite_json(payload), indent=2, allow_nan=False) + "\n")
