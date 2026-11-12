@@ -494,6 +494,23 @@ for era in Run2 Run3 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix;
 done
 ```
 
+QCD-MC fits now default to adaptive binning with `--mc-min-effective-count 25`
+and a base adaptive width cap of `--mc-max-bin-width 5` GeV. Within each of
+5--9, 9--11 and 11--80 GeV, native bins are merged towards that statistical
+target, then whole adaptive bins are merged until their width is at least
+`max(0.1 GeV, 0.02 * mass)`, where mass is the **final bin centre**. For example,
+the minimum widths at 10, 30 and 70 GeV are 0.2, 0.6 and 1.4 GeV. Widths round
+up to available adaptive boundaries. A narrow final remainder merges backwards
+within its segment; the final width can therefore exceed the base adaptive cap.
+Signed yields and Sumw2 are preserved, and no bin crosses 9 or 11 GeV.
+The 9--11 GeV fit veto, objective and SS-data binning remain unchanged.
+Use `--mc-binning legacy` to restore the previous fixed MC binning. These MC
+options have no effect in `ss-data` mode. To inspect without fitting or writing:
+
+```bash
+python3 qcd_bkg_estimation.py --mode qcd-mc --year Run3 --inspect-binning
+```
+
 `QCD_TRANSFER_LOW_WINDOW` and `QCD_TRANSFER_HIGH_WINDOW` in
 `qcd_bkg_estimation.py` govern both the transfer-factor calibration windows and
 the output-template support. Nominal, Norm/Shape and statistical derivative

@@ -70,6 +70,12 @@ Fit modes and objectives
       likelihood; chi2 and log-chi2 are available as cross-checks.  QCD-MC
       log-chi2 fits use a weighted-likelihood prefit followed by a local
       log-chi2 refinement to stabilise sparse Run-3 tails.
+      Default MC binning is adaptive (target Neff=25, base width cap 5 GeV),
+      followed by merging whole adaptive bins until width >=
+      max(0.1 GeV, 0.02 * bin centre). Undersized final bins merge backwards
+      within each of 5--9, 9--11 and 11--80 GeV; this may exceed the base cap.
+      Native boundaries and signed yields/Sumw2 are preserved. SS binning is
+      unaffected. --mc-binning legacy restores the previous fixed MC edges.
 The interval 9 < m(mumu) < 11 GeV is excluded from every QCD-MC fit objective
 and diagnostic.
 
@@ -86,6 +92,9 @@ Main optional controls
   --ss-binning {auto,regular,legacy,adaptive}
   --ss-min-effective-count VALUE   adaptive target, default: 25
   --ss-max-bin-width GEV           adaptive width cap, default: 5
+  --mc-binning {adaptive,legacy}   default: adaptive; MC only
+  --mc-min-effective-count VALUE   default: 25; MC only
+  --mc-max-bin-width GEV           base adaptive width cap, default: 5; MC only
   --transfer-method {run-common,era-specific,data-low}
       --qcd-transfer-method and mc-double-ratio remain compatibility aliases
   --data-period {F,G,H}           2016postVFP SS-only period diagnostic;
@@ -1147,6 +1156,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--inspect-binning", action="store_true",
         help="Print final fit-bin edges, signed yields, errors and effective counts; exit before fitting/writing.",
     )
+    parser.add_argument("--mc-binning", choices=("adaptive", "legacy"), default="adaptive",
+                        help="QCD-MC binning: adaptive with width >= max(0.1 GeV, 0.02*bin centre), or previous fixed edges")
+    parser.add_argument("--mc-min-effective-count", type=positive_float, default=25.,
+                        help="Adaptive QCD-MC Neff target before minimum-width merging (default: 25)")
+    parser.add_argument("--mc-max-bin-width", type=positive_float, default=5.,
+                        help="Base adaptive QCD-MC width cap in GeV; final minimum-width merging may exceed it (default: 5)")
     parser.add_argument(
         "--fit-objective",
         choices=("auto", "chi2", "weighted-likelihood", "log-chi2"),
@@ -1637,6 +1652,85 @@ def make_adaptive_ss_binning(
     return edges
 
 
+def bound_mc_bin_widths(edges: Sequence[float]) -> List[float]:
+    """Coarsen one protected segment; mass means the final bin centre."""
+    def wide_enough(left, right):
+        return right-left >= max(.1, .02*(left+right)/2.) - 1e-9
+
+    merged = [edges[0]]
+    for right in edges[1:]:
+        if wide_enough(merged[-1], right):
+            merged.append(right)
+    if not math.isclose(merged[-1], edges[-1], abs_tol=1e-9, rel_tol=0.):
+        # Never leave a narrow remainder at a protected boundary.
+        if len(merged) > 1:
+            merged[-1] = edges[-1]
+        else:
+            merged.append(edges[-1])
+    if any(not wide_enough(left, right) for left, right in zip(merged, merged[1:])):
+        raise ValueError("Protected MC segment is narrower than the minimum MC bin width")
+    return merged
+
+
+def make_adaptive_mc_binning(source_hist, mode: ModeConfig,
+                             min_effective_count: float = 25., max_bin_width: float = 5.) -> List[float]:
+    """Statistical adaptive MC bins, then minimum-width merging without splitting."""
+    if mode.key != QCD_MODE.key:
+        raise ValueError("Adaptive MC binning requires qcd-mc mode")
+    for value in (min_effective_count, max_bin_width):
+        if not math.isfinite(value) or value <= 0.:
+            raise ValueError("MC adaptive target and base width cap must be finite and positive")
+    native = [float(source_hist.GetXaxis().GetBinLowEdge(i))
+              for i in range(1, source_hist.GetNbinsX()+2)]
+    validate_bin_edges(native, "native MC binning")
+    fixed = make_variable_binning(mode)
+    protected = (mode.fit_min, 9., 11., mode.fit_max)
+    outside = [x for x in fixed if x < mode.fit_min or x > mode.fit_max]
+    indices = {}
+    for boundary in (*outside, *protected):
+        matches = [i for i, x in enumerate(native)
+                   if math.isclose(x, boundary, abs_tol=1e-9, rel_tol=0.)]
+        if not matches:
+            raise ValueError(f"MC edge {boundary:g} GeV is not an input ROOT bin edge; cannot split native bins")
+        indices[boundary] = matches[0]
+    fit_edges = []
+    for lower, upper in zip(protected, protected[1:]):
+        first, last = indices[lower], indices[upper]
+        if any(native[i+1]-native[i] > max_bin_width+1e-9 for i in range(first, last)):
+            raise ValueError("--mc-max-bin-width is smaller than a native MC bin")
+        groups = []
+        start = first
+        total = variance = 0.
+        for i in range(first, last):
+            value, error = float(source_hist.GetBinContent(i+1)), float(source_hist.GetBinError(i+1))
+            if not (math.isfinite(value) and math.isfinite(error)) or error < 0.:
+                raise ValueError(f"Invalid MC content/error in native bin {i+1}")
+            total += value
+            variance += error**2
+            stop = i+1
+            at_end = stop == last
+            at_cap = not at_end and native[stop+1]-native[start] > max_bin_width+1e-9
+            if ss_effective_count(total, variance) >= min_effective_count or at_cap or at_end:
+                groups.append((start, stop, total, variance))
+                start = stop
+                total = variance = 0.
+        while len(groups) > 1 and ss_effective_count(groups[-1][2], groups[-1][3]) < min_effective_count:
+            left, right = groups[-2:]
+            if native[right[1]]-native[left[0]] > max_bin_width+1e-9:
+                break
+            groups[-2:] = [(left[0], right[1], left[2]+right[2], left[3]+right[3])]
+        adaptive = [native[first], *[native[g[1]] for g in groups]]
+        bounded = bound_mc_bin_widths(adaptive)
+        fit_edges.extend(bounded if not fit_edges else bounded[1:])
+    edges = ([native[indices[x]] for x in outside if x < mode.fit_min]
+             + fit_edges + [native[indices[x]] for x in outside if x > mode.fit_max])
+    validate_bin_edges(edges, "adaptive MC binning")
+    print(f"[MC BINNING] adaptive targetNeff={min_effective_count:g} baseMaxWidth={max_bin_width:g} GeV; "
+          "final width >= max(0.1 GeV, 0.02*bin centre); 9--11 GeV excluded")
+    print("[MC BINNING] fit edges [GeV] = " + ", ".join(f"{x:g}" for x in fit_edges))
+    return edges
+
+
 def print_fit_binning(prepared: PreparedHistograms, mode: ModeConfig, target: Optional[float] = None) -> None:
     print("[FIT BIN] low high width [GeV] | signed yield | stat error | Neff | status")
     hist = prepared.counts
@@ -1660,10 +1754,13 @@ def print_fit_binning(prepared: PreparedHistograms, mode: ModeConfig, target: Op
 def prepare_histograms(
     ROOT, source_hist, mode: ModeConfig, rebin_factor: int, ss_binning: str = "auto",
     ss_min_effective_count: float = 25.0, ss_max_bin_width: float = 5.0,
+    mc_binning: str = "adaptive", mc_min_effective_count: float = 25., mc_max_bin_width: float = 5.,
 ) -> PreparedHistograms:
     ss_binning = resolve_ss_binning(source_hist, mode, ss_binning)
     if mode.key == SS_MODE.key and ss_binning == "adaptive":
         base_edges = make_adaptive_ss_binning(source_hist, mode, ss_min_effective_count, ss_max_bin_width)
+    elif mode.key == QCD_MODE.key and mc_binning == "adaptive":
+        base_edges = make_adaptive_mc_binning(source_hist, mode, mc_min_effective_count, mc_max_bin_width)
     else:
         base_edges = make_variable_binning(mode, ss_binning)
     if mode.key == QCD_MODE.key:
@@ -4148,6 +4245,8 @@ def run(args: argparse.Namespace) -> int:
     print(f"[INFO] rebin factor    = {args.rebin}")
     if mode.key == SS_MODE.key:
         print(f"[INFO] SS binning      = {args.ss_binning}")
+    else:
+        print(f"[INFO] MC binning      = {args.mc_binning}")
     if objective == "log-chi2":
         print(f"[INFO] log relative-error floor = {args.log_relative_error_floor:g}")
     for model in FIT_MODELS:
@@ -4168,9 +4267,12 @@ def run(args: argparse.Namespace) -> int:
         prepared = prepare_histograms(
             ROOT, source, mode, args.rebin, args.ss_binning,
             args.ss_min_effective_count, args.ss_max_bin_width,
+            args.mc_binning, args.mc_min_effective_count, args.mc_max_bin_width,
         )
         if args.inspect_binning:
             target = args.ss_min_effective_count if mode.key == SS_MODE.key and args.ss_binning == "adaptive" else None
+            if mode.key == QCD_MODE.key and args.mc_binning == "adaptive":
+                target = args.mc_min_effective_count
             print_fit_binning(prepared, mode, target)
             print("[DONE] Binning inspection only; no fits, plots, anchors or ROOT templates written.")
             return 0
