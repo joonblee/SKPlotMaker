@@ -25,7 +25,10 @@ Only SS histograms are read. No production anchors/templates are written.
 Examples (base-dir includes NIsoMuon, like the comparison plotters):
   python3 qcd_ss_fit_range_comparison.py --era 2018
   python3 qcd_ss_fit_range_comparison.py --era full
+  python3 qcd_ss_fit_range_comparison.py --all-periods
   python3 qcd_ss_fit_range_comparison.py --plot-json plots/SSFitRangeComparison/*.json
+--all-periods runs eight eras, Run2, Run3 and Run2+3 sequentially in separate
+processes, forwarding the same options and retaining per-period output names.
 Requires PyROOT only; plotting uses Python scalar maths and ROOT graphics,
 without importing NumPy/Matplotlib or running BLAS. --plot-json redraws saved
 results without opening input ROOT files or repeating fits. --help needs no ROOT.
@@ -37,17 +40,23 @@ from dataclasses import asdict, replace
 import json
 import math
 from pathlib import Path
+import subprocess
+import sys
 
 import qcd_bkg_estimation as qcd
 
 RANGES = (30., 20., 80.)
+ALL_PERIODS = (*qcd.RUN2_ERAS, *qcd.RUN3_ERAS, "Run2", "Run3", "Run2+3")
 DEFAULT_BASE = str(Path(qcd.DEFAULT_BASE_DIR) / "NIsoMuon")
 
 
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--era", "--year", choices=(*qcd.VALID_YEARS, "full"), default="full")
+    periods = parser.add_mutually_exclusive_group()
+    periods.add_argument("--era", "--year", choices=(*qcd.VALID_YEARS, "full"), default="full")
+    periods.add_argument("--all-periods", action="store_true",
+                         help="Fit/plot eight eras plus Run2, Run3 and Run2+3 sequentially")
     parser.add_argument("--base-dir", default=DEFAULT_BASE,
                         help="Input directory containing era directories (includes NIsoMuon)")
     parser.add_argument("--trigger", default="")
@@ -450,8 +459,28 @@ def replot_saved(args):
     return 0
 
 
+def run_all_periods(argv):
+    """Use the normal single-period command for each period, isolating ROOT state."""
+    # Also remove argparse's accepted abbreviations of this switch.
+    forwarded = [arg for arg in argv
+                 if not (arg.startswith("--") and "--all-periods".startswith(arg))]
+    failed = []
+    for period in ALL_PERIODS:
+        print(f"[PERIOD] {period}", flush=True)
+        completed = subprocess.run([sys.executable, str(Path(__file__).resolve()),
+                                    *forwarded, "--era", period], check=False)
+        if completed.returncode != 0:
+            failed.append(period)
+            print(f"[FAILED] {period}: exit code {completed.returncode}", file=sys.stderr)
+    if failed:
+        print("[FAILED PERIODS] " + ", ".join(failed), file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv=None):
     parser = build_parser()
+    argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(argv)
     if not math.isfinite(args.ymin) or args.ymin < 0.:
         parser.error("--ymin must be finite and nonnegative")
@@ -459,6 +488,10 @@ def main(argv=None):
         parser.error("--xmax must satisfy 5 < xmax <= 80 GeV (display only)")
     if not all(map(math.isfinite, (args.ratio_min, args.ratio_max))) or args.ratio_min >= args.ratio_max:
         parser.error("Require finite --ratio-min < --ratio-max")
+    if args.all_periods:
+        if args.plot_json:
+            parser.error("--all-periods runs fits; use --plot-json separately to redraw saved results")
+        return run_all_periods(argv)
     if args.plot_json:
         return replot_saved(args)
     args.era = "Run2+3" if args.era == "full" else args.era

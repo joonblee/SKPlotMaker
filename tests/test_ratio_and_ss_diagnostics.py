@@ -85,6 +85,26 @@ class RatioFitsTest(unittest.TestCase):
 
 
 class SSComparisonTest(unittest.TestCase):
+    def test_all_periods_includes_run2_and_run3_and_forwards_options(self):
+        with patch.object(ss.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as run, \
+             patch('builtins.print'):
+            self.assertEqual(ss.main(['--all-periods', '--base-dir', '/example',
+                                      '--fit-max-attempts', '4']), 0)
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual([command[-1] for command in commands], list(ss.ALL_PERIODS))
+        self.assertEqual(len(commands), 11)
+        self.assertEqual([command[-1] for command in commands][-3:], ['Run2', 'Run3', 'Run2+3'])
+        for command in commands:
+            self.assertNotIn('--all-periods', command)
+            self.assertIn('/example', command)
+            self.assertIn('4', command)
+
+    def test_all_periods_continues_after_failure_and_returns_nonzero(self):
+        results = [SimpleNamespace(returncode=1)] + [SimpleNamespace(returncode=0)]*10
+        with patch.object(ss.subprocess, 'run', side_effect=results) as run, patch('builtins.print'):
+            self.assertEqual(ss.main(['--all-periods']), 1)
+        self.assertEqual(run.call_count, 11)
+
     @staticmethod
     def reports():
         return [dict(range=[5., high], valid=True, invalid_models=[],

@@ -965,10 +965,25 @@ missing, avoiding duplicate-allocation warnings without changing the errors.
 ```bash
 python3 qcd_ss_fit_range_comparison.py --era 2018
 python3 qcd_ss_fit_range_comparison.py --era full
-for era in 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix; do
+python3 qcd_ss_fit_range_comparison.py --era Run2
+python3 qcd_ss_fit_range_comparison.py --era Run3
+
+# All eight eras and three combined periods in one command:
+python3 qcd_ss_fit_range_comparison.py --all-periods
+
+# Equivalent explicit loop:
+for era in 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix Run2 Run3 Run2+3; do
     python3 qcd_ss_fit_range_comparison.py --era "$era"
 done
 ```
+
+`--all-periods` runs the same single-period command sequentially in separate
+processes, with the supplied input, binning, fit and display options. Outputs
+remain period-labelled, including Run2 and Run3. Failed periods are reported;
+the batch attempts the remaining periods and exits nonzero if any fail.
+Use `--plot-json ...` separately to redraw existing results without fitting.
+The figure legend has a transparent background, and the lower panel uses the
+5--30 GeV nominal fit as its reference in individual and combined plots alike.
 
 This diagnostic fits SS **Data - Top - Others** with the production six
 functions over 5--30, 5--20 and 5--80 GeV, and overlays all three predictions
