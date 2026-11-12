@@ -2,6 +2,7 @@
 import math
 import copy
 import json
+from array import array
 from pathlib import Path
 import sys
 import tempfile
@@ -283,17 +284,17 @@ class SSFixedTailBinningTest(unittest.TestCase):
         source = ROOT.TH1D('ss_fixed_tail_input', '', 1000, 0., 100.)
         source.Sumw2()
         for i in range(1, 1001):
-            source.SetBinContent(i, 100. if source.GetBinCenter(i) < 40. else -1.)
+            source.SetBinContent(i, 100. if source.GetBinCenter(i) < 30. else -1.)
             source.SetBinError(i, 2.)
         args = ss.build_parser().parse_args([])
         original = ss.qcd.make_adaptive_ss_binning(
             source, ss.replace(ss.qcd.SS_MODE, fit_max=80.),
-            args.ss_min_effective_count, args.ss_max_bin_width, protected_edges=(20., 30., 40.))
-        expected_low = sorted(set([round(x, 9) for x in original if x < 40.] + [20., 30.]))
+            args.ss_min_effective_count, args.ss_max_bin_width, protected_edges=(20., 30.))
+        expected_low = sorted(set([round(x, 9) for x in original if x < 30.] + [20.]))
         prepared = ss.common_histograms(ROOT, source, args)
-        self.assertEqual([x for x in prepared.edges if x < 40.], expected_low)
-        self.assertEqual([x for x in prepared.edges if 40. <= x <= 80.],
-                         [40., 45., 50., 60., 70., 80.])
+        self.assertEqual([x for x in prepared.edges if x < 30.], expected_low)
+        self.assertEqual([x for x in prepared.edges if 30. <= x <= 80.],
+                         [30., 40., 50., 60., 80.])
         for left, right in zip(prepared.edges, prepared.edges[1:]):
             if left >= 5. and right <= 80.:
                 self.assertGreaterEqual(right-left+1e-9, max(.1, .02*(left+right)/2.))
@@ -314,10 +315,11 @@ class SSFixedTailBinningTest(unittest.TestCase):
                                original_variance)
 
     def test_fixed_edge_inside_native_bin_is_rejected(self):
-        # All requested boundaries except 45 GeV coincide with this native grid.
-        source = ROOT.TH1D('ss_fixed_tail_unsplittable', '', 50, 0., 100.)
+        # All requested boundaries except 50 GeV coincide with this native grid.
+        source = ROOT.TH1D('ss_fixed_tail_unsplittable', '', 8,
+                          array('d', [0., 20., 30., 40., 49., 51., 60., 80., 100.]))
         with patch.object(ss.qcd, 'make_adaptive_ss_binning', return_value=[0., 5., 80., 100.]), \
-             self.assertRaisesRegex(ValueError, '45 GeV is not a native bin edge'):
+             self.assertRaisesRegex(ValueError, '50 GeV is not a native bin edge'):
             ss.common_histograms(ROOT, source, ss.build_parser().parse_args([]))
 
 

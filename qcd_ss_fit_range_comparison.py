@@ -3,14 +3,14 @@
 
 Reuse the production six function families, nominal Power x Exp x Logistic,
 bin-integrated chi-square and fit-validity rules. Signed bins are never clipped.
-All ranges use one common grid: adaptive below 40 GeV, split at 20 and 30 GeV,
-and fixed edges 40, 45, 50, 60, 70, 80 GeV above. The adaptive width cap does
+All ranges use one common grid: adaptive below 30 GeV, split at 20 GeV,
+and fixed edges 30, 40, 50, 60, 80 GeV above. The adaptive width cap does
 not apply to these fixed high-mass bins. Thus only the fit range changes.
 This diagnostic grid can differ from production 5--30 adaptive binning.
 The common-grid edges and all fit diagnostics are exported.
-Below 40 GeV, whole adaptive bins are merged to width >=
-max(0.1 GeV, 0.02*final bin centre), independently in 5--20, 20--30 and
-30--40 GeV so the protected boundaries never create narrow remainder bins.
+Below 30 GeV, whole adaptive bins are merged to width >=
+max(0.1 GeV, 0.02*final bin centre), independently in 5--20 and 20--30 GeV
+so the protected boundaries never create narrow remainder bins.
 
 Bands are pointwise nominal +/- max_alternative |alternative - nominal|,
 without zero-clipping. They are functional envelopes, not confidence intervals
@@ -31,7 +31,8 @@ panel shows 20--80 GeV on a logarithmic ratio y axis from 1 to an automatic
 upper bound covering all functional bands in that mass interval. A box at
 20--80 GeV, ratio 0.9--1.9 and connectors identify its source mass region;
 the inset expands the y range beyond the box. Reference/Bands notes sit above
-the inset on separate lines. --no-ratio-inset hides the inset and callout.
+the inset on separate lines. Its title identifies the fixed reference and
+20--80 GeV mass interval. --no-ratio-inset hides the inset and callout.
 --ratio-scale hybrid keeps ratios <=1.5
 linear and compresses larger values logarithmically, with physical-value ticks.
 Its upper bound is automatic unless --ratio-max is specified. Display options
@@ -65,8 +66,8 @@ import sys
 import qcd_bkg_estimation as qcd
 
 RANGES = (30., 20., 80.)
-FIXED_HIGH_MASS_EDGES = (40., 45., 50., 60., 70., 80.)
-FORCED_EDGES = (20., 30., *FIXED_HIGH_MASS_EDGES)
+FIXED_HIGH_MASS_EDGES = (30., 40., 50., 60., 80.)
+FORCED_EDGES = (20., *FIXED_HIGH_MASS_EDGES)
 ALL_PERIODS = (*qcd.RUN2_ERAS, *qcd.RUN3_ERAS, "Run2", "Run3", "Run2+3")
 DEFAULT_BASE = str(Path(qcd.DEFAULT_BASE_DIR) / "NIsoMuon")
 
@@ -87,7 +88,7 @@ def build_parser():
                         help="Redraw saved JSON results only: no input histograms, fits or JSON writes")
     parser.add_argument("--ss-min-effective-count", type=qcd.positive_float, default=10.)
     parser.add_argument("--ss-max-bin-width", type=qcd.positive_float, default=5.,
-                        help="Base adaptive width cap below 40 GeV (default: 5); minimum-width merging can exceed it; high-mass bins are fixed")
+                        help="Base adaptive width cap below 30 GeV (default: 5); minimum-width merging can exceed it; high-mass bins are fixed")
     parser.add_argument("--fit-max-attempts", type=qcd.positive_integer, default=30)
     parser.add_argument("--fit-attempt-details", action="store_true")
     parser.add_argument("--linthresh", type=qcd.positive_float, default=.1,
@@ -111,10 +112,10 @@ def build_parser():
 
 
 def common_histograms(ROOT, source, args):
-    """Keep adaptive bins below 40; replace the tail with fixed high-mass bins."""
+    """Keep adaptive bins below 30; replace the tail with fixed high-mass bins."""
     mode = replace(qcd.SS_MODE, fit_max=80.)
     edges = qcd.make_adaptive_ss_binning(source, mode, args.ss_min_effective_count,
-                                        args.ss_max_bin_width, protected_edges=(20., 30., 40.))
+                                        args.ss_max_bin_width, protected_edges=(20., 30.))
     native = [float(source.GetXaxis().GetBinLowEdge(i))
               for i in range(1, source.GetNbinsX()+2)]
     for boundary in FORCED_EDGES:
@@ -327,7 +328,7 @@ def draw_ratio_inset(ROOT, parent, reports, points, logx):
     inset.SetLeftMargin(.14)
     inset.SetRightMargin(.035)
     inset.SetBottomMargin(.20)
-    inset.SetTopMargin(.10)
+    inset.SetTopMargin(.20)
     inset.SetLogx(logx)
     inset.SetLogy()
     inset.SetTicks(1, 1)
@@ -382,6 +383,12 @@ def draw_ratio_inset(ROOT, parent, reports, points, logx):
     data.SetLineColor(ROOT.kBlack)
     data.Draw("PZ SAME")
     keepalive.append(data)
+    title = ROOT.TLatex()
+    title.SetNDC()
+    title.SetTextFont(43)
+    title.SetTextSize(15)
+    keepalive.append(title.DrawLatex(.14, .88, "Ratio to 5-30, 20 < m_{#mu#mu} < 80 GeV"))
+    keepalive.append(title)
     inset.RedrawAxis()
     parent.cd()
     return keepalive
@@ -752,7 +759,7 @@ def main(argv=None):
                        envelope="symmetric functional only; no clipping; not a confidence interval",
                        binning=dict(edges=prepared.edges, min_effective_count=args.ss_min_effective_count,
                                     max_width=args.ss_max_bin_width,
-                                    adaptive_range=[5., 40.],
+                                    adaptive_range=[5., 30.],
                                     minimum_width=dict(absolute_gev=.1, relative_to_bin_centre=.02),
                                     fixed_high_mass_edges=list(FIXED_HIGH_MASS_EDGES),
                                     forced_edges=list(FORCED_EDGES)),
