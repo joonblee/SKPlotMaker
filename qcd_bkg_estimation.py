@@ -70,11 +70,12 @@ Fit modes and objectives
       A narrow final remainder merges backwards within its protected segment;
       this minimum-width step may exceed the base adaptive width cap.
   --mode qcd-mc
-      Fits the QCD MC shape.  --fit-objective auto selects ROOT weighted
-      likelihood; chi2 and log-chi2 are available as cross-checks.  QCD-MC
+      Fits the QCD MC shape. --fit-objective auto selects bin-error chi-square
+      with bin-averaged predictions; weighted-likelihood and log-chi2 remain
+      available explicitly as cross-checks. QCD-MC
       log-chi2 fits use a weighted-likelihood prefit followed by a local
       log-chi2 refinement to stabilise sparse Run-3 tails.
-      Default MC binning is adaptive (target Neff=25, base width cap 5 GeV),
+      Default MC binning is adaptive (target Neff=10, base width cap 5 GeV),
       followed by merging whole adaptive bins until width >=
       max(0.1 GeV, 0.02 * bin centre). Undersized final bins merge backwards
       within each of 5--9, 9--11 and 11--80 GeV; this may exceed the base cap.
@@ -86,6 +87,8 @@ Fit modes and objectives
       ROOT bin edges and are protected before adaptive merging and --rebin.
       Custom ranges save separate PDF/PNG and held-out MC comparison JSON;
       ratio grey bands show MC statistics only, without fit uncertainty.
+All fit plots show AN-style crosses: horizontal half-bin widths and vertical
+statistical errors, without a filled-dot marker.
 All fit plots keep Power x Exp x Logistic solid and draw the other families
 dashed. A pale orange band shows the symmetric functional envelope around
 that central model (maximum absolute alternative deviation, lower edge clipped
@@ -109,7 +112,7 @@ Main optional controls
   --ss-min-effective-count VALUE   adaptive target, default: 25
   --ss-max-bin-width GEV           adaptive width cap, default: 5
   --mc-binning {adaptive,legacy}   default: adaptive; MC only
-  --mc-min-effective-count VALUE   default: 25; MC only
+  --mc-min-effective-count VALUE   default: 10; MC only
   --mc-max-bin-width GEV           base adaptive width cap, default: 5; MC only
   --mc-fit-range LOW HIGH          default: 5 80; MC only
   --mc-plot-range LOW HIGH         default: 5 80; MC only
@@ -1176,8 +1179,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--mc-binning", choices=("adaptive", "legacy"), default="adaptive",
                         help="QCD-MC binning: adaptive with width >= max(0.1 GeV, 0.02*bin centre), or previous fixed edges")
-    parser.add_argument("--mc-min-effective-count", type=positive_float, default=25.,
-                        help="Adaptive QCD-MC Neff target before minimum-width merging (default: 25)")
+    parser.add_argument("--mc-min-effective-count", type=positive_float, default=10.,
+                        help="Adaptive QCD-MC weighted effective-count target before minimum-width merging (default: 10)")
     parser.add_argument("--mc-max-bin-width", type=positive_float, default=5.,
                         help="Base adaptive QCD-MC width cap in GeV; final minimum-width merging may exceed it (default: 5)")
     parser.add_argument("--mc-fit-range", type=float, nargs=2, metavar=("LOW", "HIGH"),
@@ -1189,7 +1192,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("auto", "chi2", "weighted-likelihood", "log-chi2"),
         default="auto",
         help=(
-            "auto: chi2 for SS data and weighted-likelihood for QCD MC; "
+            "auto: chi2 for both SS data and QCD MC; "
             "chi2: bin-error chi-square; weighted-likelihood: ROOT WL on weighted "
             "bin yields; log-chi2: fit log density. Default: %(default)s"
         ),
@@ -1258,7 +1261,7 @@ def canonical_mode(value: str) -> ModeConfig:
 def resolve_objective(requested: str, mode: ModeConfig) -> str:
     objective = requested
     if objective == "auto":
-        objective = "chi2" if mode.key == SS_MODE.key else "weighted-likelihood"
+        objective = "chi2"
     if mode.key == SS_MODE.key and objective != "chi2":
         raise ValueError(
             "SS data is a data-minus-background histogram and may contain non-Poisson or "
@@ -1718,7 +1721,7 @@ bound_mc_bin_widths = bound_adaptive_bin_widths
 
 
 def make_adaptive_mc_binning(source_hist, mode: ModeConfig,
-                             min_effective_count: float = 25., max_bin_width: float = 5.,
+                             min_effective_count: float = 10., max_bin_width: float = 5.,
                              protected_edges: Sequence[float] = ()) -> List[float]:
     """Statistical adaptive MC bins, then minimum-width merging without splitting."""
     if mode.key != QCD_MODE.key:
@@ -1800,7 +1803,7 @@ def print_fit_binning(prepared: PreparedHistograms, mode: ModeConfig, target: Op
 def prepare_histograms(
     ROOT, source_hist, mode: ModeConfig, rebin_factor: int, ss_binning: str = "auto",
     ss_min_effective_count: float = 25.0, ss_max_bin_width: float = 5.0,
-    mc_binning: str = "adaptive", mc_min_effective_count: float = 25., mc_max_bin_width: float = 5.,
+    mc_binning: str = "adaptive", mc_min_effective_count: float = 10., mc_max_bin_width: float = 5.,
     mc_protected_edges: Sequence[float] = (),
 ) -> PreparedHistograms:
     ss_binning = resolve_ss_binning(source_hist, mode, ss_binning)
@@ -3090,6 +3093,7 @@ def set_local_cms_style(ROOT) -> None:
     style.SetPadTickX(1)
     style.SetPadTickY(1)
     style.SetEndErrorSize(0)
+    style.SetErrorX(0.5)
     style.cd()
     ROOT.gROOT.SetStyle("NIsoMuonQCDStyle")
     ROOT.gROOT.ForceStyle()
@@ -3302,11 +3306,12 @@ def draw_fit_plot(
     upper.cd()
     set_local_cms_style(ROOT)
     density.GetXaxis().SetRangeUser(plot_mode.fit_min, plot_mode.fit_max)
-    if range_suffix:
-        density.SetMarkerStyle(20)
-        density.SetMarkerSize(0.5)
-        density.SetMarkerColor(ROOT.kBlack)
-        density.SetLineColor(ROOT.kBlack)
+    # Match the AN: crosses from x/y errors, with no filled-circle marker.
+    density.SetMarkerStyle(1)
+    density.SetMarkerSize(1.)
+    density.SetMarkerColor(ROOT.kBlack)
+    density.SetLineColor(ROOT.kBlue+1)
+    density.SetLineWidth(1)
     for selected in selected_fits:
         # These functions are display/diagnostic copies, not the objective
         # function used by ROOT's minimiser. Parameters stay fixed.

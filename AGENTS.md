@@ -135,10 +135,12 @@ by luminosity, not period-specific refits; preserve this log/plot disclosure.
 Keep QCDStat and DYAux consistency checks with the scaling included, and never
 scale period data counts in event plots. Period output names must remain distinct.
 
-`qcd-mc` is a modelling/cross-check mode.  For the current working convention, when running QCD-MC fits use the log-chi-square objective explicitly:
+`qcd-mc` is a modelling/cross-check mode. The default `auto` objective is
+bin-error chi-square for both MC and SS data. The MC adaptive target is
+weighted effective count 10; SS binning defaults are unchanged. For clarity:
 
 ```bash
-python3 qcd_bkg_estimation.py --mode qcd-mc --year <ERA> --fit-objective log-chi2
+python3 qcd_bkg_estimation.py --mode qcd-mc --year <ERA> --fit-objective chi2
 ```
 
 Do not replace the final SS-data QCD prediction with QCD MC unless explicitly requested.
@@ -216,7 +218,7 @@ done
 
 ```bash
 for era in Run2 Run3 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix; do
-    python3 qcd_bkg_estimation.py --mode qcd-mc --year "${era}" --fit-objective log-chi2
+    python3 qcd_bkg_estimation.py --mode qcd-mc --year "${era}" --fit-objective chi2
 done
 ```
 
@@ -293,7 +295,8 @@ Purpose: produce the SS-data QCD template, QCD nuisance shapes, QCD-MC validatio
 Key rules:
 
 - do not change fit objective, mass range, exclusion region, anchor priority, model envelope, or normalisation prescription silently;
-- current analysis convention for QCD-MC execution is explicit `log-chi2`;
+- current QCD-MC default is bin-error `chi2`; explicit weighted-likelihood and
+  `log-chi2` remain available and must retain their own quality-statistic labels;
 - combined-period anchor behaviour is intentional;
 - preserve per-era output-template behaviour.
 

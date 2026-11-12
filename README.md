@@ -491,15 +491,20 @@ uncertainties with the central-fit statistical error. The report's default
 signal-resolution counting windows. Existing cards/limits are not updated by
 running this producer alone.
 
-QCD simulation is used as a modelling/cross-check fit.  For the current workflow use the log-chi-square objective explicitly:
+QCD simulation is used as a modelling/cross-check fit. The default `auto`
+objective now selects the same bin-error **chi-square** family as the SS fit,
+using MC Sumw2 errors and bin-averaged predictions. Plot quality labels show
+`chi2/ndf`. Weighted likelihood and log-chi-square remain explicit cross-checks
+(`--fit-objective weighted-likelihood` or `--fit-objective log-chi2`), with their
+own correctly labelled quality statistics.
 
 ```bash
 for era in Run2 Run3 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix; do
-    python3 qcd_bkg_estimation.py --mode qcd-mc --year "${era}" --fit-objective log-chi2
+    python3 qcd_bkg_estimation.py --mode qcd-mc --year "${era}" --fit-objective chi2
 done
 ```
 
-QCD-MC fits now default to adaptive binning with `--mc-min-effective-count 25`
+QCD-MC fits now default to adaptive binning with `--mc-min-effective-count 10`
 and a base adaptive width cap of `--mc-max-bin-width 5` GeV. Within each of
 5--9, 9--11 and 11--80 GeV, native bins are merged towards that statistical
 target, then whole adaptive bins are merged until their width is at least
@@ -507,7 +512,9 @@ target, then whole adaptive bins are merged until their width is at least
 the minimum widths at 10, 30 and 70 GeV are 0.2, 0.6 and 1.4 GeV. Widths round
 up to available adaptive boundaries. A narrow final remainder merges backwards
 within its segment; the final width can therefore exceed the base adaptive cap.
-Signed yields and Sumw2 are preserved, and no bin crosses 9 or 11 GeV.
+The target is a **weighted effective count**, `max(sum w,0)^2 / sum(w^2)`,
+not a count of ten generated events. Signed yields and Sumw2 are preserved,
+and no bin crosses 9 or 11 GeV. SS binning defaults are unchanged.
 The 9--11 GeV fit veto and objective remain unchanged. SS adaptive fits use the
 same minimum-width rule, with their own statistical target and fit boundaries.
 Use `--mc-binning legacy` to restore the previous fixed MC binning. These MC
@@ -522,7 +529,7 @@ producer with independent fit and display ranges:
 
 ```bash
 python3 qcd_bkg_estimation.py --mode qcd-mc --era Run2+3 \
-    --fit-objective log-chi2 --mc-fit-range 5 30 --mc-plot-range 5 80
+    --fit-objective chi2 --mc-fit-range 5 30 --mc-plot-range 5 80
 ```
 
 Replace `Run2+3` with an individual era, `Run2` or `Run3` as needed; combined
@@ -550,6 +557,19 @@ or normalisation errors; the existing grey MC-statistical ratio band is separate
 An unaccepted/missing required fit suppresses the shape band with a warning.
 These are display changes; fitted parameters and production ShapeUp/Down
 templates are unchanged.
+Point style matches the AN: blue crosses with horizontal half-bin widths and
+vertical statistical errors, without filled black circles. MC cross-checks
+may run in parallel for different eras/combined periods; they read SS anchors
+but do not update the shared catalogue. For example:
+
+```bash
+for era in 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix Run2 Run3 Run2+3; do
+    python3 qcd_bkg_estimation.py --mode qcd-mc --era "${era}" \
+        --mc-fit-range 5 30 --mc-plot-range 5 80 &
+done
+wait
+```
+
 These MC-only controls do not write SS anchors or production ROOT templates.
 Without the range options, the existing 5--80 GeV fits and filenames are
 unchanged. `--mc-fit-range/--mc-plot-range` are rejected in SS-data mode.
