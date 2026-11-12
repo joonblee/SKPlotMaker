@@ -927,7 +927,10 @@ binning or the DY integral-matching interval.
 Default fit intervals are 11--70 GeV for DY and 11--80 GeV for OS/SS,
 intersected with a restricted plot range. Explicit fit intervals must lie
 inside the plot. OS/SS fits use **QCD MC only**, irrespective of the data
-blinding option; low-mass data points and the existing summaries stay visible.
+blinding option; low-mass data points stay visible and summaries are still
+printed to the console. The OS/SS plot omits the integrated-ratio summaries box.
+The DY plot omits the integral-matching and fixed-scale statistical-error
+explanatory lines, while retaining the Light-jet scale annotation and legend.
 The old red horizontal OS/SS reference lines are omitted; the grey unity
 reference and green constant/linear fits are retained.
 

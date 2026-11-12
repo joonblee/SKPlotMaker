@@ -3,12 +3,13 @@
 
 """BJet OS/SS overlay: QCD MC vs Data - nonQCD BKG.
 
-The upper-panel QCD MC OS/SS summaries use the integrated 5--9 GeV ratio and
+The console QCD MC OS/SS summaries use the integrated 5--9 GeV ratio and
 the equal mean of the integrated 11--30 and 30--80 GeV ratios. No red horizontal
 reference lines are drawn in the ratio panel. Statistical errors for the
 mean are combined in quadrature for the disjoint regions. These summaries use
 the original weighted yields before rebinning or bin-width normalisation. Data
-summaries retain the integrated ratios and the existing blinding.
+summaries retain the integrated ratios and the existing blinding. No summaries
+text box is drawn on the plot.
 
 --ratio-fits {none,const,linear,both} adds conditional diagonal-statistical
 fits y=c (dashed) and y=ax+b (solid) to QCD MC only, by default in 11--80 GeV.
@@ -187,7 +188,6 @@ def main():
     qos.Draw("HIST"); qss.Draw("HIST SAME"); dos.Draw("E1P SAME"); dss.Draw("E1P SAME")
     leg=ROOT.TLegend(.56,.71,.94,.88); leg.SetBorderSize(0); leg.SetFillStyle(0); leg.AddEntry(qos,"QCD MC, OS","l"); leg.AddEntry(qss,"QCD MC, SS","l"); leg.AddEntry(dos,"Data - nonQCD BKG, OS","lep"); leg.AddEntry(dss,"Data - nonQCD BKG, SS","lep"); leg.Draw()
     tx=ROOT.TLatex(); tx.SetNDC(); tx.SetTextFont(42); tx.SetTextSize(.047); tx.DrawLatex(.12,.925,"#bf{CMS} #it{Preliminary}"); tx.SetTextAlign(31); tx.SetTextSize(.038); tx.DrawLatex(.95,.925,lumi_label(args.era)); tx.SetTextAlign(11); tx.SetTextSize(.035); tx.DrawLatex(.15,.8,"BJet category: OS vs SS")
-    box=ROOT.TPaveText(.12,.07,.8,.45,"NDC"); box.SetBorderSize(0); box.SetFillStyle(0); box.SetTextAlign(12); box.SetTextSize(.03); box.AddText("OS/SS summaries"); box.AddText("5<m_{#mu#mu}<9:"); box.AddText(f"  QCD MC = {fmt(qlow)}"); box.AddText(f"  Data = {fmt(dlow)}"); box.AddText("11<m_{#mu#mu}<80 (QCD: equal mean):"); box.AddText(f"  QCD MC = {fmt(qhigh)}"); box.AddText(f"  Data (integrated) = blinded" if args.blind else f"  Data (integrated) = {fmt(dhigh)}"); box.Draw()
     lo.cd(); qr=ratio_hist(qos,qss,"qr"); dr=ratio_hist(dos,dss,"dr"); qr.SetLineColor(ROOT.kRed+1); qr.SetMarkerColor(ROOT.kRed+1); qr.SetMarkerStyle(20); dr.SetMarkerColor(ROOT.kBlack); dr.SetLineColor(ROOT.kBlack); dr.SetMarkerStyle(20)
     qr.GetYaxis().SetRangeUser(args.ratio_min,args.ratio_max); qr.GetYaxis().SetTitle("OS / SS"); qr.GetYaxis().SetTitleSize(.11); qr.GetYaxis().SetTitleOffset(.50); qr.GetYaxis().SetLabelSize(.09); qr.GetYaxis().SetNdivisions(505); qr.GetXaxis().SetTitle("m_{#mu#mu} [GeV]"); qr.GetXaxis().SetTitleSize(.13); qr.GetXaxis().SetLabelSize(.10); qr.GetXaxis().SetRangeUser(args.xmin,args.xmax)
     qr.Draw("E1P"); dr.Draw("E1P SAME"); line=ROOT.TLine(args.xmin,1,args.xmax,1); line.SetLineStyle(2); line.SetLineColor(ROOT.kGray+2); line.Draw("SAME")
