@@ -4,7 +4,7 @@
 Reuse the production six function families, nominal Power x Exp x Logistic,
 bin-integrated chi-square and fit-validity rules. Signed bins are never clipped.
 All ranges use one common grid: adaptive below 30 GeV, split at 20 GeV,
-and fixed edges 30, 40, 50, 60, 80 GeV above. The adaptive width cap does
+and fixed edges 30, 50, 80 GeV above. The adaptive width cap does
 not apply to these fixed high-mass bins. Thus only the fit range changes.
 This diagnostic grid can differ from production 5--30 adaptive binning.
 The common-grid edges and all fit diagnostics are exported.
@@ -66,7 +66,7 @@ import sys
 import qcd_bkg_estimation as qcd
 
 RANGES = (30., 20., 80.)
-FIXED_HIGH_MASS_EDGES = (30., 40., 50., 60., 80.)
+FIXED_HIGH_MASS_EDGES = (30., 50., 80.)
 FORCED_EDGES = (20., *FIXED_HIGH_MASS_EDGES)
 ALL_PERIODS = (*qcd.RUN2_ERAS, *qcd.RUN3_ERAS, "Run2", "Run3", "Run2+3")
 DEFAULT_BASE = str(Path(qcd.DEFAULT_BASE_DIR) / "NIsoMuon")

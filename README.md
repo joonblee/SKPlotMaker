@@ -1045,7 +1045,7 @@ count 10, maximum width 5 GeV), split at 20 and 30 GeV so no bin crosses a fit
 boundary. The shared SS/MC minimum-width rule,
 `width >= max(0.1 GeV, 0.02 * final bin centre)`, is applied independently in
 5--20 and 20--30 GeV, preserving those boundaries without narrow
-remainders. At high mass the edges are fixed at **30, 40, 50, 60, 80 GeV**;
+remainders. At high mass the edges are fixed at **30, 50, 80 GeV**;
 there are no additional adaptive edges inside that interval. These fixed bins
 override the base adaptive width cap, as can final minimum-width merging.
 This diagnostic grid can differ from production
