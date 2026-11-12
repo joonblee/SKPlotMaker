@@ -99,10 +99,40 @@ class SSComparisonTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             ss.envelope(1., [math.inf])
 
+    def test_ratios_use_fixed_reference_and_bin_averages_without_mutation(self):
+        reports = self.reports()
+        reports[0]["bin_averages"] = [dict(low=11., high=13., central=.5)]
+        reports[1].update(central=[2., .2], low=[1.5, .15], high=[2.5, .25])
+        points = [dict(x=12., half_width=1., value=-1., error=.25)]
+        original = copy.deepcopy((reports, points))
+        curves, data = ss.ratio_to_reference(points, reports)
+        self.assertEqual(curves[0]["central"], [1., 1.])
+        self.assertEqual(curves[1]["central"], [2., 2.])
+        for value in curves[1]["low"]:
+            self.assertAlmostEqual(value, 1.5)
+        for value in curves[1]["high"]:
+            self.assertAlmostEqual(value, 2.5)
+        self.assertEqual(data[0]["value"], -2.)
+        self.assertEqual(data[0]["error"], .5)
+        self.assertEqual((reports, points), original)
+
+    def test_ratio_reference_zero_is_omitted_and_grids_must_match(self):
+        reports = self.reports()
+        reports[0]["central"][1] = 0.
+        reports[0]["bin_averages"] = [dict(low=11., high=13., central=0.)]
+        points = [dict(x=12., half_width=1., value=1., error=.25)]
+        curves, data = ss.ratio_to_reference(points, reports)
+        self.assertEqual(curves[0]["x"], [5.])
+        self.assertEqual(data, [])
+        reports[1]["x"] = [5., 70.]
+        with self.assertRaises(ValueError):
+            ss.ratio_to_reference(points, reports)
+
     def test_full_alias_parser_and_production_nominal(self):
         args = ss.build_parser().parse_args(["--era", "full"])
         self.assertEqual(args.era, "full")
         self.assertEqual(args.ss_min_effective_count, 10.)
+        self.assertEqual((args.xmax, args.ymin, args.logx), (80., .001, True))
         self.assertEqual(ss.qcd.SS_NOMINAL_MODEL, "power_exp_logistic")
         self.assertEqual(len(ss.qcd.SS_SHAPE_ALTERNATIVES), 5)
 

@@ -10,9 +10,13 @@ adaptive binning. The common-grid edges and all fit diagnostics are exported.
 Bands are pointwise nominal +/- max_alternative |alternative - nominal|,
 without zero-clipping. They are functional envelopes, not confidence intervals
 or the total statistical + systematic uncertainty. Default display: log x,
-5--50 GeV and y >= 0.01 events/GeV, with decimal chi-square/ndf. These are
+5--80 GeV and y >= 0.001 events/GeV, with decimal chi-square/ndf. These are
 viewport settings only: signed bins, all three fit ranges and full 5--80 GeV
 curves/bands remain unchanged in the fit and JSON.
+The lower panel divides every curve/envelope by the fixed 5--30 GeV nominal
+curve. Data ratios use the corresponding bin-averaged reference prediction;
+statistical data errors are divided by the same fixed denominator. Reference
+uncertainty is shown as a band around one, not added in quadrature to ratios.
 
 For combined periods, sum the SS data and each subtraction MC histogram over
 the requested eras first, then fit that summed histogram once per range.
@@ -56,11 +60,13 @@ def build_parser():
     parser.add_argument("--fit-max-attempts", type=qcd.positive_integer, default=30)
     parser.add_argument("--fit-attempt-details", action="store_true")
     parser.add_argument("--linthresh", type=qcd.positive_float, default=.1,
-                        help="Linear y-axis neighbourhood around zero, in events/GeV")
-    parser.add_argument("--ymin", type=float, default=.01,
-                        help="Displayed lower y bound in events/GeV (default: 0.01; 0 is allowed)")
-    parser.add_argument("--xmax", type=qcd.positive_float, default=50.,
-                        help="Displayed upper mass bound only, 5 < xmax <= 80 (default: 50 GeV)")
+                        help="Symmetric-log scale near zero when --ymin 0 is used, in events/GeV")
+    parser.add_argument("--ymin", type=float, default=.001,
+                        help="Displayed lower y bound in events/GeV (default: 0.001; 0 is allowed)")
+    parser.add_argument("--xmax", type=qcd.positive_float, default=80.,
+                        help="Displayed upper mass bound only, 5 < xmax <= 80 (default: 80 GeV)")
+    parser.add_argument("--ratio-min", type=float, default=0., help="Lower ratio-panel bound (default: 0)")
+    parser.add_argument("--ratio-max", type=float, default=2., help="Upper ratio-panel bound (default: 2)")
     xscale = parser.add_mutually_exclusive_group()
     xscale.add_argument("--logx", dest="logx", action="store_true", help="Logarithmic x axis (default)")
     xscale.add_argument("--linear-x", dest="logx", action="store_false", help="Linear x axis")
@@ -190,17 +196,49 @@ def validate_plot_data(points, reports):
             raise ValueError("Envelope does not bracket nominal curve")
 
 
-def plot(args, points, reports, stem, ROOT=None):
-    """Draw ROOT graphs in transformed y coordinates, with physical y labels.
+def ratio_to_reference(points, reports):
+    """Derive display ratios without altering the saved physical predictions.
 
-    Transform each error/band endpoint separately and clip only the viewport;
-    full signed fit inputs/results are retained. No array libraries or BLAS
-    calls are used.
+    Curve bands share a fixed nominal reference, so no independent-denominator
+    error propagation is applied to these correlated fits of the same data.
+    Data denominators are bin averages, never centre-point evaluations.
     """
+    reference = next(r for r in reports if r["range"] == [5., 30.])
+    ratios = []
+    for report in reports:
+        if report["x"] != reference["x"]:
+            raise ValueError("Fit curves must share the reference mass grid")
+        indices = [i for i, denominator in enumerate(reference["central"])
+                   if math.isfinite(denominator) and denominator > 0.]
+        result = dict(range=report["range"], x=[report["x"][i] for i in indices])
+        for key in ("central", "low", "high"):
+            result[key] = [report[key][i]/reference["central"][i] for i in indices]
+            if not all(math.isfinite(value) for value in result[key]):
+                raise ValueError("Nonfinite ratio to 5--30 GeV nominal reference")
+        ratios.append(result)
+    bin_key = lambda low, high: (round(low, 8), round(high, 8))
+    bin_averages = {bin_key(b["low"], b["high"]): b["central"]
+                    for b in reference["bin_averages"]}
+    data = []
+    for point in points:
+        key = bin_key(point["x"]-point["half_width"], point["x"]+point["half_width"])
+        if key not in bin_averages:
+            raise ValueError(f"Missing bin-averaged reference for data bin {key}")
+        denominator = bin_averages[key]
+        if denominator <= 0. or not math.isfinite(denominator):
+            continue
+        data.append(dict(point, value=point["value"]/denominator, error=point["error"]/denominator))
+    return ratios, data
+
+
+def plot(args, points, reports, stem, ROOT=None):
+    """Draw the physical prediction above and fixed-reference ratios below."""
     validate_plot_data(points, reports)
+    ratio_reports, ratio_points = ratio_to_reference(points, reports)
     ROOT = ROOT if ROOT is not None else qcd.import_root()
-    transform = lambda y: signed_log(y, args.linthresh)
-    visible_points = [p for p in points if 5. <= p["x"] <= args.xmax]
+    log_y = args.ymin > 0.
+    transform = (lambda y: max(y, args.ymin)) if log_y else (lambda y: signed_log(y, args.linthresh))
+    visible_points = [p for p in points if 5. <= p["x"] <= args.xmax and p["value"] >= args.ymin]
     visible_highs = [high for r in reports for x, high in zip(r["x"], r["high"])
                      if 5. <= x <= args.xmax]
     ymin = args.ymin
@@ -208,37 +246,47 @@ def plot(args, points, reports, stem, ROOT=None):
                2.*max([p["value"]+p["error"] for p in visible_points] + visible_highs))
     bottom, top = transform(ymin), transform(ymax)
     margin = .025*(top-bottom)
-    canvas = ROOT.TCanvas("ss_range_comparison", "", 1100, 850)
-    canvas.SetLeftMargin(.14)
-    canvas.SetRightMargin(.035)
-    canvas.SetTopMargin(.08)
-    canvas.SetBottomMargin(.16)
-    canvas.SetLogx(args.logx)
-    frame = canvas.DrawFrame(5., bottom, args.xmax, top+margin)
+    canvas = ROOT.TCanvas("ss_range_comparison", "", 1100, 1100)
+    upper = ROOT.TPad("ss_range_upper", "", 0., .35, 1., 1.)
+    lower = ROOT.TPad("ss_range_ratio", "", 0., .08, 1., .35)
+    for pad in (upper, lower):
+        pad.SetLeftMargin(.14)
+        pad.SetRightMargin(.035)
+        pad.SetLogx(args.logx)
+        pad.SetTicks(1, 1)
+        pad.Draw()
+    upper.SetTopMargin(.09)
+    upper.SetBottomMargin(.025)
+    lower.SetTopMargin(.03)
+    lower.SetBottomMargin(.32)
+    upper.cd()
+    upper.SetLogy(log_y)
+    frame = upper.DrawFrame(5., bottom, args.xmax, top+margin)
     frame.SetTitle("")
-    frame.GetXaxis().SetTitle("m_{#mu#mu} [GeV]")
-    frame.GetYaxis().SetTitle("Events / GeV (symmetric log scale)")
+    frame.GetXaxis().SetTitle("")
+    frame.GetYaxis().SetTitle("Events / GeV" if log_y else "Events / GeV (symmetric log scale)")
     frame.GetXaxis().SetTitleSize(.04)
-    frame.GetXaxis().SetLabelSize(.035)
+    frame.GetXaxis().SetLabelSize(0.)
     if args.logx:
         frame.GetXaxis().SetMoreLogLabels()
         frame.GetXaxis().SetNoExponent()
-    frame.GetYaxis().SetTitleSize(.04)
-    frame.GetYaxis().SetTitleOffset(1.55)
-    frame.GetYaxis().SetLabelSize(0.)
-    frame.GetYaxis().SetTickLength(0.)
-    keepalive = [frame]
+    frame.GetYaxis().SetTitleSize(.045)
+    frame.GetYaxis().SetTitleOffset(1.35)
+    frame.GetYaxis().SetLabelSize(.04 if log_y else 0.)
+    frame.GetYaxis().SetTickLength(.02 if log_y else 0.)
+    keepalive = [frame, upper, lower]
     labels = ROOT.TLatex()
     labels.SetTextFont(42)
     labels.SetTextSize(.033)
     labels.SetTextAlign(32)
     max_abs = max(abs(ymin), abs(ymax))
-    ticks = [0.] if ymin == 0. else []
-    first_tick = min(args.linthresh, ymin) if ymin > 0. else args.linthresh
+    ticks = [0.] if not log_y else []
+    first_tick = args.linthresh
     for exponent in range(math.floor(math.log10(first_tick)),
                           math.ceil(math.log10(max_abs))+1):
         value = 10.**exponent
-        ticks.extend(sign*value for sign in (-1., 1.) if ymin <= sign*value <= ymax)
+        if not log_y:
+            ticks.extend(sign*value for sign in (-1., 1.) if ymin <= sign*value <= ymax)
     for value in sorted(ticks):
         y = transform(value)
         grid = ROOT.TLine(5., y, args.xmax, y)
@@ -261,9 +309,11 @@ def plot(args, points, reports, stem, ROOT=None):
         line.SetLineStyle(3)
         line.Draw()
         keepalive.append(line)
+    if log_y:
+        upper.SetGridy()
     legend = ROOT.TLegend(.40, .735, .955, .905)
     legend.SetBorderSize(0)
-    legend.SetFillColor(ROOT.kWhite)
+    legend.SetFillStyle(0)
     legend.SetTextFont(42)
     legend.SetTextSize(.028)
     curves = []
@@ -278,7 +328,7 @@ def plot(args, points, reports, stem, ROOT=None):
                                                       report["low"], report["high"])):
             band.SetPoint(i, x, transform(low))
             band.SetPoint(2*n-1-i, x, transform(high))
-            curve.SetPoint(i, x, transform(central))
+            curve.SetPoint(i, x, max(central, 1e-300) if log_y else transform(central))
         band.SetFillColorAlpha(colour, .17)
         band.SetLineColor(colour)
         band.SetLineWidth(2)
@@ -312,10 +362,71 @@ def plot(args, points, reports, stem, ROOT=None):
     text.SetTextFont(42)
     text.SetTextSize(.034)
     text.DrawLatex(.14, .95, f"SS fit-range comparison: {args.era}")
-    text.SetTextSize(.026)
-    text.DrawLatex(.14, .065, "Bands: functional envelope only. Display cuts do not change signed fit inputs/results.")
-    text.DrawLatex(.14, .03, f"Display: 5-{args.xmax:g} GeV, y #geq {ymin:g} events/GeV; full fit results saved in JSON.")
-    canvas.RedrawAxis()
+    upper.RedrawAxis()
+
+    lower.cd()
+    lower.SetGridy()
+    ratio_frame = lower.DrawFrame(5., args.ratio_min, args.xmax, args.ratio_max)
+    ratio_frame.SetTitle("")
+    ratio_frame.GetXaxis().SetTitle("m_{#mu#mu} [GeV]")
+    ratio_frame.GetXaxis().SetTitleSize(.12)
+    ratio_frame.GetXaxis().SetLabelSize(.10)
+    if args.logx:
+        ratio_frame.GetXaxis().SetMoreLogLabels()
+        ratio_frame.GetXaxis().SetNoExponent()
+    ratio_frame.GetYaxis().SetTitle("Ratio to 5-30")
+    ratio_frame.GetYaxis().SetTitleSize(.085)
+    ratio_frame.GetYaxis().SetTitleOffset(.65)
+    ratio_frame.GetYaxis().SetLabelSize(.085)
+    ratio_frame.GetYaxis().SetNdivisions(505)
+    keepalive.append(ratio_frame)
+    ratio_curves = []
+    for report, hex_colour in zip(ratio_reports, ("#2166ac", "#d95f02", "#1b9e77")):
+        colour = ROOT.TColor.GetColor(hex_colour)
+        n = len(report["x"])
+        if n == 0:
+            continue
+        band, curve = ROOT.TGraph(2*n), ROOT.TGraph(n)
+        for graph in (band, curve):
+            graph.SetBit(ROOT.TGraph.kClipFrame)
+            graph.SetLineColor(colour)
+            graph.SetLineWidth(2)
+        for i, (x, value, low, high) in enumerate(zip(report["x"], report["central"],
+                                                      report["low"], report["high"])):
+            band.SetPoint(i, x, low)
+            band.SetPoint(2*n-1-i, x, high)
+            curve.SetPoint(i, x, value)
+        band.SetFillColorAlpha(colour, .17)
+        band.Draw("F SAME")
+        ratio_curves.append(curve)
+        keepalive.extend((band, curve))
+    for curve in ratio_curves:
+        curve.Draw("L SAME")
+    unity = ROOT.TLine(5., 1., args.xmax, 1.)
+    unity.SetLineColor(ROOT.kGray+2)
+    unity.SetLineStyle(2)
+    unity.Draw()
+    ratio_data = ROOT.TGraphErrors()
+    ratio_data.SetBit(ROOT.TGraph.kClipFrame)
+    for point in ratio_points:
+        if not 5. <= point["x"] <= args.xmax:
+            continue
+        i = ratio_data.GetN()
+        ratio_data.SetPoint(i, point["x"], point["value"])
+        ratio_data.SetPointError(i, point["half_width"], point["error"])
+    ratio_data.SetMarkerStyle(20)
+    ratio_data.SetMarkerSize(.5)
+    ratio_data.SetLineColor(ROOT.kBlack)
+    ratio_data.Draw("PZ SAME")
+    keepalive.extend((unity, ratio_data))
+    lower.RedrawAxis()
+    canvas.cd()
+    footer = ROOT.TLatex()
+    footer.SetNDC()
+    footer.SetTextFont(42)
+    footer.SetTextSize(.019)
+    footer.DrawLatex(.14, .045, "Reference: fixed 5-30 GeV nominal fit. Bands: functional envelope only.")
+    footer.DrawLatex(.14, .018, "Fit ranges and full signed data/predictions in JSON are unchanged; display cuts only.")
     canvas.Update()
     try:
         for extension in ("pdf", "png"):
@@ -346,6 +457,8 @@ def main(argv=None):
         parser.error("--ymin must be finite and nonnegative")
     if not 5. < args.xmax <= 80.:
         parser.error("--xmax must satisfy 5 < xmax <= 80 GeV (display only)")
+    if not all(map(math.isfinite, (args.ratio_min, args.ratio_max))) or args.ratio_min >= args.ratio_max:
+        parser.error("Require finite --ratio-min < --ratio-max")
     if args.plot_json:
         return replot_saved(args)
     args.era = "Run2+3" if args.era == "full" else args.era

@@ -992,21 +992,35 @@ only SS histograms and never writes production templates or anchors, so these
 diagnostic era jobs can run independently.
 
 Outputs are PDF, PNG and JSON under `plots/SSFitRangeComparison/` (override
-`--output-dir`). Display defaults are **log x, 5--50 GeV, y >= 0.01 events/GeV**.
+`--output-dir`). Display defaults are **log x, 5--80 GeV, y >= 0.001 events/GeV**.
 The legend gives chi-square/ndf as a decimal ratio. `--xmax`, `--ymin` (including
 `--ymin 0`) and `--linear-x` change the viewport only. All signed data bins,
 the 5--20/30/80 GeV fits and full 5--80 GeV curves/bands remain in the JSON.
 Points and band edges below the displayed y minimum are outside the viewport.
-`--linthresh 0.1` controls the symmetric-log y mapping near zero in
-events/GeV. Graphics use PyROOT and Python scalar maths only, with no
-NumPy/Matplotlib imports or BLAS operations. The ROOT plot uses the smooth
-signed mapping `sign(y) * log10(1 + abs(y)/linthresh)`, labelling the y axis
-in physical events/GeV. Each error/band endpoint is transformed separately;
+The upper panel uses a logarithmic y axis for positive `--ymin`. For
+`--ymin 0`, `--linthresh 0.1` controls the fallback symmetric-log mapping
+`sign(y) * log10(1 + abs(y)/linthresh)`, labelled in physical events/GeV.
+Graphics use PyROOT and Python scalar maths only, with no
+NumPy/Matplotlib imports or BLAS operations. Display clipping affects only
+the rendered points/error bars/bands;
 the saved physical results and fit calculations are unchanged. `--base-dir` includes
 `NIsoMuon`, as in the comparison plotters. Every required function must pass the
 existing fit-validity rules for all ranges before a comparison band is drawn.
 On a failed fit, diagnostics are saved in JSON and the command exits nonzero;
 inspect that report and, if appropriate, increase `--fit-max-attempts`.
+
+The lower panel uses the **5--30 GeV nominal fit as a fixed reference**.
+Each curve and its functional envelope are divided pointwise by that reference;
+its own nominal ratio is one, with its relative envelope drawn around one.
+Black data points and their statistical errors are divided by the reference's
+bin-averaged prediction from the JSON, rather than its centre-point value.
+Negative data ratios are retained in the derived values. The three fits use
+the same data: no independent denominator uncertainty is added in quadrature.
+These are conditional comparison bands, not statistical confidence intervals.
+The ratio viewport defaults to 0--2; `--ratio-min` and `--ratio-max` adjust it
+without changing any prediction. Nonpositive reference values are omitted
+from the ratio. All ratio values are derived from saved results, so
+`--plot-json` also produces both panels without refitting or changing JSON.
 
 If JSON was saved but plotting crashed, regenerate PDF/PNG directly:
 
