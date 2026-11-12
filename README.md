@@ -966,11 +966,32 @@ diagnostic era jobs can run independently.
 Outputs are PDF, PNG and JSON under `plots/SSFitRangeComparison/` (override
 `--output-dir`). The symmetric-logarithmic y axis shows negative bins and band
 edges; `--linthresh 0.1` controls its linear neighbourhood around zero in
-events/GeV. PyROOT, NumPy and Matplotlib are required. `--base-dir` includes
+events/GeV. Graphics use PyROOT and Python scalar maths only, with no
+NumPy/Matplotlib imports or BLAS operations. The ROOT plot uses the smooth
+signed mapping `sign(y) * log10(1 + abs(y)/linthresh)`, labelling the y axis
+in physical events/GeV. Each error/band endpoint is transformed separately;
+the saved physical results and fit calculations are unchanged. `--base-dir` includes
 `NIsoMuon`, as in the comparison plotters. Every required function must pass the
 existing fit-validity rules for all ranges before a comparison band is drawn.
 On a failed fit, diagnostics are saved in JSON and the command exits nonzero;
 inspect that report and, if appropriate, increase `--fit-max-attempts`.
+
+If JSON was saved but plotting crashed, regenerate PDF/PNG directly:
+
+```bash
+python3 qcd_ss_fit_range_comparison.py --plot-json \
+    plots/SSFitRangeComparison/QCD_SS_FitRangeComparison_2022EE.json
+
+# All saved era/combined results; shell expands the wildcard.
+python3 qcd_ss_fit_range_comparison.py --plot-json \
+    plots/SSFitRangeComparison/QCD_SS_FitRangeComparison_*.json
+```
+
+This mode opens no analysis input files, repeats no fits and never modifies
+the JSON. It writes plots beside each input JSON by default; `--output-dir`
+overrides that location. Reports with missing/failed fits are rejected.
+The ROOT graphics path avoids the NumPy/Matplotlib-triggered OpenBLAS CPU-kernel
+crash seen in some CMSSW environments; no BLAS CPU override is required here.
 
 Agreement assesses fit-range stability; it does not by itself establish
 high-mass closure or replace a check of the high-mass SS observations/errors.

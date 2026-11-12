@@ -19,7 +19,10 @@ Only SS histograms are read. No production anchors/templates are written.
 Examples (base-dir includes NIsoMuon, like the comparison plotters):
   python3 qcd_ss_fit_range_comparison.py --era 2018
   python3 qcd_ss_fit_range_comparison.py --era full
-Requires PyROOT, NumPy and Matplotlib. --help does not require ROOT.
+  python3 qcd_ss_fit_range_comparison.py --plot-json plots/SSFitRangeComparison/*.json
+Requires PyROOT only; plotting uses Python scalar maths and ROOT graphics,
+without importing NumPy/Matplotlib or running BLAS. --plot-json redraws saved
+results without opening input ROOT files or repeating fits. --help needs no ROOT.
 """
 
 import argparse
@@ -42,7 +45,10 @@ def build_parser():
     parser.add_argument("--base-dir", default=DEFAULT_BASE,
                         help="Input directory containing era directories (includes NIsoMuon)")
     parser.add_argument("--trigger", default="")
-    parser.add_argument("--output-dir", type=Path, default=Path("plots/SSFitRangeComparison"))
+    parser.add_argument("--output-dir", type=Path,
+                        help="Default: plots/SSFitRangeComparison; for --plot-json, beside each input JSON")
+    parser.add_argument("--plot-json", type=Path, nargs="+", metavar="JSON",
+                        help="Redraw saved JSON results only: no input histograms, fits or JSON writes")
     parser.add_argument("--ss-min-effective-count", type=qcd.positive_float, default=10.)
     parser.add_argument("--ss-max-bin-width", type=qcd.positive_float, default=5.)
     parser.add_argument("--fit-max-attempts", type=qcd.positive_integer, default=30)
@@ -133,45 +139,190 @@ def fit_ranges(ROOT, prepared, args):
     return output
 
 
-def plot(args, points, reports, stem):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+def signed_log(value, threshold):
+    """Smooth symmetric log mapping; linear near zero, valid for signed values."""
+    magnitude = abs(value)
+    # Log-domain fallback avoids overflow for very large envelopes.
+    if magnitude <= threshold:
+        mapped = math.log1p(magnitude / threshold) / math.log(10.)
+    else:
+        mapped = (math.log(magnitude) - math.log(threshold)
+                  + math.log1p(threshold / magnitude)) / math.log(10.)
+    return math.copysign(mapped, value)
 
-    fig, ax = plt.subplots(figsize=(10, 7.5))
-    for report, colour in zip(reports, ("#2166ac", "#d95f02", "#1b9e77")):
-        upper = report["range"][1]
-        metric = report["models"][qcd.SS_NOMINAL_MODEL]["metrics"]
-        label = (f"5–{upper:g} GeV fit: nominal + functional envelope"
-                 f" ($\\chi^2$/ndf={metric['stat_chi2']:.1f}/{metric['stat_ndf']})")
-        ax.fill_between(report["x"], report["low"], report["high"], color=colour, alpha=.15)
-        ax.plot(report["x"], report["central"], color=colour, linewidth=1.8, label=label)
-    ax.errorbar([p["x"] for p in points], [p["value"] for p in points],
-                yerr=[p["error"] for p in points], xerr=[p["half_width"] for p in points],
-                fmt="o", markersize=3, color="black", linewidth=.8, label="SS data − Top − Others", zorder=5)
-    ax.axhline(0., color="grey", linewidth=.8)
-    for boundary in (20., 30.):
-        ax.axvline(boundary, color="grey", linestyle=":", linewidth=.8)
-    ax.set(xlim=(5., 80.), xlabel=r"$m_{\mu\mu}$ [GeV]", ylabel="Events / GeV")
-    ax.set_yscale("symlog", linthresh=args.linthresh)
+
+def validate_plot_data(points, reports):
+    """Reject incomplete/failed JSON results rather than drawing partial bands."""
+    if not points or len(reports) != len(RANGES):
+        raise ValueError("Need SS data points and all three fit-range reports")
+    if sorted(r["range"] for r in reports) != sorted([[5., high] for high in RANGES]):
+        raise ValueError("Expected 5--20, 5--30 and 5--80 GeV reports")
+    for point in points:
+        if not all(math.isfinite(point[key]) for key in ("x", "half_width", "value", "error")):
+            raise ValueError("Nonfinite SS point in plot input")
+        if point["error"] < 0 or point["half_width"] < 0:
+            raise ValueError("Negative SS error/bin width in plot input")
+    for report in reports:
+        if not report.get("valid") or report.get("invalid_models"):
+            raise ValueError(f"Cannot plot invalid fit range {report['range']}: {report.get('invalid_models')}")
+        if any(not report["models"][key]["accepted"] for key in qcd.SS_REQUIRED_ROOT_MODELS):
+            raise ValueError(f"Unaccepted required model in fit range {report['range']}")
+        n = len(report["x"])
+        if n < 2 or any(len(report[key]) != n for key in ("central", "low", "high")):
+            raise ValueError("Inconsistent curve/envelope arrays in plot input")
+        if any(not math.isfinite(value) for key in ("x", "central", "low", "high")
+               for value in report[key]):
+            raise ValueError("Nonfinite curve/envelope in plot input")
+        if any(a >= b for a, b in zip(report["x"], report["x"][1:])):
+            raise ValueError("Curve mass grid must be strictly increasing")
+        if any(not low <= central <= high for low, central, high in
+               zip(report["low"], report["central"], report["high"])):
+            raise ValueError("Envelope does not bracket nominal curve")
+
+
+def plot(args, points, reports, stem, ROOT=None):
+    """Draw ROOT graphs in transformed y coordinates, with physical y labels.
+
+    Transform each endpoint of an error/band separately: neither negative
+    values nor statistical intervals crossing zero are lost or symmetrised
+    in the displayed coordinates. No array libraries or BLAS calls are used.
+    """
+    validate_plot_data(points, reports)
+    ROOT = ROOT if ROOT is not None else qcd.import_root()
+    transform = lambda y: signed_log(y, args.linthresh)
     ymin = min([p["value"]-p["error"] for p in points] + [min(r["low"]) for r in reports])
     ymax = max([p["value"]+p["error"] for p in points] + [max(r["high"]) for r in reports])
-    ax.set_ylim(min(-args.linthresh, ymin*1.6), max(args.linthresh, ymax*2.))
-    ax.set_title(f"SS fit-range comparison — {args.era}", loc="left")
-    ax.legend(fontsize=9, loc="upper right")
-    ax.grid(alpha=.2)
-    fig.text(.12, .025, "Bands: functional envelope only; symmetric and unclipped. Signed bins retained.", fontsize=9)
-    fig.tight_layout(rect=(0, .04, 1, 1))
-    for extension in ("pdf", "png"):
-        path = stem.with_suffix("." + extension)
-        fig.savefig(path, dpi=160)
-        print(f"[SAVED] {path}")
-    plt.close(fig)
+    ymin, ymax = min(-args.linthresh, ymin*1.6), max(args.linthresh, ymax*2.)
+    bottom, top = transform(ymin), transform(ymax)
+    margin = .025*(top-bottom)
+    canvas = ROOT.TCanvas("ss_range_comparison", "", 1100, 850)
+    canvas.SetLeftMargin(.14)
+    canvas.SetRightMargin(.035)
+    canvas.SetTopMargin(.08)
+    canvas.SetBottomMargin(.16)
+    frame = canvas.DrawFrame(5., bottom-margin, 80., top+margin)
+    frame.SetTitle("")
+    frame.GetXaxis().SetTitle("m_{#mu#mu} [GeV]")
+    frame.GetYaxis().SetTitle("Events / GeV (symmetric log scale)")
+    frame.GetXaxis().SetTitleSize(.04)
+    frame.GetXaxis().SetLabelSize(.035)
+    frame.GetYaxis().SetTitleSize(.04)
+    frame.GetYaxis().SetTitleOffset(1.55)
+    frame.GetYaxis().SetLabelSize(0.)
+    frame.GetYaxis().SetTickLength(0.)
+    keepalive = [frame]
+    labels = ROOT.TLatex()
+    labels.SetTextFont(42)
+    labels.SetTextSize(.033)
+    labels.SetTextAlign(32)
+    max_abs = max(abs(ymin), abs(ymax))
+    ticks = [0.]
+    for exponent in range(math.floor(math.log10(args.linthresh)),
+                          math.ceil(math.log10(max_abs))+1):
+        value = 10.**exponent
+        ticks.extend(sign*value for sign in (-1., 1.) if ymin <= sign*value <= ymax)
+    for value in sorted(ticks):
+        y = transform(value)
+        grid = ROOT.TLine(5., y, 80., y)
+        grid.SetLineColor(ROOT.kGray if value else ROOT.kGray+2)
+        grid.SetLineStyle(3 if value else 1)
+        grid.Draw()
+        keepalive.append(grid)
+        if value == 0.:
+            label = "0"
+        elif abs(value) == 1.:
+            label = "-1" if value < 0 else "1"
+        else:
+            label = ("-" if value < 0 else "") + f"10^{{{round(math.log10(abs(value)))}}}"
+        keepalive.append(labels.DrawLatex(4.3, y, label))
+    for boundary in (20., 30.):
+        line = ROOT.TLine(boundary, bottom-margin, boundary, top+margin)
+        line.SetLineColor(ROOT.kGray+1)
+        line.SetLineStyle(3)
+        line.Draw()
+        keepalive.append(line)
+    legend = ROOT.TLegend(.40, .735, .955, .905)
+    legend.SetBorderSize(0)
+    legend.SetFillColor(ROOT.kWhite)
+    legend.SetTextFont(42)
+    legend.SetTextSize(.028)
+    curves = []
+    for report, hex_colour in zip(reports, ("#2166ac", "#d95f02", "#1b9e77")):
+        colour = ROOT.TColor.GetColor(hex_colour)
+        n = len(report["x"])
+        band = ROOT.TGraph(2*n)
+        curve = ROOT.TGraph(n)
+        for i, (x, central, low, high) in enumerate(zip(report["x"], report["central"],
+                                                      report["low"], report["high"])):
+            band.SetPoint(i, x, transform(low))
+            band.SetPoint(2*n-1-i, x, transform(high))
+            curve.SetPoint(i, x, transform(central))
+        band.SetFillColorAlpha(colour, .17)
+        band.SetLineColor(colour)
+        band.SetLineWidth(2)
+        band.Draw("F SAME")
+        curve.SetLineColor(colour)
+        curve.SetLineWidth(2)
+        curves.append(curve)
+        keepalive.extend((band, curve))
+        metric = report["models"][qcd.SS_NOMINAL_MODEL]["metrics"]
+        label = (f"5-{report['range'][1]:g} GeV fit + envelope"
+                 f" (#chi^{{2}}/ndf={metric['stat_chi2']:.1f}/{metric['stat_ndf']})")
+        legend.AddEntry(band, label, "lf")
+    for curve in curves:
+        curve.Draw("L SAME")
+    data = ROOT.TGraphAsymmErrors(len(points))
+    for i, point in enumerate(points):
+        value, error = point["value"], point["error"]
+        y = transform(value)
+        data.SetPoint(i, point["x"], y)
+        data.SetPointError(i, point["half_width"], point["half_width"],
+                           y-transform(value-error), transform(value+error)-y)
+    data.SetMarkerStyle(20)
+    data.SetMarkerSize(.5)
+    data.SetLineColor(ROOT.kBlack)
+    data.Draw("PZ SAME")
+    legend.AddEntry(data, "SS data - Top - Others", "pe")
+    legend.Draw()
+    text = ROOT.TLatex()
+    text.SetNDC()
+    text.SetTextFont(42)
+    text.SetTextSize(.034)
+    text.DrawLatex(.14, .95, f"SS fit-range comparison: {args.era}")
+    text.SetTextSize(.026)
+    text.DrawLatex(.14, .065, "Bands: symmetric functional envelope only; signed bins and lower edges retained.")
+    text.DrawLatex(.14, .03, f"Symmetric log axis, linear near zero (scale {args.linthresh:g} events/GeV).")
+    canvas.RedrawAxis()
+    canvas.Update()
+    try:
+        for extension in ("pdf", "png"):
+            path = stem.with_suffix("." + extension)
+            canvas.SaveAs(str(path))
+            print(f"[SAVED] {path}")
+    finally:
+        canvas.Close()
+
+
+def replot_saved(args):
+    """Preserve saved fit results and JSON bytes; only regenerate PDF/PNG."""
+    ROOT = qcd.import_root()
+    for path in args.plot_json:
+        payload = json.loads(path.read_text())
+        plot_args = argparse.Namespace(**vars(args))
+        plot_args.era = payload["era"]
+        output = args.output_dir if args.output_dir is not None else path.parent
+        output.mkdir(parents=True, exist_ok=True)
+        plot(plot_args, payload["points"], payload["fits"], output / path.stem, ROOT=ROOT)
+    return 0
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.plot_json:
+        return replot_saved(args)
     args.era = "Run2+3" if args.era == "full" else args.era
+    if args.output_dir is None:
+        args.output_dir = Path("plots/SSFitRangeComparison")
     ROOT = qcd.import_root()
     qcd.declare_fit_functions(ROOT)
     qcd.configure_minimizer(ROOT)
@@ -204,7 +355,7 @@ def main(argv=None):
         if failed:
             raise RuntimeError("No comparison band drawn: required fits failed validity checks. "
                                "See JSON; retry with more --fit-max-attempts. " + "; ".join(failed))
-        plot(args, points, reports, stem)
+        plot(args, points, reports, stem, ROOT=ROOT)
     finally:
         for handle in handles:
             handle.Close()

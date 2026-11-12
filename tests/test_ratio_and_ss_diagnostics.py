@@ -1,9 +1,13 @@
 """Check signed-bin fits, blind/veto boundaries and symmetric envelopes."""
 import math
+import copy
+import json
 from pathlib import Path
 import sys
+import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import ratio_fits as r
@@ -51,6 +55,14 @@ class RatioFitsTest(unittest.TestCase):
 
 
 class SSComparisonTest(unittest.TestCase):
+    @staticmethod
+    def reports():
+        return [dict(range=[5., high], valid=True, invalid_models=[],
+                     models={key: dict(accepted=True, metrics=dict(stat_chi2=2., stat_ndf=3))
+                             for key in ss.qcd.SS_REQUIRED_ROOT_MODELS},
+                     x=[5., 80.], central=[1., .1], low=[-1., -.2], high=[3., .4])
+                for high in ss.RANGES]
+
     def test_envelope_symmetric_even_when_negative(self):
         low, high = ss.envelope(1., [.1, 4., 2., .7, 1.])
         self.assertEqual((low, high), (-2., 4.))
@@ -63,6 +75,50 @@ class SSComparisonTest(unittest.TestCase):
         self.assertEqual(args.ss_min_effective_count, 10.)
         self.assertEqual(ss.qcd.SS_NOMINAL_MODEL, "power_exp_logistic")
         self.assertEqual(len(ss.qcd.SS_SHAPE_ALTERNATIVES), 5)
+
+    def test_signed_log_preserves_sign_and_cross_zero_error_endpoints(self):
+        values = [-100., -1., -.01, 0., .01, 1., 100.]
+        transformed = [ss.signed_log(x, .1) for x in values]
+        self.assertEqual(sorted(transformed), transformed)
+        self.assertEqual(transformed[3], 0.)
+        self.assertAlmostEqual(ss.signed_log(-1., .1), -ss.signed_log(1., .1))
+        self.assertTrue(math.isfinite(ss.signed_log(1.e308, 1.e-308)))
+        value, error = -.02, .1
+        y = ss.signed_log(value, .1)
+        self.assertLess(ss.signed_log(value-error, .1), y)
+        self.assertGreater(ss.signed_log(value+error, .1), 0.)
+
+    def test_invalid_saved_bands_are_rejected(self):
+        points = [dict(x=20., half_width=1., value=-1., error=2.)]
+        reports = self.reports()
+        ss.validate_plot_data(points, reports)
+        bad = copy.deepcopy(reports)
+        bad[0]["valid"] = False
+        with self.assertRaises(ValueError):
+            ss.validate_plot_data(points, bad)
+        bad = copy.deepcopy(reports)
+        bad[0]["high"][1] = float("nan")
+        with self.assertRaises(ValueError):
+            ss.validate_plot_data(points, bad)
+
+    def test_plot_json_never_refits_or_changes_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'saved.json'
+            payload = dict(era='2022EE', points=[dict(x=20., half_width=1., value=-1., error=2.)],
+                           fits=self.reports())
+            original = json.dumps(payload).encode()
+            path.write_bytes(original)
+            with patch.object(ss.qcd, 'import_root'), patch.object(ss, 'plot') as plot, \
+                 patch.object(ss.qcd, 'build_input_histogram') as load, \
+                 patch.object(ss.qcd, 'declare_fit_functions') as declare, \
+                 patch.object(ss, 'fit_ranges') as fit:
+                self.assertEqual(ss.main(['--plot-json', str(path)]), 0)
+                self.assertEqual(plot.call_args.args[0].era, '2022EE')
+                self.assertEqual(plot.call_args.args[3], path.with_suffix(''))
+                load.assert_not_called()
+                declare.assert_not_called()
+                fit.assert_not_called()
+            self.assertEqual(path.read_bytes(), original)
 
 
 if __name__ == "__main__":
