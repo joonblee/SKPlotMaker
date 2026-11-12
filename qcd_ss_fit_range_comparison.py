@@ -3,15 +3,16 @@
 
 Reuse the production six function families, nominal Power x Exp x Logistic,
 bin-integrated chi-square and fit-validity rules. Signed bins are never clipped.
-All ranges use one common grid, with no forced 20/30 GeV edges and no special
-backward merge at 30 GeV. First complete the statistical adaptive grid over
-5--50 GeV, including width >= max(0.1 GeV, 0.02*final bin centre). Then merge
-whole adjacent adaptive bins only when the next signed yield is <=0, the
-combined yield stays positive and the extra merge respects the base width cap
-(default 5 GeV). No early native-bin yield veto or width-floor exemption is used.
-Keep the first resulting edge strictly above 30 GeV and merge the remainder
-from that edge to 50 GeV into one bin. This final tail overrides the adaptive
-width cap and may have nonpositive signed yield; it is never clipped.
+All ranges use one common grid: adaptive below 30 GeV with a protected
+30 GeV boundary, and one fixed 30--50 GeV bin. No 20 GeV edge is forced.
+First complete statistical adaptive binning and the width floor
+max(0.1 GeV, 0.02*final bin centre). Extra forward merges use whole adaptive
+bins only: next yield <=0, combined yield >0, within the base width cap
+(default 5 GeV). No native-bin early stop or width-floor exemption is used.
+After fixing all edges, merge the last bin ending at 30 GeV backward once
+only if its signed yield is >0 and the preceding bin's signed yield is <=0.
+Never merge across 5 or 30 GeV. This final conditional merge and the fixed
+tail may exceed the adaptive width cap; all signed yields/errors are retained.
 The common-grid edges and all fit diagnostics are exported.
 Refit to apply the new grid; --plot-json keeps saved bin edges.
 
@@ -70,8 +71,8 @@ import qcd_bkg_estimation as qcd
 
 FIT_MAX = 50.
 RANGES = (30., 20., FIT_MAX)
-TAIL_MERGE_THRESHOLD = 30.
-FORCED_EDGES = ()
+FIXED_HIGH_MASS_EDGES = (30., FIT_MAX)
+FORCED_EDGES = FIXED_HIGH_MASS_EDGES
 ALL_PERIODS = (*qcd.RUN2_ERAS, *qcd.RUN3_ERAS, "Run2", "Run3", "Run2+3")
 DEFAULT_BASE = str(Path(qcd.DEFAULT_BASE_DIR) / "NIsoMuon")
 
@@ -92,7 +93,7 @@ def build_parser():
                         help="Redraw saved JSON results only: no input histograms, fits or JSON writes")
     parser.add_argument("--ss-min-effective-count", type=qcd.positive_float, default=10.)
     parser.add_argument("--ss-max-bin-width", type=qcd.positive_float, default=5.,
-                        help="Base adaptive width cap (default: 5); width-floor merging and the single tail bin can exceed it")
+                        help="Base adaptive width cap (default: 5); width-floor/final conditional merging and the fixed 30--50 bin can exceed it")
     parser.add_argument("--fit-max-attempts", type=qcd.positive_integer, default=30)
     parser.add_argument("--fit-attempt-details", action="store_true")
     parser.add_argument("--linthresh", type=qcd.positive_float, default=.1,
@@ -116,15 +117,24 @@ def build_parser():
 
 
 def common_histograms(ROOT, source, args):
-    """Keep adaptive bins through the first edge above 30, then one tail bin."""
+    """Fix 30--50, then conditionally merge the positive terminal bin backward."""
     mode = replace(qcd.SS_MODE, fit_max=FIT_MAX)
     edges = qcd.make_adaptive_ss_binning(source, mode, args.ss_min_effective_count,
-                                        args.ss_max_bin_width,
+                                        args.ss_max_bin_width, protected_edges=(30.,),
                                         merge_nonpositive_next=True)
-    tail_start = next(x for x in edges if x > TAIL_MERGE_THRESHOLD+1e-9 and x <= FIT_MAX+1e-9)
-    edges = [x for x in edges if x <= tail_start or x >= FIT_MAX]
-    print(f"[SS COMPARISON BINNING] tail starts at first edge above 30 GeV: {tail_start:g}; "
-          f"merge [{tail_start:g}, {FIT_MAX:g}] GeV when nonempty")
+    edges = [x for x in edges if x <= 30. or x >= FIT_MAX]
+    terminal = edges.index(30.)
+    if terminal >= 2 and edges[terminal-2] >= mode.fit_min:
+        previous_low, last_low, last_high = edges[terminal-2:terminal+1]
+        previous_yield = float(source.Integral(source.FindBin(previous_low+1e-7),
+                                               source.FindBin(last_low-1e-7)))
+        last_yield = float(source.Integral(source.FindBin(last_low+1e-7),
+                                           source.FindBin(last_high-1e-7)))
+        if last_yield > 0. and previous_yield <= 0.:
+            del edges[terminal-1]
+            print(f"[SS COMPARISON BINNING] final conditional backward merge: "
+                  f"[{previous_low:g},{last_low:g}] yield={previous_yield:g} + "
+                  f"[{last_low:g},{last_high:g}] yield={last_yield:g}")
     print("[SS COMPARISON BINNING] final edges [GeV] = " + ", ".join(f"{x:g}" for x in edges))
     counts_raw = source.Rebin(len(edges)-1, "ss_comparison_counts_raw", array("d", edges))
     counts_raw.SetDirectory(0)
@@ -761,17 +771,15 @@ def main(argv=None):
                        envelope="symmetric functional only; no clipping; not a confidence interval",
                        binning=dict(edges=prepared.edges, min_effective_count=args.ss_min_effective_count,
                                     max_width=args.ss_max_bin_width,
-                                    adaptive_range=[5., FIT_MAX],
+                                    adaptive_range=[5., 30.],
                                     merge_nonpositive_next_native_bin=False,
                                     merge_nonpositive_next_adaptive_bin=True,
-                                    merge_terminal_adaptive_bin_backward=False,
+                                    merge_terminal_adaptive_bin_backward=True,
+                                    terminal_backward_merge_condition="last yield >0 and preceding yield <=0; once",
                                     nonpositive_next_requires_positive_sum=True,
                                     minimum_width=dict(absolute_gev=.1, relative_to_bin_centre=.02),
-                                    tail_merge_threshold=TAIL_MERGE_THRESHOLD,
-                                    tail_merge_start=next(x for x in prepared.edges
-                                                         if x > TAIL_MERGE_THRESHOLD+1e-9 and x <= FIT_MAX+1e-9),
-                                    fixed_high_mass_edges=[x for x in prepared.edges
-                                                           if TAIL_MERGE_THRESHOLD+1e-9 < x <= FIT_MAX+1e-9],
+                                    tail_merge_start=30.,
+                                    fixed_high_mass_edges=list(FIXED_HIGH_MASS_EDGES),
                                     forced_edges=list(FORCED_EDGES)),
                        points=points, fits=reports)
         stem.with_suffix(".json").write_text(json.dumps(finite_json(payload), indent=2, allow_nan=False) + "\n")

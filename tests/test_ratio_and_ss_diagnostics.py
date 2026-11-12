@@ -284,55 +284,66 @@ class SSRatioInsetTest(unittest.TestCase):
 
 @unittest.skipIf(ROOT is None, 'PyROOT is not installed')
 class SSAdaptiveComparisonBinningTest(unittest.TestCase):
-    def test_adaptive_grid_preserves_signed_yields_without_forced_edges(self):
+    def test_fixed_tail_preserves_signed_yields_without_forcing_20(self):
         ROOT.TH1.AddDirectory(False)
         source = ROOT.TH1D('ss_adaptive_comparison_input', '', 1000, 0., 100.)
         source.Sumw2()
         for i in range(1, 1001):
-            source.SetBinContent(i, 100.)
+            source.SetBinContent(i, 100. if source.GetBinCenter(i) < 30. else -1.)
             source.SetBinError(i, 2.)
         prepared = ss.common_histograms(ROOT, source, ss.build_parser().parse_args([]))
         self.assertNotIn(20., prepared.edges)
-        self.assertNotIn(30., prepared.edges)
-        crossing = [x for x in prepared.edges if 30. < x <= 50.]
-        self.assertEqual(len(crossing), 2)
-        self.assertEqual(crossing[-1], 50.)
+        self.assertEqual([x for x in prepared.edges if 30. <= x <= 50.], [30., 50.])
         for left, right in zip(prepared.edges, prepared.edges[1:]):
             i = prepared.counts.FindBin((left+right)/2.)
             first, last = source.FindBin(left+1e-6), source.FindBin(right-1e-6)
             self.assertAlmostEqual(prepared.counts.GetBinContent(i),
                                    sum(source.GetBinContent(j) for j in range(first, last+1)))
             self.assertAlmostEqual(prepared.counts.GetBinError(i)**2, 4.*(last-first+1))
+            if 5. <= left and right <= 30.:
+                self.assertGreaterEqual(right-left+1e-9, max(.1, .02*(left+right)/2.))
         self.assertAlmostEqual(prepared.counts.Integral(), source.Integral())
 
-    def test_crossing_bin_is_kept_and_only_later_bins_form_signed_tail(self):
-        source = ROOT.TH1D('ss_no_terminal_merge', '', 1000, 0., 100.)
+    def terminal_fixture(self, previous, last):
+        source = ROOT.TH1D(ss.qcd._NAMES.unique('ss_terminal_condition'), '', 1000, 0., 100.)
         source.SetDirectory(0)
         for i in range(1, 1001):
-            source.SetBinContent(i, -2. if 29. <= source.GetBinCenter(i) < 30. else 1.)
+            x = source.GetBinCenter(i)
+            value = previous if 27. <= x < 29. else last if 29. <= x < 30. else -1. if 25. <= x < 27. else 1.
+            source.SetBinContent(i, value)
             source.SetBinError(i, 3.)
-        edges = [0., 5., 19., 27., 29., 31., 35., 40., 50., 100.]
-        with patch.object(ss.qcd, 'make_adaptive_ss_binning', return_value=edges) as adaptive:
-            prepared = ss.common_histograms(ROOT, source, ss.build_parser().parse_args([]))
-        self.assertEqual(prepared.edges, [0., 5., 19., 27., 29., 31., 50., 100.])
-        self.assertNotIn('protected_edges', adaptive.call_args.kwargs)
-        i = prepared.counts.FindBin(29.5)
-        self.assertAlmostEqual(prepared.counts.GetBinContent(i), -10.)
-        self.assertAlmostEqual(prepared.counts.GetBinError(i)**2, 180.)
-        tail = prepared.counts.FindBin(40.)
-        self.assertAlmostEqual(prepared.counts.GetBinContent(tail), 190.)
-        self.assertAlmostEqual(prepared.counts.GetBinError(tail)**2, 190.*9.)
+        return source
 
-    def test_exact_30_edge_does_not_start_tail_and_50_crossing_needs_no_change(self):
-        source = ROOT.TH1D('ss_tail_edge_cases', '', 1000, 0., 100.)
-        source.SetDirectory(0)
-        for edges, expected in (
-            ([0., 5., 20., 30., 32., 40., 50., 100.], [0., 5., 20., 30., 32., 50., 100.]),
-            ([0., 5., 20., 29., 50., 100.], [0., 5., 20., 29., 50., 100.]),
-        ):
+    def test_positive_terminal_bin_merges_nonpositive_predecessor_once(self):
+        for previous in (0., -.2, -2.):
+            source = self.terminal_fixture(previous, 1.)
+            edges = [0., 5., 19., 25., 27., 29., 30., 35., 40., 50., 100.]
+            with patch.object(ss.qcd, 'make_adaptive_ss_binning', return_value=edges) as adaptive:
+                prepared = ss.common_histograms(ROOT, source, ss.build_parser().parse_args([]))
+            self.assertEqual(prepared.edges, [0., 5., 19., 25., 27., 30., 50., 100.])
+            self.assertEqual(adaptive.call_args.kwargs['protected_edges'], (30.,))
+            i = prepared.counts.FindBin(29.5)
+            self.assertAlmostEqual(prepared.counts.GetBinContent(i), 20.*previous+10.)
+            self.assertAlmostEqual(prepared.counts.GetBinError(i)**2, 270.)
+            tail = prepared.counts.FindBin(40.)
+            self.assertAlmostEqual(prepared.counts.GetBinContent(tail), 200.)
+            self.assertAlmostEqual(prepared.counts.GetBinError(tail)**2, 200.*9.)
+            self.assertAlmostEqual(prepared.counts.Integral(), source.Integral())
+
+    def test_terminal_pair_is_kept_when_either_condition_fails(self):
+        for previous, last in ((1., 1.), (-1., 0.), (-1., -1.)):
+            source = self.terminal_fixture(previous, last)
+            edges = [0., 5., 19., 27., 29., 30., 35., 50., 100.]
             with patch.object(ss.qcd, 'make_adaptive_ss_binning', return_value=edges):
                 prepared = ss.common_histograms(ROOT, source, ss.build_parser().parse_args([]))
-            self.assertEqual(prepared.edges, expected)
+            self.assertEqual(prepared.edges, [0., 5., 19., 27., 29., 30., 50., 100.])
+
+    def test_single_fit_bin_never_merges_across_5(self):
+        source = self.terminal_fixture(-1., 1.)
+        with patch.object(ss.qcd, 'make_adaptive_ss_binning',
+                          return_value=[0., 5., 30., 40., 50., 100.]):
+            prepared = ss.common_histograms(ROOT, source, ss.build_parser().parse_args([]))
+        self.assertEqual(prepared.edges, [0., 5., 30., 50., 100.])
 
 
 if __name__ == "__main__":

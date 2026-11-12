@@ -1136,12 +1136,14 @@ low to high mass, merge whole adjacent adaptive bins while the **next adaptive
 bin** has signed yield <=0, the combined yield stays **>0**, and the extra merge
 respects the base width cap. This step only removes edges: no native-bin early
 stop, extra protected yield-veto edge or width-floor exemption is introduced.
-Keep the **first resulting edge strictly above 30 GeV**, then merge everything
-from that edge to **50 GeV into one tail bin**. For example, a first crossing
-edge of 31.2 GeV gives a final 31.2--50 GeV bin. If that edge is already 50 GeV,
-no extra tail bin is needed. The tail is exempt from the adaptive width cap and
-retains its full signed yield and variance even if its yield is nonpositive.
-There are no forced 20/30 GeV edges and no special backward merge at 30 GeV.
+The **30 GeV edge is protected** and **30--50 GeV is one fixed bin**; no
+20 GeV edge is forced. After all these edges are determined, inspect the last
+two adaptive bins below 30 GeV. If the last bin (ending at 30 GeV) has signed
+yield **>0** and the preceding bin has signed yield **<=0**, merge that pair
+**once**. Otherwise keep both bins. Never merge backward across 5 GeV or into
+the fixed tail. This final conditional merge and the fixed tail can exceed the
+adaptive width cap. Signed yields and variances are retained without clipping,
+including when the final merged yield is nonpositive.
 These diagnostic rules do not change production SS or QCD-MC defaults. Refit
 to apply the grid: `--plot-json` preserves saved edges. Fit ranges remain
 5--20, 5--30 and 5--50 GeV.
