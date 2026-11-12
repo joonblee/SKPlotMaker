@@ -1045,8 +1045,11 @@ count 10, maximum width 5 GeV), split at 20 and 30 GeV so no bin crosses a fit
 boundary. The shared SS/MC minimum-width rule,
 `width >= max(0.1 GeV, 0.02 * final bin centre)`, is applied independently in
 5--20 and 20--30 GeV, preserving those boundaries without narrow
-remainders. At high mass the edges are fixed at **30, 50, 80 GeV**;
-there are no additional adaptive edges inside that interval. These fixed bins
+remainders. This **SS-data comparison only** uses one fixed **30--80 GeV bin**
+(edges **30, 80 GeV**); there are no additional adaptive edges inside that interval.
+QCD-MC fits in `qcd_bkg_estimation.py --mode qcd-mc` retain statistical adaptive
+binning at high mass, with the same `max(0.1 GeV, 0.02 * bin centre)` width floor;
+the SS-only fixed tail is not applied to MC. These fixed SS bins
 override the base adaptive width cap, as can final minimum-width merging.
 This diagnostic grid can differ from production
 5--30 adaptive bins. The fit ranges remain 5--20, 5--30 and 5--80 GeV.

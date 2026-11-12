@@ -49,6 +49,8 @@ class MCAdaptiveBinningTest(unittest.TestCase):
             prepared = q.prepare_histograms(ROOT, source, q.QCD_MODE, 1)
         for edge in (5., 9., 11., 80.):
             self.assertTrue(any(math.isclose(edge, x, abs_tol=1e-9) for x in prepared.edges))
+        # The SS diagnostic's fixed 30--80 GeV tail must never be used for MC.
+        self.assertTrue(any(30. < edge < 80. for edge in prepared.edges))
         for left, right in zip(prepared.edges, prepared.edges[1:]):
             self.assertAlmostEqual(left/.02, round(left/.02), places=8)
             if 5.-1e-9 <= left and right <= 80.+1e-9:

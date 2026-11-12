@@ -294,11 +294,11 @@ class SSFixedTailBinningTest(unittest.TestCase):
         prepared = ss.common_histograms(ROOT, source, args)
         self.assertEqual([x for x in prepared.edges if x < 30.], expected_low)
         self.assertEqual([x for x in prepared.edges if 30. <= x <= 80.],
-                         [30., 50., 80.])
+                         [30., 80.])
         for left, right in zip(prepared.edges, prepared.edges[1:]):
             if left >= 5. and right <= 80.:
                 self.assertGreaterEqual(right-left+1e-9, max(.1, .02*(left+right)/2.))
-        for boundary in (20., 30., 50.):
+        for boundary in (20., 30., 80.):
             self.assertIn(boundary, prepared.edges)
         for left, right in zip(ss.FIXED_HIGH_MASS_EDGES, ss.FIXED_HIGH_MASS_EDGES[1:]):
             i = prepared.counts.FindBin((left+right)/2.)
@@ -315,11 +315,11 @@ class SSFixedTailBinningTest(unittest.TestCase):
                                original_variance)
 
     def test_fixed_edge_inside_native_bin_is_rejected(self):
-        # All requested boundaries except 50 GeV coincide with this native grid.
+        # All requested boundaries except 30 GeV coincide with this native grid.
         source = ROOT.TH1D('ss_fixed_tail_unsplittable', '', 8,
-                          array('d', [0., 20., 30., 40., 49., 51., 60., 80., 100.]))
+                          array('d', [0., 20., 29., 31., 40., 50., 60., 80., 100.]))
         with patch.object(ss.qcd, 'make_adaptive_ss_binning', return_value=[0., 5., 80., 100.]), \
-             self.assertRaisesRegex(ValueError, '50 GeV is not a native bin edge'):
+             self.assertRaisesRegex(ValueError, '30 GeV is not a native bin edge'):
             ss.common_histograms(ROOT, source, ss.build_parser().parse_args([]))
 
 
