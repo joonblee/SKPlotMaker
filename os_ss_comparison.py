@@ -11,10 +11,12 @@ the original weighted yields before rebinning or bin-width normalisation. Data
 summaries retain the integrated ratios and the existing blinding.
 
 --ratio-fits {none,const,linear,both} adds conditional diagonal-statistical
-fits y=c (dashed) and y=ax+b (solid), coefficients and chi-square/ndf to the
-ratio panel, plus a JSON report. --ratio-fit-range LOW HIGH selects whole bins.
-Fits exclude 9--11 GeV and all data bins overlapping the blinded 11--80 GeV
-interval. No closure p-value is inferred from these ratio fits.
+fits y=c (dashed) and y=ax+b (solid) to QCD MC only, by default in 11--80 GeV.
+The transparent ratio-panel box shows numerical equations with superscript
+symmetric errors and decimal chi-square/ndf, plus a JSON report.
+--ratio-fit-range LOW HIGH selects whole bins. Fits exclude 9--11 GeV;
+data points/summaries and their blinding are unchanged. No data ratio is fitted.
+No closure p-value is inferred from these ratio fits.
 """
 
 import argparse, math, os, sys
@@ -148,7 +150,7 @@ def main():
     p.add_argument("--xmin",type=float,default=5.); p.add_argument("--xmax",type=float,default=80.); p.add_argument("--bin-width",type=float,default=1.); p.add_argument("--no-variable-binning",dest="variable_binning",action="store_false"); p.set_defaults(variable_binning=True)
     p.add_argument("--logx",action="store_true"); p.add_argument("--logy",action="store_true"); p.set_defaults(logy=True); p.add_argument("--ymin",type=float); p.add_argument("--ymax",type=float); p.add_argument("--ratio-min",type=float,default=0.); p.add_argument("--ratio-max",type=float,default=5.); p.add_argument("--no-bin-width",dest="divide_by_width",action="store_false"); p.set_defaults(divide_by_width=True)
     b=p.add_mutually_exclusive_group(); b.add_argument("--blind",dest="blind",action="store_true",help="Blind data in 11<m<80 GeV (default)"); b.add_argument("--unblind",dest="blind",action="store_false",help="Show data in 11<m<80 GeV"); p.set_defaults(blind=True)
-    p.add_argument("--extensions",default="pdf,png"); ratio_fits.add_arguments(p); args=p.parse_args()
+    p.add_argument("--extensions",default="pdf,png"); ratio_fits.add_arguments(p, default_range=(11.,80.)); args=p.parse_args()
     if args.xmax<=args.xmin: raise PlotError("--xmax must be larger than --xmin")
     if args.logx and args.xmin<=0: raise PlotError("--logx requires --xmin > 0")
     try: ratio_fits.fit_range(args)
@@ -195,16 +197,14 @@ def main():
     fit_series = [
         ("QCD MC", ROOT.kRed+1, ratio_fits.analyse(
             ratio_fits.histogram_points(qr), args, excluded=((9., 11.),))),
-        ("Data (SR blinded)" if args.blind else "Data - nonQCD", ROOT.kBlack, ratio_fits.analyse(
-            ratio_fits.histogram_points(dr), args,
-            excluded=((9., 11.), (11., 80.)) if args.blind else ((9., 11.),))),
     ]
     fit_objects = ratio_fits.draw(ROOT, fit_series)
     #rleg=ROOT.TLegend(.58,.74,.94,.94); rleg.SetBorderSize(0); rleg.SetFillStyle(0); rleg.SetTextSize(.075); rleg.AddEntry(qr,"QCD MC","lep"); rleg.AddEntry(dr,"Data - nonQCD MC","lep"); rleg.Draw()
     out=Path(args.output_dir); out.mkdir(parents=True,exist_ok=True); tag="Blind" if args.blind else "Unblind"; tag += "_LogX" if args.logx else ""; tag += "_LogY" if args.logy else ""; base=f"OS_SS_Comparison_{era_name(args.era)}_BJet_QCDMC_DataMinusNonQCDMC_{tag}"
     for ext in [x.strip().lstrip('.') for x in args.extensions.split(',') if x.strip()]: c.SaveAs(str(out/f"{base}.{ext}")); print("[SAVED]",out/f"{base}.{ext}")
     if args.ratio_fits != "none":
-        ratio_fits.save(out/f"{base}.json", fit_series, era=args.era, blinded=args.blind)
+        ratio_fits.save(out/f"{base}.json", fit_series, era=args.era, blinded=args.blind,
+                        fit_sample="QCD MC only")
 
 if __name__=="__main__":
     try: main()

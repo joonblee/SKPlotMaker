@@ -14,6 +14,10 @@ or a closure-test p-value.
 The ratio panel fits y=c (dashed) and y=ax+b (solid), using diagonal statistical
 errors with the matching factor fixed. Use --ratio-fits none to hide them or
 --ratio-fit-range LOW HIGH to restrict the fit to whole bins in that range.
+Default plot range: 5--80 GeV, with the same variable edges as the OS/SS
+comparison. Ratio fits use 5--70 GeV. Integral matching remains in the overlap
+of 11--80 GeV and the plot; --normalisation-range LOW HIGH overrides it.
+Fit equations/errors and decimal chi-square/ndf use a transparent results box.
 
 Examples:
   python3 dy_mc_shape_comparison.py
@@ -55,11 +59,10 @@ PLOT_DIR = "/data6/Users/joonblee/PlotMaker/plots"
 DY_AMC_DEFAULT_FILE = "NIsoMuon_DYJets_Inclusive.root"
 
 DEFAULT_MASS_BINS = [
-    0.0, 0.5, 1.0, 1.5, 2.0, 2.5,
-    3.0, 3.5, 4.0, 4.5,
-    5.0, 6.0, 7.0, 8.0, 9.0,
-    11.0, 13., 15., 20.0, 25.,
-    30.0, 40., 60., 80., 85., 90., 95., 100., 110., 150.
+    0., 5., 5.5, 6., 6.5, 7., 7.5, 8., 8.5, 9., 9.5, 10., 11.,
+    11.5, 12., 12.5, 13., 13.5, 14., 14.5, 15.,
+    16., 17., 18., 19., 20., 21., 23., 25., 30., 35., 40.,
+    50., 60., 70., 80., 90., 100., 110., 150.
 ]
 
 LUMI_FB = {
@@ -395,7 +398,7 @@ def draw(ROOT, args, b_hist, l_hist, factor):
     text.SetTextSize(0.029)
     text.DrawLatex(0.18, 0.16, f"Light-jet scale = {factor:.5g}")
     text.DrawLatex(0.18, 0.115,
-                   f"Integral matched in {args.xmin:g} < m(#mu#mu) < {args.xmax:g} GeV")
+                   f"Integral matched in {args.normalisation_range[0]:g} < m(#mu#mu) < {args.normalisation_range[1]:g} GeV")
     text.DrawLatex(0.18, 0.07, "MC statistical errors; matching factor fixed")
 
     lower.cd()
@@ -453,7 +456,7 @@ def draw(ROOT, args, b_hist, l_hist, factor):
         print(f"[SAVED] {path}")
     if args.ratio_fits != "none":
         ratio_fits.save(output / f"{stem}.json", fit_series, era=args.era,
-                        matching_factor=factor)
+                        matching_factor=factor, normalisation_range=args.normalisation_range)
 
 
 def build_parser():
@@ -462,7 +465,7 @@ def build_parser():
     parser.add_argument("--era", choices=VALID_ERAS, default="Run2+3")
     parser.add_argument("--base-dir", default=DEFAULT_BASE_DIR)
     parser.add_argument("--output-dir", default=PLOT_DIR)
-    parser.add_argument("--xmin", type=float, help="Lower mass bound (default: 11 GeV or first custom edge)")
+    parser.add_argument("--xmin", type=float, help="Lower mass bound (default: 5 GeV or first custom edge)")
     parser.add_argument("--xmax", type=float, help="Upper mass bound (default: 80 GeV or last custom edge)")
     binning = parser.add_mutually_exclusive_group()
     binning.add_argument(
@@ -475,7 +478,9 @@ def build_parser():
     parser.add_argument("--linear-y", action="store_true", help="Use a linear y axis")
     parser.add_argument("--ratio-min", type=float, default=0.0)
     parser.add_argument("--ratio-max", type=float, default=2.0)
-    ratio_fits.add_arguments(parser)
+    parser.add_argument("--normalisation-range", type=float, nargs=2, metavar=("LOW", "HIGH"),
+                        help="Integral-matching interval; default: overlap of plot with 11--80 GeV")
+    ratio_fits.add_arguments(parser, default_range=(5., 70.))
     return parser
 
 
@@ -489,7 +494,7 @@ def main(argv=None):
     ):
         parser.error("--bin-edges requires at least two finite, increasing edges")
     if args.xmin is None:
-        args.xmin = edges[0] if edges is not None else 11.0
+        args.xmin = edges[0] if edges is not None else 5.0
     if args.xmax is None:
         args.xmax = edges[-1] if edges is not None else 80.0
     if edges is not None and (args.xmin != edges[0] or args.xmax != edges[-1]):
@@ -504,6 +509,11 @@ def main(argv=None):
     if not (math.isfinite(args.ratio_min) and math.isfinite(args.ratio_max)
             and args.ratio_min < args.ratio_max):
         parser.error("Require finite ratio-min < ratio-max")
+    if args.normalisation_range is None:
+        args.normalisation_range = [max(11., args.xmin), min(80., args.xmax)]
+    low, high = args.normalisation_range
+    if not all(map(math.isfinite, (low, high))) or not args.xmin <= low < high <= args.xmax:
+        parser.error("Require xmin <= normalisation LOW < HIGH <= xmax; use --normalisation-range for plots outside 11--80 GeV")
     try:
         ratio_fits.fit_range(args)
     except ValueError as exc:
@@ -511,12 +521,14 @@ def main(argv=None):
     ROOT = import_root()
     print("[ERAS] " + ", ".join(selected_eras(args.era)))
     b_raw, l_raw = load_dy_pair(ROOT, args)
-    l_matched, factor = match_lightjet(ROOT, b_raw, l_raw, args.xmin, args.xmax)
+    l_matched, factor = match_lightjet(ROOT, b_raw, l_raw, *args.normalisation_range)
     b_plot = rebin_hist(b_raw, "dy_shape_BJet_plot", args)
     l_plot = rebin_hist(l_matched, "dy_shape_LightJet_plot", args)
     # Reject display bins straddling either normalisation boundary.
     integral_and_error(b_plot, args.xmin, args.xmax)
     integral_and_error(l_plot, args.xmin, args.xmax)
+    integral_and_error(b_plot, *args.normalisation_range)
+    integral_and_error(l_plot, *args.normalisation_range)
     for hist in (b_plot, l_plot):
         scale_to_yield_per_gev(hist)
     print("[ERRORS] Finite-MC Sumw2 only; integral-matching factor held fixed")

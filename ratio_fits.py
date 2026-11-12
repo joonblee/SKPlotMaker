@@ -11,15 +11,24 @@ import math
 from pathlib import Path
 
 
-def add_arguments(parser):
+def add_arguments(parser, default_range=None):
     parser.add_argument("--ratio-fits", choices=("none", "const", "linear", "both"),
                         default="both", help="Ratio-panel fits (default: both)")
     parser.add_argument("--ratio-fit-range", type=float, nargs=2, metavar=("LOW", "HIGH"),
-                        help="Fit only whole bins within LOW HIGH GeV; default: plotted range")
+                        help=("Fit only whole bins within LOW HIGH GeV; default: "
+                              + (f"{default_range[0]:g}--{default_range[1]:g} GeV, clipped to plot"
+                                 if default_range else "plotted range")))
+    parser.set_defaults(ratio_fit_default_range=default_range)
 
 
 def fit_range(args):
-    low, high = args.ratio_fit_range or (args.xmin, args.xmax)
+    if args.ratio_fit_range:
+        low, high = args.ratio_fit_range
+    elif getattr(args, "ratio_fit_default_range", None) and args.ratio_fits != "none":
+        low = max(args.xmin, args.ratio_fit_default_range[0])
+        high = min(args.xmax, args.ratio_fit_default_range[1])
+    else:
+        low, high = args.xmin, args.xmax
     if not all(map(math.isfinite, (low, high))) or not args.xmin <= low < high <= args.xmax:
         raise ValueError("Require xmin <= ratio-fit LOW < HIGH <= xmax")
     return low, high
@@ -85,6 +94,17 @@ def analyse(points, args, excluded=()):
                 fits=[] if args.ratio_fits == "none" else [fit_points(chosen, k) for k in kinds])
 
 
+def equation(result):
+    """ROOT TLatex equation with symmetric errors as superscript +/- values."""
+    p, e = result["parameters"], result["errors"]
+    def number(value, error):
+        return f"{value:.4g}^{{#pm {error:.2g}}}"
+    if result["kind"] == "const":
+        return "y = " + number(p["c"], e["c"])
+    sign = " - " if p["b"] < 0 else " + "
+    return "y = (" + number(p["a"], e["a"]) + ") x" + sign + number(abs(p["b"]), e["b"])
+
+
 def draw(ROOT, series):
     """Draw fits and an upper-right results box; return ROOT keepalive objects."""
     objects, lines = [], []
@@ -100,13 +120,9 @@ def draw(ROOT, series):
             if result["status"] != "ok":
                 lines.append((colour, f"{kind}: {result['status']}"))
                 continue
-            p, e = result["parameters"], result["errors"]
-            quality = f"#chi^{{2}}/ndf={result['chi2']:.2f}/{result['ndf']}"
-            if kind == "const":
-                lines.append((colour, f"c={p['c']:.3g} #pm {e['c']:.2g}; {quality}"))
-            else:
-                lines.append((colour, f"a={p['a']:.3g} #pm {e['a']:.2g} GeV^{{-1}}, b={p['b']:.3g} #pm {e['b']:.2g}"))
-                lines.append((colour, f"y=ax+b: {quality}"))
+            p = result["parameters"]
+            quality = f"#chi^{{2}}/ndf = {result['chi2_ndf']:.3f}"
+            lines.append((colour, equation(result) + ";  " + quality))
             # Draw within the support of eligible bins, leaving veto/blind gaps.
             segments = []
             for left, right in report["bins"]:
@@ -127,13 +143,12 @@ def draw(ROOT, series):
                 fn.Draw("SAME")
                 objects.append(fn)
     if lines:
-        box = ROOT.TPaveText(.58, max(.36, .95 - .05*len(lines)), .945, .95, "NDC")
+        box = ROOT.TPaveText(.54, max(.36, .95 - .075*len(lines)), .945, .95, "NDC")
         box.SetBorderSize(0)
-        box.SetFillColor(ROOT.kWhite)
-        box.SetFillStyle(1001)
+        box.SetFillStyle(0)
         box.SetTextFont(42)
         box.SetTextAlign(12)
-        box.SetTextSize(.044)
+        box.SetTextSize(.05)
         for colour, line in lines:
             box.AddText(line).SetTextColor(colour)
         box.Draw()

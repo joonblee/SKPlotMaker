@@ -53,6 +53,20 @@ class RatioFitsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             r.fit_range(args)
 
+    def test_default_fit_domains_exclude_low_or_high_mass_outliers(self):
+        points = [(8., .5, 100., 1.), (12., .5, 1., 1.),
+                  (20., .5, 1., 1.), (69., .5, 1., 1.), (79., 1., 100., 1.)]
+        args = SimpleNamespace(xmin=5., xmax=80., ratio_fit_range=None,
+                               ratio_fit_default_range=(11., 70.), ratio_fits="both")
+        report = r.analyse(points, args)
+        self.assertEqual(report["fits"][0]["parameters"]["c"], 1.)
+        self.assertEqual(report["fits"][0]["n_points"], 3)
+        self.assertEqual(r.fit_range(args), (11., 70.))
+        args.xmin = 15.
+        self.assertEqual(r.fit_range(args), (15., 70.))
+        args.ratio_fit_range = (20., 80.)
+        self.assertEqual(r.fit_range(args), (20., 80.))
+
 
 class SSComparisonTest(unittest.TestCase):
     @staticmethod
