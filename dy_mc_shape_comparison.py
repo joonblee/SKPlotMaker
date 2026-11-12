@@ -22,8 +22,9 @@ reference DY plot. Default plot, ratio-fit and integral-matching ranges are
 Fit lines are green. The ratio panel's bottom-left transparent box contains
 only Dashed/Solid numerical equations, with coefficient errors in parentheses
 and decimal chi-square/ndf after a comma. No sample/range header is displayed.
-The plot omits integral-matching/statistical-error explanatory text; the scale,
-matching calculation, console output and JSON diagnostics are retained.
+The scale appears only in the category legend. Integral-matching/statistical-
+error explanatory text is omitted; calculations, console output and JSON
+diagnostics are retained.
 
 Examples:
   python3 dy_mc_shape_comparison.py
@@ -426,8 +427,6 @@ def draw(ROOT, args, b_hist, l_hist, factor):
     text.SetTextAlign(11)
     text.SetTextSize(0.032)
     text.DrawLatex(0.18, 0.85, "DY aMC@NLO, POG Medium, nonisolated dimuon")
-    text.SetTextSize(0.029)
-    text.DrawLatex(0.18, 0.16, f"Light-jet scale = {factor:.5g}")
 
     lower.cd()
     frame = ROOT.TH1D("dy_shape_ratio_frame", "", 1, args.xmin, args.xmax)

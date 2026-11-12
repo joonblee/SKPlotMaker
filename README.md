@@ -930,7 +930,8 @@ inside the plot. OS/SS fits use **QCD MC only**, irrespective of the data
 blinding option; low-mass data points stay visible and summaries are still
 printed to the console. The OS/SS plot omits the integrated-ratio summaries box.
 The DY plot omits the integral-matching and fixed-scale statistical-error
-explanatory lines, while retaining the Light-jet scale annotation and legend.
+explanatory lines and the duplicate Light-jet scale annotation; the scale
+appears only in the category legend.
 The old red horizontal OS/SS reference lines are omitted; the grey unity
 reference and green constant/linear fits are retained.
 
