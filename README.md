@@ -1011,9 +1011,12 @@ are retained. This chi-square is an approximation for sparse subtracted data;
 an exact count likelihood would instead model raw SS data and the nonQCD
 components jointly, including their MC uncertainties.
 
-All three fits share one adaptive 5--80 grid (default target effective count
-10, maximum width 5 GeV), split at 20 and 30 GeV so no bin crosses a fit
-boundary. This diagnostic grid can differ from production 5--30 adaptive bins.
+All three fits share one grid: adaptive below 40 GeV (default target effective
+count 10, maximum width 5 GeV), split at 20 and 30 GeV so no bin crosses a fit
+boundary. At high mass the edges are fixed at **40, 45, 50, 60, 70, 80 GeV**;
+there are no additional adaptive edges inside that interval. These fixed bins
+override the adaptive width cap. This diagnostic grid can differ from production
+5--30 adaptive bins. The fit ranges remain 5--20, 5--30 and 5--80 GeV.
 The nominal function remains Power x Exp x Logistic; the five alternatives give
 the **pointwise symmetric functional envelope**,
 `nominal +/- max(abs(alternative - nominal))`. The lower edge is not clipped;

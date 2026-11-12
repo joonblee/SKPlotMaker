@@ -14,6 +14,11 @@ import ratio_fits as r
 import dy_mc_shape_comparison as dy
 import qcd_ss_fit_range_comparison as ss
 
+try:
+    import ROOT
+except ImportError:
+    ROOT = None
+
 
 class RatioFitsTest(unittest.TestCase):
     def test_dy_reference_defaults_reach_plot_and_matching(self):
@@ -199,6 +204,46 @@ class SSComparisonTest(unittest.TestCase):
                 declare.assert_not_called()
                 fit.assert_not_called()
             self.assertEqual(path.read_bytes(), original)
+
+
+@unittest.skipIf(ROOT is None, 'PyROOT is not installed')
+class SSFixedTailBinningTest(unittest.TestCase):
+    def test_fixed_tail_preserves_signed_yields_variances_and_low_mass_grid(self):
+        ROOT.TH1.AddDirectory(False)
+        source = ROOT.TH1D('ss_fixed_tail_input', '', 1000, 0., 100.)
+        source.Sumw2()
+        for i in range(1, 1001):
+            source.SetBinContent(i, 100. if source.GetBinCenter(i) < 40. else -1.)
+            source.SetBinError(i, 2.)
+        args = ss.build_parser().parse_args([])
+        original = ss.qcd.make_adaptive_ss_binning(
+            source, ss.replace(ss.qcd.SS_MODE, fit_max=80.),
+            args.ss_min_effective_count, args.ss_max_bin_width)
+        expected_low = sorted(set([round(x, 9) for x in original if x < 40.] + [20., 30.]))
+        prepared = ss.common_histograms(ROOT, source, args)
+        self.assertEqual([x for x in prepared.edges if x < 40.], expected_low)
+        self.assertEqual([x for x in prepared.edges if 40. <= x <= 80.],
+                         [40., 45., 50., 60., 70., 80.])
+        for left, right in zip(ss.FIXED_HIGH_MASS_EDGES, ss.FIXED_HIGH_MASS_EDGES[1:]):
+            i = prepared.counts.FindBin((left+right)/2.)
+            n_native = round((right-left)/.1)
+            self.assertEqual(prepared.counts.GetBinContent(i), -n_native)
+            self.assertAlmostEqual(prepared.counts.GetBinError(i)**2, 4.*n_native)
+            self.assertAlmostEqual(prepared.density.GetBinContent(i), -10.)
+            self.assertAlmostEqual(prepared.density.GetBinError(i),
+                                   2.*math.sqrt(n_native)/(right-left))
+        original_variance = sum(source.GetBinError(i)**2 for i in range(1, 1001))
+        self.assertAlmostEqual(prepared.counts.Integral(), source.Integral())
+        self.assertAlmostEqual(sum(prepared.counts.GetBinError(i)**2
+                                   for i in range(1, prepared.counts.GetNbinsX()+1)),
+                               original_variance)
+
+    def test_fixed_edge_inside_native_bin_is_rejected(self):
+        # All requested boundaries except 45 GeV coincide with this native grid.
+        source = ROOT.TH1D('ss_fixed_tail_unsplittable', '', 50, 0., 100.)
+        with patch.object(ss.qcd, 'make_adaptive_ss_binning', return_value=[0., 5., 80., 100.]), \
+             self.assertRaisesRegex(ValueError, '45 GeV is not a native bin edge'):
+            ss.common_histograms(ROOT, source, ss.build_parser().parse_args([]))
 
 
 if __name__ == "__main__":

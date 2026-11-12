@@ -3,9 +3,11 @@
 
 Reuse the production six function families, nominal Power x Exp x Logistic,
 bin-integrated chi-square and fit-validity rules. Signed bins are never clipped.
-All ranges use one adaptive 5--80 GeV grid, split at 20 and 30 GeV; thus only
-the fit range changes. This diagnostic grid can differ from production 5--30
-adaptive binning. The common-grid edges and all fit diagnostics are exported.
+All ranges use one common grid: adaptive below 40 GeV, split at 20 and 30 GeV,
+and fixed edges 40, 45, 50, 60, 70, 80 GeV above. The adaptive width cap does
+not apply to these fixed high-mass bins. Thus only the fit range changes.
+This diagnostic grid can differ from production 5--30 adaptive binning.
+The common-grid edges and all fit diagnostics are exported.
 
 Bands are pointwise nominal +/- max_alternative |alternative - nominal|,
 without zero-clipping. They are functional envelopes, not confidence intervals
@@ -46,6 +48,8 @@ import sys
 import qcd_bkg_estimation as qcd
 
 RANGES = (30., 20., 80.)
+FIXED_HIGH_MASS_EDGES = (40., 45., 50., 60., 70., 80.)
+FORCED_EDGES = (20., 30., *FIXED_HIGH_MASS_EDGES)
 ALL_PERIODS = (*qcd.RUN2_ERAS, *qcd.RUN3_ERAS, "Run2", "Run3", "Run2+3")
 DEFAULT_BASE = str(Path(qcd.DEFAULT_BASE_DIR) / "NIsoMuon")
 
@@ -65,7 +69,8 @@ def build_parser():
     parser.add_argument("--plot-json", type=Path, nargs="+", metavar="JSON",
                         help="Redraw saved JSON results only: no input histograms, fits or JSON writes")
     parser.add_argument("--ss-min-effective-count", type=qcd.positive_float, default=10.)
-    parser.add_argument("--ss-max-bin-width", type=qcd.positive_float, default=5.)
+    parser.add_argument("--ss-max-bin-width", type=qcd.positive_float, default=5.,
+                        help="Adaptive width cap below 40 GeV (default: 5); high-mass bins are fixed")
     parser.add_argument("--fit-max-attempts", type=qcd.positive_integer, default=30)
     parser.add_argument("--fit-attempt-details", action="store_true")
     parser.add_argument("--linthresh", type=qcd.positive_float, default=.1,
@@ -84,16 +89,19 @@ def build_parser():
 
 
 def common_histograms(ROOT, source, args):
-    """Use production adaptive merging; force shared boundaries at 20 and 30."""
+    """Keep adaptive bins below 40; replace the tail with fixed high-mass bins."""
     mode = replace(qcd.SS_MODE, fit_max=80.)
     edges = qcd.make_adaptive_ss_binning(source, mode, args.ss_min_effective_count,
                                         args.ss_max_bin_width)
     native = [float(source.GetXaxis().GetBinLowEdge(i))
               for i in range(1, source.GetNbinsX()+2)]
-    for boundary in (20., 30.):
+    for boundary in FORCED_EDGES:
         if not any(math.isclose(x, boundary, abs_tol=1e-8, rel_tol=0.) for x in native):
             raise ValueError(f"{boundary:g} GeV is not a native bin edge; cannot split an input bin")
-    edges = sorted(set([round(x, 9) for x in edges] + [20., 30.]))
+    edges = sorted(set([round(x, 9) for x in edges
+                        if x < FIXED_HIGH_MASS_EDGES[0] or x > FIXED_HIGH_MASS_EDGES[-1]]
+                       + list(FORCED_EDGES)))
+    print("[SS COMPARISON BINNING] final edges [GeV] = " + ", ".join(f"{x:g}" for x in edges))
     counts_raw = source.Rebin(len(edges)-1, "ss_comparison_counts_raw", array("d", edges))
     counts_raw.SetDirectory(0)
     counts = qcd.clone_to_th1d(ROOT, counts_raw, "ss_comparison_counts", edges)
@@ -520,7 +528,10 @@ def main(argv=None):
                        nominal=qcd.SS_NOMINAL_MODEL, alternatives=list(qcd.SS_SHAPE_ALTERNATIVES),
                        envelope="symmetric functional only; no clipping; not a confidence interval",
                        binning=dict(edges=prepared.edges, min_effective_count=args.ss_min_effective_count,
-                                    max_width=args.ss_max_bin_width, forced_edges=[20., 30.]),
+                                    max_width=args.ss_max_bin_width,
+                                    adaptive_range=[5., 40.],
+                                    fixed_high_mass_edges=list(FIXED_HIGH_MASS_EDGES),
+                                    forced_edges=list(FORCED_EDGES)),
                        points=points, fits=reports)
         stem.with_suffix(".json").write_text(json.dumps(finite_json(payload), indent=2, allow_nan=False) + "\n")
         print(f"[SAVED] {stem.with_suffix('.json')}")
