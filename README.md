@@ -517,6 +517,32 @@ options have no effect in `ss-data` mode. To inspect without fitting or writing:
 python3 qcd_bkg_estimation.py --mode qcd-mc --year Run3 --inspect-binning
 ```
 
+To test extrapolation from a **5--30 GeV MC fit to 80 GeV**, use the same
+producer with independent fit and display ranges:
+
+```bash
+python3 qcd_bkg_estimation.py --mode qcd-mc --era Run2+3 \
+    --fit-objective log-chi2 --mc-fit-range 5 30 --mc-plot-range 5 80
+```
+
+Replace `Run2+3` with an individual era, `Run2` or `Run3` as needed; combined
+histograms are summed before fitting. All six existing function families are
+fitted only inside 5--30 GeV, still excluding 9--11 GeV, then extrapolated with
+their fitted amplitudes unchanged. Fit/display boundaries must coincide with
+native ROOT bin edges; they are protected before adaptive binning and `--rebin`
+so high-mass events cannot enter low-mass fit bins. High-mass MC remains
+adaptive, without the SS diagnostic's fixed tail bin.
+
+Custom-range outputs have a `-Fit5to30-Plot5to80` suffix and include PDF/PNG,
+the full displayed fit/MC ratio, and a JSON held-out comparison for each model
+(status/covariance, parameters, per-bin MC/predictions and integrated yields).
+The grey ratio band and held-out `chi2/nBin` use **MC Sumw2 only**; they do not
+include fitted-parameter uncertainty or provide a calibrated goodness-of-fit
+p-value. Read the fit acceptance flag before interpreting an extrapolation.
+These MC-only controls do not write SS anchors or production ROOT templates.
+Without the range options, the existing 5--80 GeV fits and filenames are
+unchanged. `--mc-fit-range/--mc-plot-range` are rejected in SS-data mode.
+
 `QCD_TRANSFER_LOW_WINDOW` and `QCD_TRANSFER_HIGH_WINDOW` in
 `qcd_bkg_estimation.py` govern both the transfer-factor calibration windows and
 the output-template support. Nominal, Norm/Shape and statistical derivative

@@ -80,6 +80,12 @@ Fit modes and objectives
       within each of 5--9, 9--11 and 11--80 GeV; this may exceed the base cap.
       Native boundaries and signed yields/Sumw2 are preserved.
       --mc-binning legacy restores the previous fixed MC edges.
+      --mc-fit-range 5 30 --mc-plot-range 5 80 fits only the low interval
+      and extrapolates the fitted normalisation/shape to the displayed tail.
+      Defaults remain 5--80 for both ranges. Extra boundaries must be native
+      ROOT bin edges and are protected before adaptive merging and --rebin.
+      Custom ranges save separate PDF/PNG and held-out MC comparison JSON;
+      ratio grey bands show MC statistics only, without fit uncertainty.
 The interval 9 < m(mumu) < 11 GeV is excluded from every QCD-MC fit objective
 and diagnostic.
 
@@ -99,6 +105,8 @@ Main optional controls
   --mc-binning {adaptive,legacy}   default: adaptive; MC only
   --mc-min-effective-count VALUE   default: 25; MC only
   --mc-max-bin-width GEV           base adaptive width cap, default: 5; MC only
+  --mc-fit-range LOW HIGH          default: 5 80; MC only
+  --mc-plot-range LOW HIGH         default: 5 80; MC only
   --transfer-method {run-common,era-specific,data-low}
       --qcd-transfer-method and mc-double-ratio remain compatibility aliases
   --data-period {F,G,H}           2016postVFP SS-only period diagnostic;
@@ -230,7 +238,7 @@ import shutil
 import sys
 import tempfile
 from array import array
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -1166,6 +1174,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Adaptive QCD-MC Neff target before minimum-width merging (default: 25)")
     parser.add_argument("--mc-max-bin-width", type=positive_float, default=5.,
                         help="Base adaptive QCD-MC width cap in GeV; final minimum-width merging may exceed it (default: 5)")
+    parser.add_argument("--mc-fit-range", type=float, nargs=2, metavar=("LOW", "HIGH"),
+                        help="QCD-MC fit interval in GeV (default: 5 80); 9--11 GeV remains excluded")
+    parser.add_argument("--mc-plot-range", type=float, nargs=2, metavar=("LOW", "HIGH"),
+                        help="QCD-MC display interval in GeV, containing the fit interval (default: 5 80)")
     parser.add_argument(
         "--fit-objective",
         choices=("auto", "chi2", "weighted-likelihood", "log-chi2"),
@@ -1700,7 +1712,8 @@ bound_mc_bin_widths = bound_adaptive_bin_widths
 
 
 def make_adaptive_mc_binning(source_hist, mode: ModeConfig,
-                             min_effective_count: float = 25., max_bin_width: float = 5.) -> List[float]:
+                             min_effective_count: float = 25., max_bin_width: float = 5.,
+                             protected_edges: Sequence[float] = ()) -> List[float]:
     """Statistical adaptive MC bins, then minimum-width merging without splitting."""
     if mode.key != QCD_MODE.key:
         raise ValueError("Adaptive MC binning requires qcd-mc mode")
@@ -1711,7 +1724,7 @@ def make_adaptive_mc_binning(source_hist, mode: ModeConfig,
               for i in range(1, source_hist.GetNbinsX()+2)]
     validate_bin_edges(native, "native MC binning")
     fixed = make_variable_binning(mode)
-    protected = (mode.fit_min, 9., 11., mode.fit_max)
+    protected = sorted(set((mode.fit_min, 9., 11., mode.fit_max, *protected_edges)))
     outside = [x for x in fixed if x < mode.fit_min or x > mode.fit_max]
     indices = {}
     for boundary in (*outside, *protected):
@@ -1782,16 +1795,31 @@ def prepare_histograms(
     ROOT, source_hist, mode: ModeConfig, rebin_factor: int, ss_binning: str = "auto",
     ss_min_effective_count: float = 25.0, ss_max_bin_width: float = 5.0,
     mc_binning: str = "adaptive", mc_min_effective_count: float = 25., mc_max_bin_width: float = 5.,
+    mc_protected_edges: Sequence[float] = (),
 ) -> PreparedHistograms:
     ss_binning = resolve_ss_binning(source_hist, mode, ss_binning)
     if mode.key == SS_MODE.key and ss_binning == "adaptive":
         base_edges = make_adaptive_ss_binning(source_hist, mode, ss_min_effective_count, ss_max_bin_width)
     elif mode.key == QCD_MODE.key and mc_binning == "adaptive":
-        base_edges = make_adaptive_mc_binning(source_hist, mode, mc_min_effective_count, mc_max_bin_width)
+        base_edges = make_adaptive_mc_binning(source_hist, mode, mc_min_effective_count, mc_max_bin_width,
+                                             mc_protected_edges)
     else:
         base_edges = make_variable_binning(mode, ss_binning)
     if mode.key == QCD_MODE.key:
-        protected = (mode.fit_min, 9.0, 11.0, mode.fit_max)
+        # Insert native-aligned boundaries in legacy mode too. Protect them
+        # before --rebin so no fitted bin can contain held-out MC events.
+        native = [float(source_hist.GetXaxis().GetBinLowEdge(i))
+                  for i in range(1, source_hist.GetNbinsX()+2)]
+        extra = []
+        for edge in mc_protected_edges:
+            matches = [x for x in native if math.isclose(x, edge, abs_tol=1e-9, rel_tol=0.)]
+            if not matches:
+                raise ValueError(f"MC edge {edge:g} GeV is not an input ROOT bin edge; cannot split native bins")
+            extra.append(matches[0])
+        base_edges = sorted([x for x in base_edges
+                             if not any(math.isclose(x, edge, abs_tol=1e-9, rel_tol=0.) for edge in extra)] + extra)
+        base_edges = sorted(set(base_edges))
+        protected = (mode.fit_min, 9.0, 11.0, mode.fit_max, *extra)
     else:
         protected = (mode.fit_min, mode.fit_max)
     final_edges = merge_adjacent_bin_edges(base_edges, rebin_factor, protected)
@@ -3092,6 +3120,84 @@ def x_axis_title(ROOT, mode: ModeConfig) -> str:
     return "m_{#mu^{+}#mu^{-}} [GeV]"
 
 
+def mc_range_modes(args, mode: ModeConfig) -> Tuple[ModeConfig, ModeConfig]:
+    """Keep default/SS modes unchanged; validate explicit MC ranges before I/O."""
+    fit_range = getattr(args, "mc_fit_range", None)
+    plot_range = getattr(args, "mc_plot_range", None)
+    if fit_range is None and plot_range is None:
+        return mode, mode
+    if mode.key != QCD_MODE.key:
+        raise ValueError("--mc-fit-range/--mc-plot-range require --mode qcd-mc")
+    fit_low, fit_high = fit_range or (mode.fit_min, mode.fit_max)
+    plot_low, plot_high = plot_range or (mode.fit_min, mode.fit_max)
+    values = (fit_low, fit_high, plot_low, plot_high)
+    if (not all(math.isfinite(x) for x in values)
+            or not 5. <= plot_low <= fit_low < fit_high <= plot_high <= 80.):
+        raise ValueError("MC ranges must satisfy 5 <= plot LOW <= fit LOW < fit HIGH <= plot HIGH <= 80 GeV")
+    if any(9. < x < 11. for x in values) or (fit_low >= 9. and fit_high <= 11.):
+        raise ValueError("MC range boundaries cannot lie inside the excluded 9--11 GeV interval")
+    return replace(mode, fit_min=fit_low, fit_max=fit_high), replace(mode, fit_min=plot_low, fit_max=plot_high)
+
+
+def mc_range_suffix(mode: ModeConfig, plot_mode: ModeConfig) -> str:
+    if mode.key != QCD_MODE.key or (mode == QCD_MODE and plot_mode == QCD_MODE):
+        return ""
+    tag = f"-Fit{mode.fit_min:g}to{mode.fit_max:g}-Plot{plot_mode.fit_min:g}to{plot_mode.fit_max:g}"
+    return tag.replace(".", "p")
+
+
+def mc_extrapolation_report(args, mode: ModeConfig, plot_mode: ModeConfig,
+                            density, selected_fits: Sequence[SelectedFit]) -> dict:
+    """Held-out comparisons use MC Sumw2 only, without refitting/normalising."""
+    def finite(value):
+        return value if math.isfinite(value) else None
+
+    report = {
+        "period": args.year, "objective": args.fit_objective,
+        "fit_range": [mode.fit_min, mode.fit_max],
+        "plot_range": [plot_mode.fit_min, plot_mode.fit_max],
+        "excluded_range": [9., 11.], "models": {},
+        "statistics": "Held-out chi2/nBin uses MC Sumw2 only; no fit-parameter uncertainty or calibrated p-value. No tail normalisation or refit.",
+    }
+    for selected in selected_fits:
+        bins, chi2, n_bins, total_mc, variance, total_fit = [], 0., 0, 0., 0., 0.
+        for i in range(1, density.GetNbinsX()+1):
+            low = float(density.GetXaxis().GetBinLowEdge(i))
+            high = float(density.GetXaxis().GetBinUpEdge(i))
+            if low < plot_mode.fit_min-1e-9 or high > plot_mode.fit_max+1e-9 or is_excluded(mode, low, high):
+                continue
+            if low >= mode.fit_min-1e-9 and high <= mode.fit_max+1e-9:
+                continue
+            width, centre = high-low, (low+high)/2.
+            value, error = float(density.GetBinContent(i)), float(density.GetBinError(i))
+            prediction = float(selected.average_function.Eval(centre))
+            pull = (prediction-value)/error if error > 0. else math.nan
+            if math.isfinite(pull):
+                chi2 += pull**2
+                n_bins += 1
+            total_mc += value*width
+            variance += (error*width)**2
+            total_fit += prediction*width
+            bins.append({"low": low, "high": high, "mc": value*width, "mc_error": error*width,
+                         "prediction": finite(prediction*width), "fit_over_mc": finite(prediction/value) if value != 0. else None,
+                         "mc_stat_pull": finite(pull)})
+        diag = selected.diagnostics
+        report["models"][selected.model.key] = {
+            "accepted": selected.accepted, "status": diag.status, "covQual": diag.covariance_status,
+            "parameters": [finite(float(selected.function.GetParameter(i))) for i in range(selected.model.npar)],
+            "held_out_bins": bins, "held_out_chi2": finite(chi2), "held_out_n_bins": n_bins,
+            "held_out_chi2_per_bin": finite(chi2/n_bins) if n_bins else None,
+            "held_out_mc_yield": total_mc, "held_out_mc_error": math.sqrt(variance),
+            "held_out_prediction": finite(total_fit),
+            "held_out_prediction_over_mc": finite(total_fit/total_mc) if total_mc != 0. else None,
+        }
+        if bins:
+            print(f"[MC EXTRAPOLATION] {selected.model.key}: accepted={int(selected.accepted)} "
+                  f"held-out chi2/nBin={chi2/n_bins if n_bins else math.nan:.6g}; "
+                  f"MC={total_mc:.6g} +/- {math.sqrt(variance):.6g}, prediction={total_fit:.6g}")
+    return report
+
+
 def draw_fit_plot(
     ROOT,
     args: argparse.Namespace,
@@ -3105,6 +3211,8 @@ def draw_fit_plot(
     plot_dir = PLOT_DIR
     plot_dir.mkdir(parents=True, exist_ok=True)
     keepalive: List[object] = []
+    plot_mode = getattr(args, "_mc_plot_mode", mode)
+    range_suffix = mc_range_suffix(mode, plot_mode)
 
     canvas = ROOT.TCanvas("myCanvas", "", 1000, 1000)
     upper = ROOT.TPad("upper_pad", "", 0.0, 0.26, 1.0, 1.0, 0)
@@ -3120,6 +3228,17 @@ def draw_fit_plot(
 
     upper.cd()
     set_local_cms_style(ROOT)
+    density.GetXaxis().SetRangeUser(plot_mode.fit_min, plot_mode.fit_max)
+    if range_suffix:
+        density.SetMarkerStyle(20)
+        density.SetMarkerSize(0.5)
+        density.SetMarkerColor(ROOT.kBlack)
+        density.SetLineColor(ROOT.kBlack)
+    for selected in selected_fits:
+        # These functions are display/diagnostic copies, not the objective
+        # function used by ROOT's minimiser. Parameters stay fixed.
+        selected.function.SetRange(plot_mode.fit_min, plot_mode.fit_max)
+        selected.average_function.SetRange(plot_mode.fit_min, plot_mode.fit_max)
     density.Draw("PE")
     for selected in selected_fits:
         selected.function.Draw("LSAME")
@@ -3146,6 +3265,8 @@ def draw_fit_plot(
     density.Draw("PE SAME")
     for selected in selected_fits:
         selected.function.Draw("LSAME")
+    if range_suffix:
+        density.Draw("PE SAME")
     upper.SetGridx()
     upper.SetGridy()
     diagnostic = getattr(args, "_data_period_diagnostic", None)
@@ -3166,13 +3287,22 @@ def draw_fit_plot(
         latex.DrawLatex(0.12, y_text, fit_summary_line(selected, objective))
         y_text -= 0.05
     latex.SetTextColor(ROOT.kBlack)
+    if range_suffix:
+        latex.DrawLatex(0.15, 0.49, f"Fit: {mode.fit_min:g}--{mode.fit_max:g} GeV (9--11 excluded)")
+        latex.DrawLatex(0.15, 0.44, "Curves outside fit range: extrapolation")
+        for boundary in (mode.fit_min, mode.fit_max):
+            if plot_mode.fit_min < boundary < plot_mode.fit_max:
+                marker = ROOT.TLine(boundary, density.GetMinimum(), boundary, density.GetMaximum())
+                marker.SetLineStyle(2)
+                marker.Draw()
+                keepalive.append(marker)
 
     lower.cd()
     frame = density.Clone("RatioFrame")
     frame.SetDirectory(0)
     frame.Reset("ICES")
     frame.GetYaxis().SetRangeUser(0.5, 1.5)
-    frame.GetXaxis().SetRangeUser(mode.fit_min, mode.fit_max)
+    frame.GetXaxis().SetRangeUser(plot_mode.fit_min, plot_mode.fit_max)
     frame.GetXaxis().SetTitle(title_x)
     frame.GetXaxis().SetTitleOffset(1.1)
     frame.GetXaxis().SetTitleSize(0.1)
@@ -3189,7 +3319,7 @@ def draw_fit_plot(
         low = float(density.GetXaxis().GetBinLowEdge(ibin))
         high = float(density.GetXaxis().GetBinUpEdge(ibin))
         centre = float(density.GetBinCenter(ibin))
-        if centre < mode.fit_min or centre > mode.fit_max or is_excluded(mode, low, high):
+        if centre < plot_mode.fit_min or centre > plot_mode.fit_max or is_excluded(mode, low, high):
             continue
         value = float(density.GetBinContent(ibin))
         error = float(density.GetBinError(ibin))
@@ -3219,10 +3349,17 @@ def draw_fit_plot(
         graph.Draw("L SAME")
         ratio_graphs.append(graph)
 
-    line = ROOT.TF1("hline", "1", mode.fit_min, mode.fit_max)
+    line = ROOT.TF1("hline", "1", plot_mode.fit_min, plot_mode.fit_max)
     line.SetLineColor(ROOT.kBlack)
     line.SetLineWidth(2)
     line.Draw("SAME")
+    if range_suffix:
+        for boundary in (mode.fit_min, mode.fit_max):
+            if plot_mode.fit_min < boundary < plot_mode.fit_max:
+                marker = ROOT.TLine(boundary, 0.5, boundary, 1.5)
+                marker.SetLineStyle(2)
+                marker.Draw()
+                keepalive.append(marker)
     lower.SetGridx()
     lower.SetGridy()
     frame.Draw("AXIS SAME")
@@ -3236,7 +3373,7 @@ def draw_fit_plot(
         }[objective]
     basename = (
         f"FitPlot_FnVariation-{mode.file_name}_{mode.plot_tag}_Dimuon_Mass-"
-        f"{args.year}{'-SingleMuon_' + diagnostic.period if diagnostic else ''}-AllFits{objective_suffix}"
+        f"{args.year}{'-SingleMuon_' + diagnostic.period if diagnostic else ''}-AllFits{objective_suffix}{range_suffix}"
     )
     pdf = plot_dir / f"{basename}.pdf"
     png = plot_dir / f"{basename}.png"
@@ -4188,6 +4325,8 @@ def close_files(files: Sequence[object]) -> None:
 
 def run(args: argparse.Namespace) -> int:
     mode = canonical_mode(args.mode)
+    mode, plot_mode = mc_range_modes(args, mode)
+    args._mc_plot_mode = plot_mode
     diagnostic = data_period_diagnostic(args, mode)
     args._data_period_diagnostic = diagnostic
     if args.qcd_transfer_method == "data-low" and (mode.key != SS_MODE.key or len(input_dirs(args)) != 1):
@@ -4248,6 +4387,8 @@ def run(args: argparse.Namespace) -> int:
     else:
         print(f"[INFO] anchor file     = {anchor_file_path(args)}")
     print(f"[INFO] fit range       = [{mode.fit_min:g}, {mode.fit_max:g}] GeV")
+    if mode.key == QCD_MODE.key:
+        print(f"[INFO] plot range      = [{plot_mode.fit_min:g}, {plot_mode.fit_max:g}] GeV")
     print(f"[INFO] fit objective   = {objective}")
     if mode.key == QCD_MODE.key:
         anchor_mode = (
@@ -4292,9 +4433,11 @@ def run(args: argparse.Namespace) -> int:
     keepalive: List[object] = []
     try:
         prepared = prepare_histograms(
-            ROOT, source, mode, args.rebin, args.ss_binning,
+            ROOT, source, QCD_MODE if mode.key == QCD_MODE.key else mode, args.rebin, args.ss_binning,
             args.ss_min_effective_count, args.ss_max_bin_width,
             args.mc_binning, args.mc_min_effective_count, args.mc_max_bin_width,
+            (mode.fit_min, mode.fit_max, plot_mode.fit_min, plot_mode.fit_max)
+            if mc_range_suffix(mode, plot_mode) else (),
         )
         if args.inspect_binning:
             target = args.ss_min_effective_count if mode.key == SS_MODE.key and args.ss_binning == "adaptive" else None
@@ -4304,7 +4447,7 @@ def run(args: argparse.Namespace) -> int:
             print("[DONE] Binning inspection only; no fits, plots, anchors or ROOT templates written.")
             return 0
         density = prepared.density
-        density.GetXaxis().SetRangeUser(mode.fit_min, mode.fit_max)
+        density.GetXaxis().SetRangeUser(plot_mode.fit_min, plot_mode.fit_max)
         density.GetXaxis().SetMoreLogLabels()
         y_min = 0.01
         y_max = 3.0 * float(density.GetBinContent(density.GetMaximumBin()))
@@ -4333,6 +4476,16 @@ def run(args: argparse.Namespace) -> int:
         )
         print(f"[SAVE] {pdf}")
         print(f"[SAVE] {png}")
+        if mc_range_suffix(mode, plot_mode):
+            report = mc_extrapolation_report(args, mode, plot_mode, density, selected)
+            report["objective"] = objective
+            report["region"] = mode.region
+            report["mc_binning"] = args.mc_binning
+            report["log_relative_error_floor"] = args.log_relative_error_floor
+            report["bin_edges"] = prepared.edges
+            report_path = pdf.with_suffix(".json")
+            report_path.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+            print(f"[SAVE] {report_path}")
 
         if diagnostic:
             print("[INFO] Period diagnostic finished; production SS anchors and OS ROOT templates were not changed.")
