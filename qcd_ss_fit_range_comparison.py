@@ -9,8 +9,10 @@ adaptive binning. The common-grid edges and all fit diagnostics are exported.
 
 Bands are pointwise nominal +/- max_alternative |alternative - nominal|,
 without zero-clipping. They are functional envelopes, not confidence intervals
-or the total statistical + systematic uncertainty. The symmetric-logarithmic
-y axis retains negative observations and negative lower band edges.
+or the total statistical + systematic uncertainty. Default display: log x,
+5--50 GeV and y >= 0.01 events/GeV, with decimal chi-square/ndf. These are
+viewport settings only: signed bins, all three fit ranges and full 5--80 GeV
+curves/bands remain unchanged in the fit and JSON.
 
 For combined periods, sum the SS data and each subtraction MC histogram over
 the requested eras first, then fit that summed histogram once per range.
@@ -55,6 +57,14 @@ def build_parser():
     parser.add_argument("--fit-attempt-details", action="store_true")
     parser.add_argument("--linthresh", type=qcd.positive_float, default=.1,
                         help="Linear y-axis neighbourhood around zero, in events/GeV")
+    parser.add_argument("--ymin", type=float, default=.01,
+                        help="Displayed lower y bound in events/GeV (default: 0.01; 0 is allowed)")
+    parser.add_argument("--xmax", type=qcd.positive_float, default=50.,
+                        help="Displayed upper mass bound only, 5 < xmax <= 80 (default: 50 GeV)")
+    xscale = parser.add_mutually_exclusive_group()
+    xscale.add_argument("--logx", dest="logx", action="store_true", help="Logarithmic x axis (default)")
+    xscale.add_argument("--linear-x", dest="logx", action="store_false", help="Linear x axis")
+    parser.set_defaults(logx=True)
     return parser
 
 
@@ -183,16 +193,19 @@ def validate_plot_data(points, reports):
 def plot(args, points, reports, stem, ROOT=None):
     """Draw ROOT graphs in transformed y coordinates, with physical y labels.
 
-    Transform each endpoint of an error/band separately: neither negative
-    values nor statistical intervals crossing zero are lost or symmetrised
-    in the displayed coordinates. No array libraries or BLAS calls are used.
+    Transform each error/band endpoint separately and clip only the viewport;
+    full signed fit inputs/results are retained. No array libraries or BLAS
+    calls are used.
     """
     validate_plot_data(points, reports)
     ROOT = ROOT if ROOT is not None else qcd.import_root()
     transform = lambda y: signed_log(y, args.linthresh)
-    ymin = min([p["value"]-p["error"] for p in points] + [min(r["low"]) for r in reports])
-    ymax = max([p["value"]+p["error"] for p in points] + [max(r["high"]) for r in reports])
-    ymin, ymax = min(-args.linthresh, ymin*1.6), max(args.linthresh, ymax*2.)
+    visible_points = [p for p in points if 5. <= p["x"] <= args.xmax]
+    visible_highs = [high for r in reports for x, high in zip(r["x"], r["high"])
+                     if 5. <= x <= args.xmax]
+    ymin = args.ymin
+    ymax = max(args.linthresh, ymin*10.,
+               2.*max([p["value"]+p["error"] for p in visible_points] + visible_highs))
     bottom, top = transform(ymin), transform(ymax)
     margin = .025*(top-bottom)
     canvas = ROOT.TCanvas("ss_range_comparison", "", 1100, 850)
@@ -200,12 +213,16 @@ def plot(args, points, reports, stem, ROOT=None):
     canvas.SetRightMargin(.035)
     canvas.SetTopMargin(.08)
     canvas.SetBottomMargin(.16)
-    frame = canvas.DrawFrame(5., bottom-margin, 80., top+margin)
+    canvas.SetLogx(args.logx)
+    frame = canvas.DrawFrame(5., bottom, args.xmax, top+margin)
     frame.SetTitle("")
     frame.GetXaxis().SetTitle("m_{#mu#mu} [GeV]")
     frame.GetYaxis().SetTitle("Events / GeV (symmetric log scale)")
     frame.GetXaxis().SetTitleSize(.04)
     frame.GetXaxis().SetLabelSize(.035)
+    if args.logx:
+        frame.GetXaxis().SetMoreLogLabels()
+        frame.GetXaxis().SetNoExponent()
     frame.GetYaxis().SetTitleSize(.04)
     frame.GetYaxis().SetTitleOffset(1.55)
     frame.GetYaxis().SetLabelSize(0.)
@@ -216,14 +233,15 @@ def plot(args, points, reports, stem, ROOT=None):
     labels.SetTextSize(.033)
     labels.SetTextAlign(32)
     max_abs = max(abs(ymin), abs(ymax))
-    ticks = [0.]
-    for exponent in range(math.floor(math.log10(args.linthresh)),
+    ticks = [0.] if ymin == 0. else []
+    first_tick = min(args.linthresh, ymin) if ymin > 0. else args.linthresh
+    for exponent in range(math.floor(math.log10(first_tick)),
                           math.ceil(math.log10(max_abs))+1):
         value = 10.**exponent
         ticks.extend(sign*value for sign in (-1., 1.) if ymin <= sign*value <= ymax)
     for value in sorted(ticks):
         y = transform(value)
-        grid = ROOT.TLine(5., y, 80., y)
+        grid = ROOT.TLine(5., y, args.xmax, y)
         grid.SetLineColor(ROOT.kGray if value else ROOT.kGray+2)
         grid.SetLineStyle(3 if value else 1)
         grid.Draw()
@@ -236,7 +254,9 @@ def plot(args, points, reports, stem, ROOT=None):
             label = ("-" if value < 0 else "") + f"10^{{{round(math.log10(abs(value)))}}}"
         keepalive.append(labels.DrawLatex(4.3, y, label))
     for boundary in (20., 30.):
-        line = ROOT.TLine(boundary, bottom-margin, boundary, top+margin)
+        if boundary >= args.xmax:
+            continue
+        line = ROOT.TLine(boundary, bottom, boundary, top+margin)
         line.SetLineColor(ROOT.kGray+1)
         line.SetLineStyle(3)
         line.Draw()
@@ -252,6 +272,8 @@ def plot(args, points, reports, stem, ROOT=None):
         n = len(report["x"])
         band = ROOT.TGraph(2*n)
         curve = ROOT.TGraph(n)
+        band.SetBit(ROOT.TGraph.kClipFrame)
+        curve.SetBit(ROOT.TGraph.kClipFrame)
         for i, (x, central, low, high) in enumerate(zip(report["x"], report["central"],
                                                       report["low"], report["high"])):
             band.SetPoint(i, x, transform(low))
@@ -267,12 +289,13 @@ def plot(args, points, reports, stem, ROOT=None):
         keepalive.extend((band, curve))
         metric = report["models"][qcd.SS_NOMINAL_MODEL]["metrics"]
         label = (f"5-{report['range'][1]:g} GeV fit + envelope"
-                 f" (#chi^{{2}}/ndf={metric['stat_chi2']:.1f}/{metric['stat_ndf']})")
+                 f" (#chi^{{2}}/ndf={metric['stat_chi2']/metric['stat_ndf']:.3f})")
         legend.AddEntry(band, label, "lf")
     for curve in curves:
         curve.Draw("L SAME")
-    data = ROOT.TGraphAsymmErrors(len(points))
-    for i, point in enumerate(points):
+    data = ROOT.TGraphAsymmErrors(len(visible_points))
+    data.SetBit(ROOT.TGraph.kClipFrame)
+    for i, point in enumerate(visible_points):
         value, error = point["value"], point["error"]
         y = transform(value)
         data.SetPoint(i, point["x"], y)
@@ -290,8 +313,8 @@ def plot(args, points, reports, stem, ROOT=None):
     text.SetTextSize(.034)
     text.DrawLatex(.14, .95, f"SS fit-range comparison: {args.era}")
     text.SetTextSize(.026)
-    text.DrawLatex(.14, .065, "Bands: symmetric functional envelope only; signed bins and lower edges retained.")
-    text.DrawLatex(.14, .03, f"Symmetric log axis, linear near zero (scale {args.linthresh:g} events/GeV).")
+    text.DrawLatex(.14, .065, "Bands: functional envelope only. Display cuts do not change signed fit inputs/results.")
+    text.DrawLatex(.14, .03, f"Display: 5-{args.xmax:g} GeV, y #geq {ymin:g} events/GeV; full fit results saved in JSON.")
     canvas.RedrawAxis()
     canvas.Update()
     try:
@@ -317,7 +340,12 @@ def replot_saved(args):
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not math.isfinite(args.ymin) or args.ymin < 0.:
+        parser.error("--ymin must be finite and nonnegative")
+    if not 5. < args.xmax <= 80.:
+        parser.error("--xmax must satisfy 5 < xmax <= 80 GeV (display only)")
     if args.plot_json:
         return replot_saved(args)
     args.era = "Run2+3" if args.era == "full" else args.era

@@ -985,8 +985,12 @@ only SS histograms and never writes production templates or anchors, so these
 diagnostic era jobs can run independently.
 
 Outputs are PDF, PNG and JSON under `plots/SSFitRangeComparison/` (override
-`--output-dir`). The symmetric-logarithmic y axis shows negative bins and band
-edges; `--linthresh 0.1` controls its linear neighbourhood around zero in
+`--output-dir`). Display defaults are **log x, 5--50 GeV, y >= 0.01 events/GeV**.
+The legend gives chi-square/ndf as a decimal ratio. `--xmax`, `--ymin` (including
+`--ymin 0`) and `--linear-x` change the viewport only. All signed data bins,
+the 5--20/30/80 GeV fits and full 5--80 GeV curves/bands remain in the JSON.
+Points and band edges below the displayed y minimum are outside the viewport.
+`--linthresh 0.1` controls the symmetric-log y mapping near zero in
 events/GeV. Graphics use PyROOT and Python scalar maths only, with no
 NumPy/Matplotlib imports or BLAS operations. The ROOT plot uses the smooth
 signed mapping `sign(y) * log10(1 + abs(y)/linthresh)`, labelling the y axis
