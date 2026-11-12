@@ -8,8 +8,12 @@ no extra luminosity rescaling and no per-era shape normalisation.
 
 Only NIsoMuon_DYJets_Inclusive.root is opened, in READ mode. No collision data,
 data-driven templates or MG LO samples are used, and no ROOT files are written.
-The output is PDF and PNG. Errors are finite-MC Sumw2 errors with the matching
-factor held fixed; they are not a total uncertainty or a closure-test p-value.
+The output is PDF, PNG and a ratio-fit JSON report. Errors are finite-MC Sumw2
+errors with the matching factor held fixed; they are not a total uncertainty
+or a closure-test p-value.
+The ratio panel fits y=c (dashed) and y=ax+b (solid), using diagonal statistical
+errors with the matching factor fixed. Use --ratio-fits none to hide them or
+--ratio-fit-range LOW HIGH to restrict the fit to whole bins in that range.
 
 Examples:
   python3 dy_mc_shape_comparison.py
@@ -29,6 +33,8 @@ import math
 import sys
 from array import array
 from pathlib import Path
+
+import ratio_fits
 
 RUN2_ERAS: tuple[str, ...] = (
     "2016preVFP", "2016postVFP", "2017", "2018",
@@ -418,6 +424,9 @@ def draw(ROOT, args, b_hist, l_hist, factor):
     ratio.SetMarkerSize(0.8)
     ratio.SetLineColor(ROOT.kBlack)
     ratio.Draw("PE SAME")
+    fit_series = [("DY MC", ROOT.kGreen + 2, ratio_fits.analyse(
+        ratio_points(b_hist, l_hist, args.xmin, args.xmax), args))]
+    fit_objects = ratio_fits.draw(ROOT, fit_series)
     lower.RedrawAxis()
     upper.cd()
     upper.RedrawAxis()
@@ -442,6 +451,9 @@ def draw(ROOT, args, b_hist, l_hist, factor):
         path = output / f"{stem}.{suffix}"
         canvas.SaveAs(str(path))
         print(f"[SAVED] {path}")
+    if args.ratio_fits != "none":
+        ratio_fits.save(output / f"{stem}.json", fit_series, era=args.era,
+                        matching_factor=factor)
 
 
 def build_parser():
@@ -463,6 +475,7 @@ def build_parser():
     parser.add_argument("--linear-y", action="store_true", help="Use a linear y axis")
     parser.add_argument("--ratio-min", type=float, default=0.0)
     parser.add_argument("--ratio-max", type=float, default=2.0)
+    ratio_fits.add_arguments(parser)
     return parser
 
 
@@ -491,6 +504,10 @@ def main(argv=None):
     if not (math.isfinite(args.ratio_min) and math.isfinite(args.ratio_max)
             and args.ratio_min < args.ratio_max):
         parser.error("Require finite ratio-min < ratio-max")
+    try:
+        ratio_fits.fit_range(args)
+    except ValueError as exc:
+        parser.error(str(exc))
     ROOT = import_root()
     print("[ERAS] " + ", ".join(selected_eras(args.era)))
     b_raw, l_raw = load_dy_pair(ROOT, args)

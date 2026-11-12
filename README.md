@@ -883,7 +883,7 @@ BJet / scaled LightJet. Errors are finite-MC Sumw2 errors with the matching
 factor held fixed; they exclude total systematic and matching-factor uncertainties.
 The default variable edges in 11--80 GeV are 11, 13, 15, 20, 25, 30, 40, 60, 80,
 defined by `DEFAULT_MASS_BINS` in `dy_mc_shape_comparison.py`. The script requires
-PyROOT and runs independently of the other repository scripts.
+PyROOT and the shared `ratio_fits.py` helper (no background-estimator imports).
 Use `--bin-edges` to set the mass binning directly.
 
 ```bash
@@ -896,6 +896,28 @@ All edges must coincide with input histogram boundaries. If given explicitly,
 Custom binning adds `_customBins` to the output filename.
 `--rebin 50` instead merges 50 native bins.
 
+Both this plotter and `os_ss_comparison.py` now fit the displayed ratio with
+`y=c` (dashed) and `y=ax+b` (solid) by default. Coefficients, statistical errors
+and chi-square/ndf appear at the upper right of the ratio panel. A JSON sidecar
+records the selected whole bins, coefficients, covariance and diagnostics.
+Use `--ratio-fits none`, `const` or `linear` to change the displayed fits.
+`--ratio-fit-range LOW HIGH` restricts them without changing the plot range,
+binning or the DY integral-matching interval.
+
+```bash
+python3 dy_mc_shape_comparison.py --era Run2+3 --ratio-fit-range 30 80
+python3 os_ss_comparison.py --era full --blind --ratio-fit-range 11 80
+```
+
+These fits use the current diagonal statistical ratio errors and a fixed
+normalisation. Bin widths select whole bins; they are not x measurement errors.
+Negative ratios are retained; nonpositive denominators and zero/nonfinite
+errors are omitted. OS/SS fits exclude 9--11 GeV. Blinded data bins are always
+excluded, including bins crossing a blind boundary; the high-mass example above
+therefore fits QCD MC only. The reported chi-square is a conditional statistical
+diagnostic, not a calibrated closure p-value: integral-matching correlations,
+denominator non-Gaussianity and systematic uncertainties are not modelled.
+
 `--linear-y` selects a linear y axis. `--logx` uses a logarithmic mass axis in
 both panels and adds `_logx` to the output filename.
 
@@ -905,6 +927,53 @@ DY_BJet_vs_LightJet_Run2+3_POGMedium_NIsoDimuon_yieldPerGeV_LightJetScaled_m11to
 ```
 Use `--base-dir` to change the input base and `--output-dir` to change the
 plot destination. The same code supports each individual era, Run2 and Run3.
+
+## SS fit-range comparison
+
+```bash
+python3 qcd_ss_fit_range_comparison.py --era 2018
+python3 qcd_ss_fit_range_comparison.py --era full
+for era in 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix; do
+    python3 qcd_ss_fit_range_comparison.py --era "$era"
+done
+```
+
+This diagnostic fits SS **Data - Top - Others** with the production six
+functions over 5--30, 5--20 and 5--80 GeV, and overlays all three predictions
+over 5--80 GeV. It uses the production bin-integrated chi-square with
+`variance = variance(data) + variance(Top) + variance(Others)`;
+a signed subtraction histogram is not a Poisson observation. Negative bins
+are retained. This chi-square is an approximation for sparse subtracted data;
+an exact count likelihood would instead model raw SS data and the nonQCD
+components jointly, including their MC uncertainties.
+
+All three fits share one adaptive 5--80 grid (default target effective count
+10, maximum width 5 GeV), split at 20 and 30 GeV so no bin crosses a fit
+boundary. This diagnostic grid can differ from production 5--30 adaptive bins.
+The nominal function remains Power x Exp x Logistic; the five alternatives give
+the **pointwise symmetric functional envelope**,
+`nominal +/- max(abs(alternative - nominal))`. The lower edge is not clipped;
+it can be negative. This band excludes fit-statistical and transfer-factor
+uncertainties and is not a confidence interval. JSON also gives envelopes from
+bin-integrated functions for each displayed data bin.
+
+`full` aliases `Run2+3`: the eight data histograms and each subtraction MC
+histogram are summed with their stored weights **before** fitting. No per-era
+normalisation or averaging of fitted curves is performed. The script opens
+only SS histograms and never writes production templates or anchors, so these
+diagnostic era jobs can run independently.
+
+Outputs are PDF, PNG and JSON under `plots/SSFitRangeComparison/` (override
+`--output-dir`). The symmetric-logarithmic y axis shows negative bins and band
+edges; `--linthresh 0.1` controls its linear neighbourhood around zero in
+events/GeV. PyROOT, NumPy and Matplotlib are required. `--base-dir` includes
+`NIsoMuon`, as in the comparison plotters. Every required function must pass the
+existing fit-validity rules for all ranges before a comparison band is drawn.
+On a failed fit, diagnostics are saved in JSON and the command exits nonzero;
+inspect that report and, if appropriate, increase `--fit-max-attempts`.
+
+Agreement assesses fit-range stability; it does not by itself establish
+high-mass closure or replace a check of the high-mass SS observations/errors.
 
 ## DY LightJet source and NF diagnostics
 
