@@ -143,6 +143,14 @@ weighted effective count 10; SS binning defaults are unchanged. For clarity:
 python3 qcd_bkg_estimation.py --mode qcd-mc --year <ERA> --fit-objective chi2
 ```
 
+MC chi2 Power x Exp fits default to the one-sided objective penalty
+`[max(0,1-n)/0.2]^2`; `--power-exp-n-soft-width 0` disables it. This is MC-only:
+SS production fits and explicit log-chi2/weighted-likelihood fits retain their
+previous behaviour. Preserve the existing exponent bounds, include the penalty
+once in every fit/transfer/recovery stage, rank candidates by the penalised
+objective, and keep plot chi2/ndf data-only. Logs/JSON must separate the penalty
+from data chi2. Penalised outputs use a width-specific `-Nsoft1w...` suffix.
+
 Do not replace the final SS-data QCD prediction with QCD MC unless explicitly requested.
 
 Current QCD mass conventions:

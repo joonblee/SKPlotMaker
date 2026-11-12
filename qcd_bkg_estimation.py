@@ -87,6 +87,13 @@ Fit modes and objectives
       ROOT bin edges and are protected before adaptive merging and --rebin.
       Custom ranges save separate PDF/PNG and held-out MC comparison JSON;
       ratio grey bands show MC statistics only, without fit uncertainty.
+      MC chi2 fits of Power x Exp x ERF/Logistic add the one-sided soft
+      constraint [max(0,1-n)/0.2]^2 to the objective by default. This does not
+      change the existing n bounds or guarantee n>=1. Use
+      --power-exp-n-soft-width WIDTH to vary its strength, or 0 to disable it.
+      SS data and explicit log-chi2/weighted-likelihood fits remain unchanged.
+      Plot chi2/ndf is data-only; logs/JSON store data chi2, penalty and total
+      separately. Enabled outputs have an -Nsoft1wWIDTH suffix.
 All fit plots draw points like qcd_ss_fit_range_comparison.py: a black
 TGraphAsymmErrors with marker 20, size 0.5, horizontal half-bin widths,
 vertical statistical errors and the capless PZ drawing option.
@@ -117,6 +124,7 @@ Main optional controls
   --mc-max-bin-width GEV           base adaptive width cap, default: 5; MC only
   --mc-fit-range LOW HIGH          default: 5 80; MC only
   --mc-plot-range LOW HIGH         default: 5 80; MC only
+  --power-exp-n-soft-width WIDTH   MC chi2: default 0.2; 0 disables
   --transfer-method {run-common,era-specific,data-low}
       --qcd-transfer-method and mc-double-ratio remain compatibility aliases
   --data-period {F,G,H}           2016postVFP SS-only period diagnostic;
@@ -576,6 +584,7 @@ class FitData:
     options: str
     n_points: int
     keepalive: List[object] = field(default_factory=list)
+    power_exp_n_soft_width: float = 0.0
 
 
 @dataclass
@@ -588,6 +597,9 @@ class FitDiagnostics:
     result_valid: bool = False
     finite_parameters: bool = False
     boundary_parameters: List[str] = field(default_factory=list)
+    data_objective_value: float = math.inf
+    penalty_value: float = 0.0
+    power_exp_n_soft_width: float = 0.0
 
     @property
     def objective_ndf(self) -> float:
@@ -742,6 +754,7 @@ MODEL_SHAPE_PARAMETER_NAMES: Dict[str, Tuple[str, ...]] = {
 
 # Broad global hard bounds used when no SS-derived QCD constraint is applied.
 # n=0 and k=0 retain the nested exponential-only and power-only limits.
+POWER_EXP_MODELS = ("power_exp_erf", "power_exp_logistic")
 BASE_SHAPE_BOUNDS: Dict[str, Tuple[Tuple[str, float, float], ...]] = {
     "power_erf": (("n", 0.5, 15.0), ("m0", 0.0, 35.0), ("w", 0.10, 15.0)),
     "power_logistic": (("n", 0.5, 15.0), ("m0", 0.0, 35.0), ("w", 0.10, 15.0)),
@@ -862,6 +875,9 @@ ERF_TO_LOGISTIC_VARIANCE_WIDTH = math.sqrt(3.0) / math.pi
 
 CPP_FIT_FUNCTIONS = r"""
 #include <TF1.h>
+#include <TFitResult.h>
+#include <TFitResultPtr.h>
+#include <Fit/Fitter.h>
 #include <TMath.h>
 #include <algorithm>
 #include <cmath>
@@ -1061,6 +1077,59 @@ namespace BkgFitFnVariationPy {
         return EvalObjective(model, objective, x[0], par);
       }, xmin, xmax, npar);
   }
+
+  double PowerExpNPenalty(double n, double width) {
+    if (width <= 0. || n >= 1.) return 0.;
+    const double pull = (1.-n)/width;
+    return pull*pull;
+  }
+
+  TFitResultPtr FitPowerExpSoftChi2(TF1 *function, int model,
+      const std::vector<double>& low, const std::vector<double>& high,
+      const std::vector<double>& value, const std::vector<double>& error,
+      double width) {
+    // A single penalty belongs to the objective, never to the mass prediction
+    // or to each data bin. These are the same bin averages as the MC TF1 path.
+    auto objective = [&](const double *p) {
+      double physical[5];
+      std::copy(p, p+5, physical);
+      double chi2 = 0.;
+      for (std::size_t i=0; i<value.size(); ++i) {
+        const double prediction = std::max(1e-300,
+            IntegrateDensity(model, low[i], high[i], physical)/(high[i]-low[i]));
+        const double pull = (prediction-value[i])/error[i];
+        chi2 += pull*pull;
+      }
+      const double total = chi2 + PowerExpNPenalty(p[1], width);
+      return std::isfinite(total) ? total : 1e300;
+    };
+    ROOT::Fit::Fitter fitter;
+    const int npar = function->GetNpar();
+    fitter.Config().SetParamsSettings(npar, function->GetParameters());
+    fitter.Config().SetMinimizer("Minuit2", "Migrad");
+    fitter.Config().MinimizerOptions().SetErrorDef(1.);
+    fitter.Config().MinimizerOptions().SetPrintLevel(0);
+    for (int i=0; i<npar; ++i) {
+      auto &setting = fitter.Config().ParSettings(i);
+      double lower=0., upper=0.;
+      function->GetParLimits(i, lower, upper);
+      setting.SetName(function->GetParName(i));
+      setting.SetStepSize(std::max(std::abs(function->GetParError(i)),
+          1e-6*std::max(1., std::abs(function->GetParameter(i)))));
+      // TF1 uses nonzero equal limits for fixed parameters, including fixed 0.
+      if (lower >= upper && (lower != 0. || upper != 0.)) setting.Fix();
+      else if (lower < upper) setting.SetLimits(lower, upper);
+    }
+    // ndf counts actual data bins and free parameters; the penalty is not an
+    // extra observed data point. MinFcnValue retains data chi2 + penalty.
+    fitter.FitFCN(npar, objective, nullptr, value.size(), 1);
+    const auto &result = fitter.Result();
+    for (int i=0; i<npar; ++i) {
+      function->SetParameter(i, result.Parameter(i));
+      function->SetParError(i, result.Error(i));
+    }
+    return TFitResultPtr(new TFitResult(result));
+  }
 }
 """
 
@@ -1208,6 +1277,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--fit-max-attempts", type=positive_integer, default=30)
+    parser.add_argument(
+        "--power-exp-n-soft-width", type=float,
+        help=("MC chi2 only: add [max(0,1-n)/WIDTH]^2 once to the Power x Exp objective. "
+              "Default: 0.2 for MC chi2; off for SS data/other objectives. 0 disables; smaller is stronger."),
+    )
     parser.add_argument("--fit-attempt-details", action="store_true")
     parser.add_argument(
         "--initial-values-only",
@@ -1269,6 +1343,17 @@ def resolve_objective(requested: str, mode: ModeConfig) -> str:
             "negative bins; only --fit-objective chi2 is allowed in ss-data mode."
         )
     return objective
+
+
+def resolve_power_exp_n_soft_width(args, mode: ModeConfig, objective: str) -> float:
+    width = getattr(args, "power_exp_n_soft_width", None)
+    if width is None:
+        return .2 if mode.key == QCD_MODE.key and objective == "chi2" else 0.
+    if not math.isfinite(width) or width < 0.:
+        raise ValueError("--power-exp-n-soft-width must be finite and nonnegative; 0 disables")
+    if width > 0. and (mode.key != QCD_MODE.key or objective != "chi2"):
+        raise ValueError("--power-exp-n-soft-width > 0 requires --mode qcd-mc with chi2 objective")
+    return width
 
 
 def import_root():
@@ -2453,6 +2538,10 @@ def extract_diagnostics(
         diag.ndf = fit_data.n_points - model.npar
 
     parameters = [float(function.GetParameter(i)) for i in range(model.npar)]
+    if model.key in POWER_EXP_MODELS and fit_data.power_exp_n_soft_width > 0.:
+        diag.power_exp_n_soft_width = fit_data.power_exp_n_soft_width
+        diag.penalty_value = (max(0., 1.-parameters[1])/diag.power_exp_n_soft_width)**2
+    diag.data_objective_value = diag.objective_value-diag.penalty_value
     diag.finite_parameters = all(math.isfinite(x) for x in parameters)
     for index, (name, low, high) in enumerate(shape_bounds(model, constraint), start=1):
         value = float(function.GetParameter(index))
@@ -2482,6 +2571,31 @@ def diagnostics_score(diag: FitDiagnostics) -> Tuple[float, ...]:
         0.0 if diag.covariance_status >= 3 else 1.0,
         abs(diag.edm) if math.isfinite(diag.edm) else 1e99,
     )
+
+
+def run_objective_fit(ROOT, fit_data: FitData, function, model: FitModelConfig,
+                      mode: ModeConfig, objective: str):
+    width = fit_data.power_exp_n_soft_width
+    if model.key not in POWER_EXP_MODELS or width == 0.:
+        return fit_data.data.Fit(function, fit_data.options, "", mode.fit_min, mode.fit_max)
+    if mode.key != QCD_MODE.key or objective != "chi2":
+        raise ValueError("Power x Exp soft constraint currently requires MC chi2")
+    if not hasattr(fit_data, "_soft_chi2_bins"):
+        vectors = [ROOT.std.vector("double")() for _ in range(4)]
+        hist = fit_data.data
+        for i in range(1, hist.GetNbinsX()+1):
+            low, high = float(hist.GetXaxis().GetBinLowEdge(i)), float(hist.GetXaxis().GetBinUpEdge(i))
+            x = float(hist.GetBinCenter(i))
+            value, error = float(hist.GetBinContent(i)), float(hist.GetBinError(i))
+            if not mode.fit_min <= x <= mode.fit_max or is_excluded(mode, low, high) or error <= 0.:
+                continue
+            if not math.isfinite(value) or not math.isfinite(error):
+                raise ValueError("Nonfinite MC chi2 input bin")
+            for vector, number in zip(vectors, (low, high, value, error)):
+                vector.push_back(number)
+        fit_data._soft_chi2_bins = vectors
+    return ROOT.BkgFitFnVariationPy.FitPowerExpSoftChi2(
+        function, model.cpp_id, *fit_data._soft_chi2_bins, width)
 
 
 def run_fit_attempt(
@@ -2517,7 +2631,7 @@ def run_fit_attempt(
                 pass
             if stage_index > 0:
                 set_refinement_steps(function, model, constraint, step_scale)
-            result = fit_data.data.Fit(function, fit_data.options, "", mode.fit_min, mode.fit_max)
+            result = run_objective_fit(ROOT, fit_data, function, model, mode, objective)
             diag = extract_diagnostics(result, function, model, fit_data, constraint)
             state = [(float(function.GetParameter(i)), float(function.GetParError(i))) for i in range(model.npar)]
             records.append((result, diag, state))
@@ -2590,14 +2704,14 @@ def run_erf_to_logistic_transfer(
         function.FixParameter(1, seed[0])
         function.FixParameter(2, seed[1])
         for _ in range(2):
-            fit_data.data.Fit(function, fit_data.options, "", mode.fit_min, mode.fit_max)
+            run_objective_fit(ROOT, fit_data, function, model, mode, objective)
         release_parameter(function, model, 2, constraint)
         for _ in range(2):
-            fit_data.data.Fit(function, fit_data.options, "", mode.fit_min, mode.fit_max)
+            run_objective_fit(ROOT, fit_data, function, model, mode, objective)
         release_parameter(function, model, 1, constraint)
         for index in range(4):
             set_refinement_steps(function, model, constraint, max(0.08, 0.35 / (index + 1)))
-            result = fit_data.data.Fit(function, fit_data.options, "", mode.fit_min, mode.fit_max)
+            result = run_objective_fit(ROOT, fit_data, function, model, mode, objective)
             diag = extract_diagnostics(result, function, model, fit_data, constraint)
             state = [(float(function.GetParameter(i)), float(function.GetParError(i))) for i in range(model.npar)]
             records.append((result, diag, state))
@@ -2717,6 +2831,10 @@ def print_candidate(model: FitModelConfig, candidate: FitCandidate, selected: bo
         f"boundary={boundary} seed={candidate.seed} Aseed={candidate.amplitude_seed:.6g}"
     )
     print(f"               {format_parameters(candidate.fit_function, model)}")
+    if diag.power_exp_n_soft_width > 0.:
+        print(f"[SOFT CONSTRAINT] model={model.key} width={diag.power_exp_n_soft_width:g} "
+              f"dataChi2={diag.data_objective_value:.8g} penalty={diag.penalty_value:.8g} "
+              f"total={diag.objective_value:.8g}")
 
 
 def fit_one_model(
@@ -2854,6 +2972,7 @@ def fit_all_models(
     args: argparse.Namespace,
     prefit_data: Optional[FitData] = None,
 ):
+    fit_data.power_exp_n_soft_width = resolve_power_exp_n_soft_width(args, mode, objective)
     colours = (
         ROOT.kBlue + 1, ROOT.kRed + 1, ROOT.kGreen + 2,
         ROOT.kOrange + 7, ROOT.kCyan + 2, ROOT.kViolet + 1,
@@ -3157,6 +3276,11 @@ def mc_range_suffix(mode: ModeConfig, plot_mode: ModeConfig) -> str:
     return tag.replace(".", "p")
 
 
+def power_exp_n_soft_suffix(args, mode: ModeConfig, objective: str) -> str:
+    width = resolve_power_exp_n_soft_width(args, mode, objective)
+    return f"-Nsoft1w{width:g}".replace(".", "p") if width > 0. else ""
+
+
 def mc_extrapolation_report(args, mode: ModeConfig, plot_mode: ModeConfig,
                             density, selected_fits: Sequence[SelectedFit]) -> dict:
     """Held-out comparisons use MC Sumw2 only, without refitting/normalising."""
@@ -3196,6 +3320,12 @@ def mc_extrapolation_report(args, mode: ModeConfig, plot_mode: ModeConfig,
         report["models"][selected.model.key] = {
             "accepted": selected.accepted, "status": diag.status, "covQual": diag.covariance_status,
             "parameters": [finite(float(selected.function.GetParameter(i))) for i in range(selected.model.npar)],
+            "fit_data_chi2": finite(getattr(getattr(selected, "metrics", None), "stat_chi2", math.nan)),
+            "fit_data_ndf": getattr(getattr(selected, "metrics", None), "stat_ndf", None),
+            "data_objective_value": finite(getattr(diag, "data_objective_value", math.nan)),
+            "soft_penalty": getattr(diag, "penalty_value", 0.),
+            "power_exp_n_soft_width": getattr(diag, "power_exp_n_soft_width", 0.),
+            "minimised_objective": finite(getattr(diag, "objective_value", math.nan)),
             "held_out_bins": bins, "held_out_chi2": finite(chi2), "held_out_n_bins": n_bins,
             "held_out_chi2_per_bin": finite(chi2/n_bins) if n_bins else None,
             "held_out_mc_yield": total_mc, "held_out_mc_error": math.sqrt(variance),
@@ -3480,6 +3610,7 @@ def draw_fit_plot(
     basename = (
         f"FitPlot_FnVariation-{mode.file_name}_{mode.plot_tag}_Dimuon_Mass-"
         f"{args.year}{'-SingleMuon_' + diagnostic.period if diagnostic else ''}-AllFits{objective_suffix}{range_suffix}"
+        f"{power_exp_n_soft_suffix(args, mode, objective)}"
     )
     pdf = plot_dir / f"{basename}.pdf"
     png = plot_dir / f"{basename}.png"
@@ -4445,6 +4576,7 @@ def run(args: argparse.Namespace) -> int:
     if args.validate_qcd_double_ratio and (mode.key != SS_MODE.key or args.qcd_transfer_method != "run-common"):
         raise ValueError("--validate-qcd-double-ratio requires ss-data mode with run-common")
     objective = resolve_objective(args.fit_objective, mode)
+    soft_width = resolve_power_exp_n_soft_width(args, mode, objective)
     if (args.diagnostic_cards or args.diagnostic_output) and not args.uncertainty_diagnostics:
         raise ValueError("--diagnostic-cards/output requires --uncertainty-diagnostics")
     if args.uncertainty_diagnostics:
@@ -4497,6 +4629,9 @@ def run(args: argparse.Namespace) -> int:
     if mode.key == QCD_MODE.key:
         print(f"[INFO] plot range      = [{plot_mode.fit_min:g}, {plot_mode.fit_max:g}] GeV")
     print(f"[INFO] fit objective   = {objective}")
+    if soft_width > 0.:
+        print(f"[INFO] Power x Exp soft constraint: [max(0,1-n)/{soft_width:g}]^2; "
+              "existing hard bounds retained; plot chi2/ndf excludes this penalty")
     if mode.key == QCD_MODE.key:
         anchor_mode = (
             "initial-values-only"
@@ -4583,12 +4718,17 @@ def run(args: argparse.Namespace) -> int:
         )
         print(f"[SAVE] {pdf}")
         print(f"[SAVE] {png}")
-        if mc_range_suffix(mode, plot_mode):
+        if mc_range_suffix(mode, plot_mode) or soft_width > 0.:
             report = mc_extrapolation_report(args, mode, plot_mode, density, selected)
             report["objective"] = objective
             report["region"] = mode.region
             report["mc_binning"] = args.mc_binning
             report["log_relative_error_floor"] = args.log_relative_error_floor
+            report["power_exp_n_soft_constraint"] = {
+                "models": list(POWER_EXP_MODELS), "minimum": 1., "width": soft_width,
+                "enabled": soft_width > 0., "formula": "[max(0,1-n)/width]^2",
+                "plot_quality": "data-only chi2/ndf; no penalty included",
+            }
             report["bin_edges"] = prepared.edges
             report_path = pdf.with_suffix(".json")
             report_path.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")

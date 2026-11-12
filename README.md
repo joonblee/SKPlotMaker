@@ -498,6 +498,26 @@ using MC Sumw2 errors and bin-averaged predictions. Plot quality labels show
 (`--fit-objective weighted-likelihood` or `--fit-objective log-chi2`), with their
 own correctly labelled quality statistics.
 
+MC chi2 fits now apply a **one-sided soft constraint** to the exponent `n` in
+the two Power x Exp families (ERF and Logistic):
+`F = chi2_data + [max(0, 1-n)/width]^2`, with default width **0.2**.
+The penalty is zero above 1; it discourages smaller values without forbidding
+them. The existing hard bounds (including `n=0`) and mass predictions are
+unchanged. The penalty is added once to a custom Minuit2 objective, including
+all multistart, ERF-to-Logistic transfer and recovery stages. Candidate selection
+uses the total objective. The plotted `chi2/ndf` contains **data chi2 only**;
+logs and MC JSON record data chi2, penalty and total separately. Covariance
+comes from the penalised objective. This is a regularisation preference, not
+an extra measured event or a calibrated goodness-of-fit contribution.
+
+Use `--power-exp-n-soft-width 0.1` for a stronger preference, `0.5` for a weaker
+one, or **`--power-exp-n-soft-width 0`** for the previous unconstrained fit.
+Enabled outputs receive `-Nsoft1w0p2` (or the chosen width) so different choices
+do not overwrite one another. A fit JSON is also saved for full-range MC fits
+when this constraint is enabled. SS fits/production templates and explicitly
+selected log-chi2/weighted-likelihood fits remain unchanged; a positive width
+is supported only for MC chi2.
+
 ```bash
 for era in Run2 Run3 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix; do
     python3 qcd_bkg_estimation.py --mode qcd-mc --year "${era}" --fit-objective chi2
