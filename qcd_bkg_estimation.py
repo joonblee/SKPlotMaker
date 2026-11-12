@@ -87,8 +87,9 @@ Fit modes and objectives
       ROOT bin edges and are protected before adaptive merging and --rebin.
       Custom ranges save separate PDF/PNG and held-out MC comparison JSON;
       ratio grey bands show MC statistics only, without fit uncertainty.
-All fit plots show AN-style crosses: horizontal half-bin widths and vertical
-statistical errors, without a filled-dot marker.
+All fit plots draw points like qcd_ss_fit_range_comparison.py: a black
+TGraphAsymmErrors with marker 20, size 0.5, horizontal half-bin widths,
+vertical statistical errors and the capless PZ drawing option.
 All fit plots keep Power x Exp x Logistic solid and draw the other families
 dashed. A pale orange band shows the symmetric functional envelope around
 that central model (maximum absolute alternative deviation, lower edge clipped
@@ -3275,6 +3276,29 @@ def make_fit_shape_bands(ROOT, mode: ModeConfig, plot_mode: ModeConfig, density,
     return upper_bands, ratio_band
 
 
+def make_fit_plot_points(ROOT, density, plot_mode: ModeConfig):
+    """Copy the SS range-comparison upper-panel point style and log-y clipping."""
+    data = ROOT.TGraphAsymmErrors()
+    data.SetName(_NAMES.unique("fit_plot_points"))
+    data.SetBit(ROOT.TGraph.kClipFrame)
+    ymin = float(density.GetMinimum())
+    for ibin in range(1, density.GetNbinsX()+1):
+        x = float(density.GetBinCenter(ibin))
+        value, error = float(density.GetBinContent(ibin)), float(density.GetBinError(ibin))
+        if not plot_mode.fit_min <= x <= plot_mode.fit_max or value < ymin:
+            continue
+        half_width = .5*float(density.GetBinWidth(ibin))
+        i = data.GetN()
+        data.SetPoint(i, x, value)
+        data.SetPointError(i, half_width, half_width,
+                           value-max(value-error, ymin), max(value+error, ymin)-value)
+    data.SetMarkerStyle(20)
+    data.SetMarkerSize(.5)
+    data.SetMarkerColor(ROOT.kBlack)
+    data.SetLineColor(ROOT.kBlack)
+    return data
+
+
 def draw_fit_plot(
     ROOT,
     args: argparse.Namespace,
@@ -3306,18 +3330,18 @@ def draw_fit_plot(
     upper.cd()
     set_local_cms_style(ROOT)
     density.GetXaxis().SetRangeUser(plot_mode.fit_min, plot_mode.fit_max)
-    # Match the AN: crosses from x/y errors, with no filled-circle marker.
-    density.SetMarkerStyle(1)
-    density.SetMarkerSize(1.)
-    density.SetMarkerColor(ROOT.kBlack)
-    density.SetLineColor(ROOT.kBlue+1)
-    density.SetLineWidth(1)
+    data = make_fit_plot_points(ROOT, density, plot_mode)
     for selected in selected_fits:
         # These functions are display/diagnostic copies, not the objective
         # function used by ROOT's minimiser. Parameters stay fixed.
         selected.function.SetRange(plot_mode.fit_min, plot_mode.fit_max)
         selected.average_function.SetRange(plot_mode.fit_min, plot_mode.fit_max)
-    density.Draw("PE")
+    display_frame = density.Clone(_NAMES.unique("fit_display_frame"))
+    display_frame.SetDirectory(0)
+    display_frame.Reset("ICES")
+    display_frame.SetMinimum(density.GetMinimum())
+    display_frame.SetMaximum(density.GetMaximum())
+    display_frame.Draw()
     shape_bands, ratio_shape_band = make_fit_shape_bands(ROOT, mode, plot_mode, density, selected_fits)
     for shape_band in shape_bands:
         shape_band.Draw("3 SAME")
@@ -3325,16 +3349,16 @@ def draw_fit_plot(
         selected.function.Draw("LSAME")
 
     title_x = x_axis_title(ROOT, mode)
-    density.GetYaxis().SetTitle("Events/GeV (log)")
-    density.GetYaxis().SetTitleSize(0.045)
-    density.GetYaxis().SetLabelSize(0.040)
-    density.GetYaxis().SetTitleOffset(1.18)
-    density.GetXaxis().SetTitle(title_x)
-    density.GetXaxis().SetTitleSize(0.0)
-    density.GetXaxis().SetLabelSize(0.025)
+    display_frame.GetYaxis().SetTitle("Events/GeV (log)")
+    display_frame.GetYaxis().SetTitleSize(0.045)
+    display_frame.GetYaxis().SetLabelSize(0.040)
+    display_frame.GetYaxis().SetTitleOffset(1.18)
+    display_frame.GetXaxis().SetTitle(title_x)
+    display_frame.GetXaxis().SetTitleSize(0.0)
+    display_frame.GetXaxis().SetLabelSize(0.025)
 
     legend = ROOT.TLegend(0.64, 0.56, 0.90, 0.89)
-    legend.AddEntry(density, mode.legend_label, "lep")
+    legend.AddEntry(data, mode.legend_label, "pe")
     for selected in selected_fits:
         legend.AddEntry(selected.function, selected.model.label, "l")
     if shape_bands:
@@ -3344,13 +3368,9 @@ def draw_fit_plot(
     legend.SetTextFont(42)
     legend.SetFillStyle(0)
     legend.SetBorderSize(0)
-    legend.Draw()
 
-    density.Draw("PE SAME")
-    for selected in selected_fits:
-        selected.function.Draw("LSAME")
-    if range_suffix:
-        density.Draw("PE SAME")
+    data.Draw("PZ SAME")
+    legend.Draw()
     upper.SetGridx()
     upper.SetGridy()
     diagnostic = getattr(args, "_data_period_diagnostic", None)
@@ -3465,7 +3485,7 @@ def draw_fit_plot(
     png = plot_dir / f"{basename}.png"
     canvas.SaveAs(str(pdf))
     canvas.SaveAs(str(png))
-    keepalive.extend([canvas, upper, lower, legend, cms_header, latex, frame, band, line,
+    keepalive.extend([canvas, upper, lower, legend, cms_header, latex, frame, band, line, data, display_frame,
                       *ratio_graphs, *shape_bands, ratio_shape_band])
     return pdf, png, keepalive
 

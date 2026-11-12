@@ -557,8 +557,11 @@ or normalisation errors; the existing grey MC-statistical ratio band is separate
 An unaccepted/missing required fit suppresses the shape band with a warning.
 These are display changes; fitted parameters and production ShapeUp/Down
 templates are unchanged.
-Point style matches the AN: blue crosses with horizontal half-bin widths and
-vertical statistical errors, without filled black circles. MC cross-checks
+Point drawing now copies `qcd_ss_fit_range_comparison.py`: an explicit black
+`TGraphAsymmErrors`, marker 20 with size 0.5, horizontal half-bin widths,
+vertical statistical errors and `PZ SAME` (no error-bar caps). On log-y the
+drawn lower error is clipped at the display minimum; histogram contents and
+fit errors remain unchanged. MC cross-checks
 may run in parallel for different eras/combined periods; they read SS anchors
 but do not update the shared catalogue. For example:
 
