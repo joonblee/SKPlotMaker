@@ -90,6 +90,22 @@ class SSAdaptiveWidthTest(unittest.TestCase):
             self.assertAlmostEqual(counts.GetBinError(i)**2, 20.)
             self.assertAlmostEqual(counts.Integral(), source.Integral())
 
+    def test_nonpositive_next_bin_cannot_cancel_positive_group_even_at_width_floor(self):
+        for next_yield in (-50., -51.):
+            source = self.gap_source(5.2, 5.3, next_yield)
+            # This one-native-bin positive group is narrower than the width
+            # floor. Neither that postprocessing nor lookahead may absorb the
+            # next bin when doing so would make its signed yield <=0.
+            source.SetBinContent(source.FindBin(5.05), 50.)
+            source.SetBinContent(source.FindBin(5.15), next_yield)
+            with redirect_stdout(io.StringIO()):
+                edges = q.make_adaptive_ss_binning(source, q.SS_MODE, 10., merge_nonpositive_next=True)
+            self.assertAlmostEqual(next(x for x in edges if x > 5.+1e-9), 5.1)
+            counts = source.Rebin(len(edges)-1, q._NAMES.unique('ss_veto_counts'), array('d', edges))
+            counts.SetDirectory(0)
+            self.assertAlmostEqual(counts.GetBinContent(counts.FindBin(5.05)), 50.)
+            self.assertAlmostEqual(counts.Integral(), source.Integral())
+
     def test_nonpositive_run_stops_at_five_gev_even_if_next_bin_is_still_zero(self):
         source = self.gap_source(5.2, 12.)
         with redirect_stdout(io.StringIO()):

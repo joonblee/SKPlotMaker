@@ -3,25 +3,16 @@
 
 Reuse the production six function families, nominal Power x Exp x Logistic,
 bin-integrated chi-square and fit-validity rules. Signed bins are never clipped.
-All ranges use one common grid: adaptive below 30 GeV, split at 20 GeV,
-and one fixed 30--50 GeV bin above. This fixed tail applies only to this SS-data
-comparison; QCD-MC fits retain statistical adaptive binning with the shared
-minimum-width rule. The adaptive width cap does
-not apply to these fixed high-mass bins. Thus only the fit range changes.
+All ranges use one common adaptive grid over 5--50 GeV, without forced
+20/30 GeV edges, a fixed high-mass tail or a special backward merge at 30 GeV.
 This diagnostic grid can differ from production 5--30 adaptive binning.
 The common-grid edges and all fit diagnostics are exported.
 When the effective-count target is reached, continue merging while the next
-native bin has signed yield <=0, stopping at the base adaptive width cap
-(default 5 GeV) or a protected 20/30 GeV boundary. A positive next native bin
-allows the usual precision-target stop. Capped negative bins remain signed.
-Below 30 GeV, whole adaptive bins are merged to width >=
-max(0.1 GeV, 0.02*final bin centre), independently in 5--20 and 20--30 GeV
-so the protected boundaries never create narrow remainder bins.
-The final adaptive bin ending at 30 GeV is then merged once with its previous
-bin inside 20--30 GeV. If that segment already has one bin, it is kept.
-This terminal merge may exceed the adaptive width cap; 20 and 30 GeV remain
-protected, and the fixed 30--50 GeV bin is unchanged. Refit to apply this rule;
---plot-json keeps the binning of the saved result.
+native bin has signed yield <=0, provided the combined yield remains positive.
+Otherwise keep that bin separate. The base adaptive width cap remains 5 GeV.
+Whole adaptive bins are merged to width >= max(0.1 GeV, 0.02*final bin centre),
+except where doing so would undo a nonpositive-yield merge veto.
+Refit to apply the new grid; --plot-json keeps saved bin edges.
 
 Bands are pointwise nominal +/- max_alternative |alternative - nominal|,
 without zero-clipping. They are functional envelopes, not confidence intervals
@@ -78,8 +69,8 @@ import qcd_bkg_estimation as qcd
 
 FIT_MAX = 50.
 RANGES = (30., 20., FIT_MAX)
-FIXED_HIGH_MASS_EDGES = (30., FIT_MAX)
-FORCED_EDGES = (20., *FIXED_HIGH_MASS_EDGES)
+FIXED_HIGH_MASS_EDGES = ()
+FORCED_EDGES = ()
 ALL_PERIODS = (*qcd.RUN2_ERAS, *qcd.RUN3_ERAS, "Run2", "Run3", "Run2+3")
 DEFAULT_BASE = str(Path(qcd.DEFAULT_BASE_DIR) / "NIsoMuon")
 
@@ -100,7 +91,7 @@ def build_parser():
                         help="Redraw saved JSON results only: no input histograms, fits or JSON writes")
     parser.add_argument("--ss-min-effective-count", type=qcd.positive_float, default=10.)
     parser.add_argument("--ss-max-bin-width", type=qcd.positive_float, default=5.,
-                        help="Base adaptive width cap below 30 GeV (default: 5); minimum-width merging can exceed it; high-mass bins are fixed")
+                        help="Base adaptive width cap over 5--50 GeV (default: 5); minimum-width merging can exceed it")
     parser.add_argument("--fit-max-attempts", type=qcd.positive_integer, default=30)
     parser.add_argument("--fit-attempt-details", action="store_true")
     parser.add_argument("--linthresh", type=qcd.positive_float, default=.1,
@@ -124,25 +115,11 @@ def build_parser():
 
 
 def common_histograms(ROOT, source, args):
-    """Keep adaptive bins below 30; replace the tail with fixed high-mass bins."""
+    """Use the common adaptive grid without forced 20/30 GeV boundaries."""
     mode = replace(qcd.SS_MODE, fit_max=FIT_MAX)
     edges = qcd.make_adaptive_ss_binning(source, mode, args.ss_min_effective_count,
-                                        args.ss_max_bin_width, protected_edges=(20., 30.),
+                                        args.ss_max_bin_width,
                                         merge_nonpositive_next=True)
-    native = [float(source.GetXaxis().GetBinLowEdge(i))
-              for i in range(1, source.GetNbinsX()+2)]
-    for boundary in FORCED_EDGES:
-        if not any(math.isclose(x, boundary, abs_tol=1e-8, rel_tol=0.) for x in native):
-            raise ValueError(f"{boundary:g} GeV is not a native bin edge; cannot split an input bin")
-    edges = sorted(set([round(x, 9) for x in edges
-                        if x < FIXED_HIGH_MASS_EDGES[0] or x > FIXED_HIGH_MASS_EDGES[-1]]
-                       + list(FORCED_EDGES)))
-    tail_index = edges.index(FIXED_HIGH_MASS_EDGES[0])
-    if tail_index >= 2 and edges[tail_index-2] >= 20.:
-        left, middle, right = edges[tail_index-2:tail_index+1]
-        del edges[tail_index-1]
-        print(f"[SS COMPARISON BINNING] merged terminal adaptive bins "
-              f"[{left:g},{middle:g}] + [{middle:g},{right:g}] -> [{left:g},{right:g}] GeV")
     print("[SS COMPARISON BINNING] final edges [GeV] = " + ", ".join(f"{x:g}" for x in edges))
     counts_raw = source.Rebin(len(edges)-1, "ss_comparison_counts_raw", array("d", edges))
     counts_raw.SetDirectory(0)
@@ -779,9 +756,10 @@ def main(argv=None):
                        envelope="symmetric functional only; no clipping; not a confidence interval",
                        binning=dict(edges=prepared.edges, min_effective_count=args.ss_min_effective_count,
                                     max_width=args.ss_max_bin_width,
-                                    adaptive_range=[5., 30.],
+                                    adaptive_range=[5., FIT_MAX],
                                     merge_nonpositive_next_native_bin=True,
-                                    merge_terminal_adaptive_bin_backward=True,
+                                    merge_terminal_adaptive_bin_backward=False,
+                                    nonpositive_next_requires_positive_sum=True,
                                     minimum_width=dict(absolute_gev=.1, relative_to_bin_centre=.02),
                                     fixed_high_mass_edges=list(FIXED_HIGH_MASS_EDGES),
                                     forced_edges=list(FORCED_EDGES)),

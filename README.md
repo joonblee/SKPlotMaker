@@ -1129,31 +1129,19 @@ are retained. This chi-square is an approximation for sparse subtracted data;
 an exact count likelihood would instead model raw SS data and the nonQCD
 components jointly, including their MC uncertainties.
 
-All three fits share one grid: adaptive below 30 GeV (default target effective
-count 10, maximum width 5 GeV), split at 20 and 30 GeV so no bin crosses a fit
-boundary. When the statistical target is reached but the **next native bin has
-signed yield <= 0**, keep merging until the next native bin is positive, the
-base adaptive width cap is reached (default **5 GeV**), or a protected boundary
-is reached. Never cross a protected edge or add a native bin that would exceed
-the base cap. Nonpositive sums at the cap are retained with their errors.
-This lookahead is enabled only by `qcd_ss_fit_range_comparison.py`; production
-SS and MC defaults are unchanged. The shared SS/MC minimum-width rule,
-`width >= max(0.1 GeV, 0.02 * final bin centre)`, is applied independently in
-5--20 and 20--30 GeV, preserving those boundaries without narrow
-remainders. The last adaptive bin ending at **30 GeV is then merged backward
-once** with the preceding bin inside 20--30 GeV. A single existing 20--30 GeV
-bin stays intact, so the 20 GeV fit boundary is protected. This extra merge can
-exceed the adaptive width cap; signed yields and variances are summed before
-all three fits. It applies only to `qcd_ss_fit_range_comparison.py`.
-Refit to apply the new binning: `--plot-json` preserves saved bin edges.
-This **SS-data comparison only** uses one fixed **30--50 GeV bin**
-(edges **30, 50 GeV**); there are no additional adaptive edges inside that interval.
-QCD-MC fits in `qcd_bkg_estimation.py --mode qcd-mc` retain statistical adaptive
-binning at high mass, with the same `max(0.1 GeV, 0.02 * bin centre)` width floor;
-the SS-only fixed tail is not applied to MC. These fixed SS bins
-override the base adaptive width cap, as can final minimum-width merging.
-This diagnostic grid can differ from production
-5--30 adaptive bins. The fit ranges remain 5--20, 5--30 and 5--50 GeV.
+All three fits share one adaptive grid over **5--50 GeV** (default target
+effective count 10, base maximum width 5 GeV). There are **no forced 20 or
+30 GeV edges**, no fixed 30--50 GeV bin, and no special backward merge at
+30 GeV. When the statistical target is reached and the next native bin has
+signed yield <=0, continue merging **only if the combined yield stays >0**.
+A positive group is closed before a nonpositive next bin would make its sum
+zero or negative. Later minimum-width/remainder merging preserves these veto
+edges, even if that leaves a bin narrower than the usual width floor.
+The shared minimum-width rule `width >= max(0.1 GeV, 0.02 * final bin centre)`
+and base width cap (default 5 GeV) otherwise remain unchanged. This diagnostic
+rule does not change production SS or QCD-MC defaults. All signed yields and
+variances are retained. Refit to apply the grid: `--plot-json` preserves saved
+edges. The fit ranges remain 5--20, 5--30 and 5--50 GeV.
 The nominal function remains Power x Exp x Logistic; the five alternatives give
 the **pointwise symmetric functional envelope**,
 `nominal +/- max(abs(alternative - nominal))`. The lower edge is not clipped;
