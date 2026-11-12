@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Compare SS Data - Top - Others fits in 5--20, 5--30 and 5--80 GeV.
+"""Compare SS Data - Top - Others fits in 5--20, 5--30 and 5--50 GeV.
 
 Reuse the production six function families, nominal Power x Exp x Logistic,
 bin-integrated chi-square and fit-validity rules. Signed bins are never clipped.
 All ranges use one common grid: adaptive below 30 GeV, split at 20 GeV,
-and one fixed 30--80 GeV bin above. This fixed tail applies only to this SS-data
+and one fixed 30--50 GeV bin above. This fixed tail applies only to this SS-data
 comparison; QCD-MC fits retain statistical adaptive binning with the shared
 minimum-width rule. The adaptive width cap does
 not apply to these fixed high-mass bins. Thus only the fit range changes.
@@ -17,8 +17,8 @@ so the protected boundaries never create narrow remainder bins.
 Bands are pointwise nominal +/- max_alternative |alternative - nominal|,
 without zero-clipping. They are functional envelopes, not confidence intervals
 or the total statistical + systematic uncertainty. Default display: log x,
-5--80 GeV and y >= 0.001 events/GeV, with decimal chi-square/ndf. These are
-viewport settings only: signed bins, all three fit ranges and full 5--80 GeV
+5--50 GeV and y >= 0.001 events/GeV, with decimal chi-square/ndf. These are
+viewport settings only: signed bins, all three fit ranges and full 5--50 GeV
 curves/bands remain unchanged in the fit and JSON.
 The lower panel divides every curve/envelope by the fixed 5--30 GeV nominal
 curve. Data ratios use the corresponding bin-averaged reference prediction;
@@ -29,12 +29,12 @@ is compact and aligned near the right frame edge; no canvas footer is drawn.
 Canvas proportions match the DY/OS-SS comparison plots, with no extra bottom
 strip. Axis titles use one pixel font size across both panels; legend text is
 enlarged. Ratio default: linear 0--2. An inset at the lower left of the upper
-panel shows 20--80 GeV on a logarithmic ratio y axis from 1 to an automatic
+panel shows 20--50 GeV on a logarithmic ratio y axis from 1 to an automatic
 upper bound covering all functional bands in that mass interval. A box at
-20--80 GeV, ratio 0.9--1.9 and connectors identify its source mass region;
+20--50 GeV, ratio 0.9--1.9 and connectors identify its source mass region;
 the inset expands the y range beyond the box. Reference/Bands notes sit above
 the inset on separate lines. Its title identifies the fixed reference and
-20--80 GeV mass interval. --no-ratio-inset hides the inset and callout.
+20--50 GeV mass interval. --no-ratio-inset hides the inset and callout.
 --ratio-scale hybrid keeps ratios <=1.5
 linear and compresses larger values logarithmically, with physical-value ticks.
 Its upper bound is automatic unless --ratio-max is specified. Display options
@@ -67,8 +67,9 @@ import sys
 
 import qcd_bkg_estimation as qcd
 
-RANGES = (30., 20., 80.)
-FIXED_HIGH_MASS_EDGES = (30., 80.)
+FIT_MAX = 50.
+RANGES = (30., 20., FIT_MAX)
+FIXED_HIGH_MASS_EDGES = (30., FIT_MAX)
 FORCED_EDGES = (20., *FIXED_HIGH_MASS_EDGES)
 ALL_PERIODS = (*qcd.RUN2_ERAS, *qcd.RUN3_ERAS, "Run2", "Run3", "Run2+3")
 DEFAULT_BASE = str(Path(qcd.DEFAULT_BASE_DIR) / "NIsoMuon")
@@ -97,15 +98,15 @@ def build_parser():
                         help="Symmetric-log scale near zero when --ymin 0 is used, in events/GeV")
     parser.add_argument("--ymin", type=float, default=.001,
                         help="Displayed lower y bound in events/GeV (default: 0.001; 0 is allowed)")
-    parser.add_argument("--xmax", type=qcd.positive_float, default=80.,
-                        help="Displayed upper mass bound only, 5 < xmax <= 80 (default: 80 GeV)")
+    parser.add_argument("--xmax", type=qcd.positive_float, default=FIT_MAX,
+                        help="Displayed upper mass bound only, 5 < xmax <= 50 (default: 50 GeV)")
     parser.add_argument("--ratio-min", type=float, default=0., help="Lower ratio-panel bound (default: 0)")
     parser.add_argument("--ratio-max", type=float,
                         help="Upper physical ratio bound (default: 2 for linear; automatic for hybrid)")
     parser.add_argument("--ratio-scale", choices=("linear", "hybrid"), default="linear",
                         help="Linear ratio axis (default), or linear through 1.5 then logarithmic")
     parser.add_argument("--no-ratio-inset", dest="ratio_inset", action="store_false", default=True,
-                        help="Hide the upper-panel 20--80 GeV log-ratio inset and its box/connectors")
+                        help="Hide the upper-panel 20--50 GeV log-ratio inset and its box/connectors")
     xscale = parser.add_mutually_exclusive_group()
     xscale.add_argument("--logx", dest="logx", action="store_true", help="Logarithmic x axis (default)")
     xscale.add_argument("--linear-x", dest="logx", action="store_false", help="Linear x axis")
@@ -115,7 +116,7 @@ def build_parser():
 
 def common_histograms(ROOT, source, args):
     """Keep adaptive bins below 30; replace the tail with fixed high-mass bins."""
-    mode = replace(qcd.SS_MODE, fit_max=80.)
+    mode = replace(qcd.SS_MODE, fit_max=FIT_MAX)
     edges = qcd.make_adaptive_ss_binning(source, mode, args.ss_min_effective_count,
                                         args.ss_max_bin_width, protected_edges=(20., 30.))
     native = [float(source.GetXaxis().GetBinLowEdge(i))
@@ -163,7 +164,7 @@ def fit_ranges(ROOT, prepared, args):
     fit_args.fit_attempt_details = args.fit_attempt_details
     output = []
     # Evaluate each range before the next fit can reuse ROOT function names.
-    x = [5. + i * .05 for i in range(1501)]
+    x = [5. + i * .05 for i in range(round((FIT_MAX-5.)/.05)+1)]
     for upper in RANGES:
         mode = replace(qcd.SS_MODE, fit_max=upper)
         data = qcd.build_fit_data(ROOT, prepared, mode, "chi2", fit_args.log_relative_error_floor)
@@ -185,7 +186,7 @@ def fit_ranges(ROOT, prepared, args):
             # Integrated envelopes for exactly the plotted data bins as well.
             bins = []
             for left, right in zip(prepared.edges, prepared.edges[1:]):
-                if left < 5. or right > 80.:
+                if left < 5. or right > FIT_MAX:
                     continue
                 nominal = float(main.Integral(left, right)) / (right-left)
                 lower, higher = envelope(nominal, [float(f.Integral(left, right)) / (right-left)
@@ -214,7 +215,7 @@ def validate_plot_data(points, reports):
     if not points or len(reports) != len(RANGES):
         raise ValueError("Need SS data points and all three fit-range reports")
     if sorted(r["range"] for r in reports) != sorted([[5., high] for high in RANGES]):
-        raise ValueError("Expected 5--20, 5--30 and 5--80 GeV reports")
+        raise ValueError("Expected 5--20, 5--30 and 5--50 GeV reports; refit older 5--80 GeV results")
     for point in points:
         if not all(math.isfinite(point[key]) for key in ("x", "half_width", "value", "error")):
             raise ValueError("Nonfinite SS point in plot input")
@@ -298,10 +299,10 @@ def ratio_display_value(value, scale, upper):
 
 
 def ratio_inset_max(reports):
-    """Cover every high-band value in 20--80 GeV with a convenient log bound."""
+    """Cover every high-band value in 20--50 GeV with a convenient log bound."""
     peak = max([2.] + [value for report in reports
                        for x, value in zip(report["x"], report["high"])
-                       if 20. <= x <= 80. and math.isfinite(value)])
+                       if 20. <= x <= FIT_MAX and math.isfinite(value)])
     decade = 10.**math.floor(math.log10(peak))
     return next((factor*decade for factor in (1., 2., 5., 10.)
                  if math.isfinite(factor*decade) and factor*decade >= peak), peak)
@@ -336,7 +337,7 @@ def draw_ratio_inset(ROOT, parent, reports, points, logx):
     inset.SetTicks(1, 1)
     inset.Draw()
     inset.cd()
-    frame = inset.DrawFrame(20., 1., 80., ratio_max)
+    frame = inset.DrawFrame(20., 1., FIT_MAX, ratio_max)
     frame.SetTitle("")
     for axis in (frame.GetXaxis(), frame.GetYaxis()):
         axis.SetTitle("")
@@ -346,9 +347,10 @@ def draw_ratio_inset(ROOT, parent, reports, points, logx):
     frame.GetXaxis().SetNoExponent()
     frame.GetXaxis().SetMoreLogLabels(logx)
     frame.GetYaxis().SetNoExponent(False)
+    frame.GetYaxis().SetMoreLogLabels(ratio_max < 10.)
     keepalive, curves = [inset, frame], []
     for report, hex_colour in zip(reports, ("#2166ac", "#d95f02", "#1b9e77")):
-        selected = [i for i, x in enumerate(report["x"]) if 20. <= x <= 80.]
+        selected = [i for i, x in enumerate(report["x"]) if 20. <= x <= FIT_MAX]
         if not selected:
             continue
         colour = ROOT.TColor.GetColor(hex_colour)
@@ -373,7 +375,7 @@ def draw_ratio_inset(ROOT, parent, reports, points, logx):
     data = ROOT.TGraphAsymmErrors()
     data.SetBit(ROOT.TGraph.kClipFrame)
     for point in points:
-        if not 20. <= point["x"] <= 80. or point["value"] <= 0.:
+        if not 20. <= point["x"] <= FIT_MAX or point["value"] <= 0.:
             continue
         i, value, error = data.GetN(), point["value"], point["error"]
         data.SetPoint(i, point["x"], value)
@@ -389,7 +391,7 @@ def draw_ratio_inset(ROOT, parent, reports, points, logx):
     title.SetNDC()
     title.SetTextFont(43)
     title.SetTextSize(15)
-    keepalive.append(title.DrawLatex(.14, .88, "Ratio to 5-30, 20 < m_{#mu#mu} < 80 GeV"))
+    keepalive.append(title.DrawLatex(.14, .88, f"Ratio to 5-30, 20 < m_{{#mu#mu}} < {FIT_MAX:g} GeV"))
     keepalive.append(title)
     inset.RedrawAxis()
     parent.cd()
@@ -643,7 +645,7 @@ def plot(args, points, reports, stem, ROOT=None):
         keepalive.extend(inset_objects)
         inset = inset_objects[0]
         # The box identifies the mass interval; the inset expands its y range.
-        xleft, xright = 20., min(80., args.xmax)
+        xleft, xright = 20., min(FIT_MAX, args.xmax)
         ybottom, ytop = max(.9, args.ratio_min), min(1.9, ratio_max)
         if xleft < xright and ybottom < ytop:
             lower.cd()
@@ -718,8 +720,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not math.isfinite(args.ymin) or args.ymin < 0.:
         parser.error("--ymin must be finite and nonnegative")
-    if not 5. < args.xmax <= 80.:
-        parser.error("--xmax must satisfy 5 < xmax <= 80 GeV (display only)")
+    if not 5. < args.xmax <= FIT_MAX:
+        parser.error("--xmax must satisfy 5 < xmax <= 50 GeV (display only)")
     if not math.isfinite(args.ratio_min) or (args.ratio_max is not None and
             (not math.isfinite(args.ratio_max) or args.ratio_min >= args.ratio_max)):
         parser.error("Require finite --ratio-min < --ratio-max")
@@ -751,7 +753,7 @@ def main(argv=None):
                        value=float(prepared.density.GetBinContent(i)),
                        error=float(prepared.density.GetBinError(i)))
                   for i in range(1, prepared.density.GetNbinsX()+1)
-                  if 5. <= prepared.density.GetBinCenter(i) <= 80.]
+                  if 5. <= prepared.density.GetBinCenter(i) <= FIT_MAX]
         args.output_dir.mkdir(parents=True, exist_ok=True)
         stem = args.output_dir / f"QCD_SS_FitRangeComparison_{args.era}"
         payload = dict(era=args.era, eras=list(qcd.selected_eras(args.era)),

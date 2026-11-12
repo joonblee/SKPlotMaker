@@ -1021,7 +1021,9 @@ done
 processes, with the supplied input, binning, fit and display options. Outputs
 remain period-labelled, including Run2 and Run3. Failed periods are reported;
 the batch attempts the remaining periods and exits nonzero if any fail.
-Use `--plot-json ...` separately to redraw existing results without fitting.
+Use `--plot-json ...` separately to redraw matching 5--20/30/50 results without fitting.
+Older 5--80 GeV fit reports must be regenerated; changing `--xmax` or redrawing
+JSON cannot turn a 5--80 GeV fit into a 5--50 GeV fit.
 The figure legend has a transparent background, and the lower panel uses the
 5--30 GeV nominal fit as its reference in individual and combined plots alike.
 The compact legend sits at the upper right with a small inset from the frame.
@@ -1032,8 +1034,8 @@ comparison plots. Both panels use equal pixel sizes for axis titles and tick
 labels, with a larger legend and no reserved bottom strip.
 
 This diagnostic fits SS **Data - Top - Others** with the production six
-functions over 5--30, 5--20 and 5--80 GeV, and overlays all three predictions
-over 5--80 GeV. It uses the production bin-integrated chi-square with
+functions over 5--30, 5--20 and 5--50 GeV, and overlays all three predictions
+over 5--50 GeV. It uses the production bin-integrated chi-square with
 `variance = variance(data) + variance(Top) + variance(Others)`;
 a signed subtraction histogram is not a Poisson observation. Negative bins
 are retained. This chi-square is an approximation for sparse subtracted data;
@@ -1045,14 +1047,14 @@ count 10, maximum width 5 GeV), split at 20 and 30 GeV so no bin crosses a fit
 boundary. The shared SS/MC minimum-width rule,
 `width >= max(0.1 GeV, 0.02 * final bin centre)`, is applied independently in
 5--20 and 20--30 GeV, preserving those boundaries without narrow
-remainders. This **SS-data comparison only** uses one fixed **30--80 GeV bin**
-(edges **30, 80 GeV**); there are no additional adaptive edges inside that interval.
+remainders. This **SS-data comparison only** uses one fixed **30--50 GeV bin**
+(edges **30, 50 GeV**); there are no additional adaptive edges inside that interval.
 QCD-MC fits in `qcd_bkg_estimation.py --mode qcd-mc` retain statistical adaptive
 binning at high mass, with the same `max(0.1 GeV, 0.02 * bin centre)` width floor;
 the SS-only fixed tail is not applied to MC. These fixed SS bins
 override the base adaptive width cap, as can final minimum-width merging.
 This diagnostic grid can differ from production
-5--30 adaptive bins. The fit ranges remain 5--20, 5--30 and 5--80 GeV.
+5--30 adaptive bins. The fit ranges remain 5--20, 5--30 and 5--50 GeV.
 The nominal function remains Power x Exp x Logistic; the five alternatives give
 the **pointwise symmetric functional envelope**,
 `nominal +/- max(abs(alternative - nominal))`. The lower edge is not clipped;
@@ -1067,10 +1069,10 @@ only SS histograms and never writes production templates or anchors, so these
 diagnostic era jobs can run independently.
 
 Outputs are PDF, PNG and JSON under `plots/SSFitRangeComparison/` (override
-`--output-dir`). Display defaults are **log x, 5--80 GeV, y >= 0.001 events/GeV**.
+`--output-dir`). Display defaults are **log x, 5--50 GeV, y >= 0.001 events/GeV**.
 The legend gives chi-square/ndf as a decimal ratio. `--xmax`, `--ymin` (including
 `--ymin 0`) and `--linear-x` change the viewport only. All signed data bins,
-the 5--20/30/80 GeV fits and full 5--80 GeV curves/bands remain in the JSON.
+the 5--20/30/50 GeV fits and full 5--50 GeV curves/bands remain in the JSON.
 Points and band edges below the displayed y minimum are outside the viewport.
 The upper panel uses a logarithmic y axis for positive `--ymin`. For
 `--ymin 0`, `--linthresh 0.1` controls the fallback symmetric-log mapping
@@ -1098,11 +1100,11 @@ from the ratio. All ratio values are derived from saved results, so
 `--plot-json` also produces both panels without refitting or changing JSON.
 
 A small inset at the lower left of the upper panel shows the same three curves,
-functional envelopes and data over **20--80 GeV**, with a **logarithmic y axis
+functional envelopes and data over **20--50 GeV**, with a **logarithmic y axis
 from ratio 1 to an automatically chosen upper bound covering the highest
 functional band in that interval**. Its title is
-`Ratio to 5-30, 20 < m(mumu) < 80 GeV`. Reference and Bands notes appear above it
-on separate lines. A dashed box marks **20--80 GeV, ratio 0.9--1.9** in the main
+`Ratio to 5-30, 20 < m(mumu) < 50 GeV`. Reference and Bands notes appear above it
+on separate lines. A dashed box marks **20--50 GeV, ratio 0.9--1.9** in the main
 ratio panel, with two connectors to the inset. The box identifies the mass
 region; the inset expands its y range to show the full high-mass bands.
 The box is clipped to the main viewport when custom bounds are used.

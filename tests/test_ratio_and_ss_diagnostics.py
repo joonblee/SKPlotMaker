@@ -128,7 +128,7 @@ class SSComparisonTest(unittest.TestCase):
         return [dict(range=[5., high], valid=True, invalid_models=[],
                      models={key: dict(accepted=True, metrics=dict(stat_chi2=2., stat_ndf=3))
                              for key in ss.qcd.SS_REQUIRED_ROOT_MODELS},
-                     x=[5., 80.], central=[1., .1], low=[-1., -.2], high=[3., .4])
+                     x=[5., 50.], central=[1., .1], low=[-1., -.2], high=[3., .4])
                 for high in ss.RANGES]
 
     def test_envelope_symmetric_even_when_negative(self):
@@ -170,7 +170,8 @@ class SSComparisonTest(unittest.TestCase):
         args = ss.build_parser().parse_args(["--era", "full"])
         self.assertEqual(args.era, "full")
         self.assertEqual(args.ss_min_effective_count, 10.)
-        self.assertEqual((args.xmax, args.ymin, args.logx), (80., .001, True))
+        self.assertEqual((args.xmax, args.ymin, args.logx), (50., .001, True))
+        self.assertEqual(ss.RANGES, (30., 20., 50.))
         self.assertEqual(ss.qcd.SS_NOMINAL_MODEL, "power_exp_logistic")
         self.assertEqual(len(ss.qcd.SS_SHAPE_ALTERNATIVES), 5)
         self.assertEqual(args.ratio_scale, 'linear')
@@ -218,6 +219,10 @@ class SSComparisonTest(unittest.TestCase):
         points = [dict(x=20., half_width=1., value=-1., error=2.)]
         reports = self.reports()
         ss.validate_plot_data(points, reports)
+        old = copy.deepcopy(reports)
+        old[-1]['range'] = [5., 80.]
+        with self.assertRaisesRegex(ValueError, 'refit older'):
+            ss.validate_plot_data(points, old)
         bad = copy.deepcopy(reports)
         bad[0]["valid"] = False
         with self.assertRaises(ValueError):
@@ -251,7 +256,7 @@ class SSComparisonTest(unittest.TestCase):
 class SSRatioInsetTest(unittest.TestCase):
     def test_log_inset_preserves_signed_inputs_and_clips_only_display_band(self):
         ROOT.gROOT.SetBatch(True)
-        reports = [dict(x=[5., 20., 80.], central=[1., 1., 2.],
+        reports = [dict(x=[5., 20., 50.], central=[1., 1., 2.],
                         low=[-10., -5., -1.], high=[1e8, 5., 2000.])]
         points = [dict(x=25., half_width=1., value=-2., error=3.),
                   dict(x=50., half_width=2., value=.5, error=2.)]
@@ -262,7 +267,7 @@ class SSRatioInsetTest(unittest.TestCase):
             inset, frame = objects[:2]
             self.assertEqual(inset.GetLogy(), 1)
             self.assertAlmostEqual(frame.GetXaxis().GetXmin(), 20.)
-            self.assertAlmostEqual(frame.GetXaxis().GetXmax(), 80.)
+            self.assertAlmostEqual(frame.GetXaxis().GetXmax(), 50.)
             self.assertAlmostEqual(frame.GetMinimum(), 1.)
             self.assertAlmostEqual(frame.GetMaximum(), 2000.)
             bands = [obj for obj in objects if obj.InheritsFrom('TGraph') and obj.GetN() == 4]
@@ -288,17 +293,17 @@ class SSFixedTailBinningTest(unittest.TestCase):
             source.SetBinError(i, 2.)
         args = ss.build_parser().parse_args([])
         original = ss.qcd.make_adaptive_ss_binning(
-            source, ss.replace(ss.qcd.SS_MODE, fit_max=80.),
+            source, ss.replace(ss.qcd.SS_MODE, fit_max=50.),
             args.ss_min_effective_count, args.ss_max_bin_width, protected_edges=(20., 30.))
         expected_low = sorted(set([round(x, 9) for x in original if x < 30.] + [20.]))
         prepared = ss.common_histograms(ROOT, source, args)
         self.assertEqual([x for x in prepared.edges if x < 30.], expected_low)
-        self.assertEqual([x for x in prepared.edges if 30. <= x <= 80.],
-                         [30., 80.])
+        self.assertEqual([x for x in prepared.edges if 30. <= x <= 50.],
+                         [30., 50.])
         for left, right in zip(prepared.edges, prepared.edges[1:]):
-            if left >= 5. and right <= 80.:
+            if left >= 5. and right <= 50.:
                 self.assertGreaterEqual(right-left+1e-9, max(.1, .02*(left+right)/2.))
-        for boundary in (20., 30., 80.):
+        for boundary in (20., 30., 50.):
             self.assertIn(boundary, prepared.edges)
         for left, right in zip(ss.FIXED_HIGH_MASS_EDGES, ss.FIXED_HIGH_MASS_EDGES[1:]):
             i = prepared.counts.FindBin((left+right)/2.)
