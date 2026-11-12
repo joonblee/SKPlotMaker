@@ -860,6 +860,23 @@ python3 plotter_qcdseparate.py --era Run2 --variable dimuon_mass
 python3 os_ss_comparison.py --era Run2 --blind
 ```
 
+For custom OS/SS mass bins, pass space-separated edges in GeV:
+
+```bash
+python3 os_ss_comparison.py --era full --blind --logx \
+    --bin-edges 5 7 9 11 15 20 30 40 60 80
+```
+
+The first and last edges set the plot range. If supplied, `--xmin` and
+`--xmax` must match those endpoints. Edges must be finite, strictly increasing
+and coincide with native input histogram boundaries; bins cannot be split.
+`--bin-edges` cannot be combined with `--no-variable-binning`. Omitting it
+retains the existing variable binning and 5--80 GeV default range.
+Custom data bins overlapping the blinded 11--80 GeV interval are hidden in
+full. Ratio fits remain MC-only and use whole bins in the selected fit range
+(11--80 GeV by default). Custom outputs have a `_customBins` suffix and their
+ratio-fit JSON records `bin_edges`; default output names are unchanged.
+
 ## DY MC-only BJet--LightJet mass-shape comparison
 
 This standalone plotter reads only the nominal aMC@NLO DY file

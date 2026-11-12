@@ -20,10 +20,17 @@ A JSON report is also saved. Plot binning and 5--80 GeV range are retained.
 --ratio-fit-range LOW HIGH selects whole bins. Fits exclude 9--11 GeV;
 data points/summaries and their blinding are unchanged. No data ratio is fitted.
 No closure p-value is inferred from these ratio fits.
+
+--bin-edges EDGE ... sets custom mass edges, e.g. 5 7 9 11 15 20 30 40 60 80.
+Their endpoints define xmin/xmax unless explicitly given (then they must match).
+Edges must be finite, strictly increasing and coincide with native bin edges.
+Default binning is unchanged. Custom data bins overlapping the blinded interval
+are hidden in full. Custom output names include _customBins.
 """
 
 import argparse, math, os, sys
 from array import array
+from bisect import bisect_left
 from pathlib import Path
 
 import ratio_fits
@@ -89,6 +96,8 @@ def data_minus_nonqcd(ROOT,args,sign):
     return out
 
 def edges(args):
+    if getattr(args, "bin_edges", None) is not None:
+        return list(args.bin_edges)
     if not args.variable_binning:
         n = round((args.xmax-args.xmin)/args.bin_width)
         if n <= 0 or not math.isclose(args.xmin+n*args.bin_width,args.xmax,abs_tol=1e-8): raise PlotError("Bad uniform binning")
@@ -98,8 +107,36 @@ def edges(args):
     if not math.isclose(e[-1],args.xmax,abs_tol=1e-9): e.append(args.xmax)
     return e
 
+def resolve_binning(args):
+    custom = args.bin_edges
+    if custom is not None:
+        if (len(custom) < 2 or not all(map(math.isfinite, custom))
+                or any(left >= right for left, right in zip(custom, custom[1:]))):
+            raise PlotError("--bin-edges requires at least two finite, strictly increasing edges")
+    if args.xmin is None: args.xmin = custom[0] if custom is not None else 5.
+    if args.xmax is None: args.xmax = custom[-1] if custom is not None else 80.
+    if not all(map(math.isfinite, (args.xmin, args.xmax))) or args.xmin >= args.xmax:
+        raise PlotError("Require finite xmin < xmax")
+    if custom is not None and (not math.isclose(args.xmin, custom[0], rel_tol=0., abs_tol=1e-9)
+                               or not math.isclose(args.xmax, custom[-1], rel_tol=0., abs_tol=1e-9)):
+        raise PlotError("--xmin/--xmax must match the first/last custom bin edges")
+    if not args.variable_binning and (not math.isfinite(args.bin_width) or args.bin_width <= 0.):
+        raise PlotError("--bin-width must be finite and positive")
+    return edges(args)
+
 def rebin(h,e,name):
-    out = h.Rebin(len(e)-1,name,array("d",e)); out.SetDirectory(0)
+    native = [float(h.GetXaxis().GetBinLowEdge(i)) for i in range(1,h.GetNbinsX()+2)]
+    aligned = []
+    for edge in e:
+        index = bisect_left(native, edge)
+        matches = [i for i in (index-1,index) if 0 <= i < len(native)
+                   and math.isclose(native[i],edge,rel_tol=0.,abs_tol=1e-8)]
+        if not matches:
+            raise PlotError(f"{h.GetName()}: edge {edge:g} GeV is not a native input bin edge")
+        aligned.append(native[matches[0]])
+    if any(left >= right for left,right in zip(aligned,aligned[1:])):
+        raise PlotError("Requested edges do not select distinct input bin boundaries")
+    out = h.Rebin(len(aligned)-1,name,array("d",aligned)); out.SetDirectory(0)
     if int(out.GetSumw2N()) == 0: out.Sumw2()
     return out
 
@@ -127,6 +164,12 @@ def mask(h,a,b):
     for i in range(1,h.GetNbinsX()+1):
         if a < h.GetXaxis().GetBinCenter(i) < b: h.SetBinContent(i,0.); h.SetBinError(i,0.)
 
+def mask_overlapping_bins(h,a,b):
+    """Custom bins crossing a blind boundary cannot represent a full data bin."""
+    for i in range(1,h.GetNbinsX()+1):
+        if h.GetXaxis().GetBinLowEdge(i) < b-1e-8 and h.GetXaxis().GetBinUpEdge(i) > a+1e-8:
+            h.SetBinContent(i,0.); h.SetBinError(i,0.)
+
 def per_width(h):
     for i in range(1,h.GetNbinsX()+1):
         w=h.GetXaxis().GetBinWidth(i)
@@ -152,15 +195,18 @@ def fmt(x):
     r,e=x
     return "n/a" if not math.isfinite(r) else f"{r:.3g} #pm {e:.2g}"
 
-def main():
+def main(argv=None):
     p=argparse.ArgumentParser(description="BJet OS/SS: QCD MC overlaid with Data - nonQCD BKG")
     p.add_argument("--era",required=True,choices=list(ERA_GROUPS)); p.add_argument("--base-dir",default=BASE); p.add_argument("--output-dir",default=OUT); p.add_argument("--trigger",default="")
     p.add_argument("--qcd-file",default="NIsoMuon_QCD_Inclusive.root"); p.add_argument("--muon-id",default="POGMedium"); p.add_argument("--jet-id",default="tight"); p.add_argument("--hist-name",default="Dilepton_Mass")
-    p.add_argument("--xmin",type=float,default=5.); p.add_argument("--xmax",type=float,default=80.); p.add_argument("--bin-width",type=float,default=1.); p.add_argument("--no-variable-binning",dest="variable_binning",action="store_false"); p.set_defaults(variable_binning=True)
+    p.add_argument("--xmin",type=float,help="Default: 5 GeV or first custom edge"); p.add_argument("--xmax",type=float,help="Default: 80 GeV or last custom edge"); p.add_argument("--bin-width",type=float,default=1.)
+    binning=p.add_mutually_exclusive_group()
+    binning.add_argument("--bin-edges",type=float,nargs="+",metavar="EDGE",help="Custom mass edges; endpoints set the plot range")
+    binning.add_argument("--no-variable-binning",dest="variable_binning",action="store_false"); p.set_defaults(variable_binning=True)
     p.add_argument("--logx",action="store_true"); p.add_argument("--logy",action="store_true"); p.set_defaults(logy=True); p.add_argument("--ymin",type=float); p.add_argument("--ymax",type=float); p.add_argument("--ratio-min",type=float,default=0.); p.add_argument("--ratio-max",type=float,default=5.); p.add_argument("--no-bin-width",dest="divide_by_width",action="store_false"); p.set_defaults(divide_by_width=True)
     b=p.add_mutually_exclusive_group(); b.add_argument("--blind",dest="blind",action="store_true",help="Blind data in 11<m<80 GeV (default)"); b.add_argument("--unblind",dest="blind",action="store_false",help="Show data in 11<m<80 GeV"); p.set_defaults(blind=True)
-    p.add_argument("--extensions",default="pdf,png"); ratio_fits.add_arguments(p, default_range=(11.,80.)); args=p.parse_args()
-    if args.xmax<=args.xmin: raise PlotError("--xmax must be larger than --xmin")
+    p.add_argument("--extensions",default="pdf,png"); ratio_fits.add_arguments(p, default_range=(11.,80.)); args=p.parse_args(argv)
+    e=resolve_binning(args)
     if args.logx and args.xmin<=0: raise PlotError("--logx requires --xmin > 0")
     try: ratio_fits.fit_range(args)
     except ValueError as exc: raise PlotError(str(exc)) from exc
@@ -170,8 +216,10 @@ def main():
     print(f"[5<m<9] QCD MC={fmt(qlow).replace('#pm','+/-')}, Data-nonQCD={fmt(dlow).replace('#pm','+/-')}")
     print(f"[11<m<80] QCD MC equal mean (11-30, 30-80)={fmt(qhigh).replace('#pm','+/-')}, Data-nonQCD={'blinded' if args.blind else fmt(dhigh).replace('#pm','+/-')}")
     if args.blind: mask(dos,11,80); mask(dss,11,80)
-    e=edges(args); print("[BINNING]",", ".join(f"{x:g}" for x in e))
+    print("[BINNING]",", ".join(f"{x:g}" for x in e))
     qos,qss,dos,dss=(rebin(qos,e,"qos"),rebin(qss,e,"qss"),rebin(dos,e,"dos"),rebin(dss,e,"dss"))
+    if args.blind and args.bin_edges is not None:
+        mask_overlapping_bins(dos,11.,80.); mask_overlapping_bins(dss,11.,80.)
     if args.divide_by_width:
         for h in (qos,qss,dos,dss): per_width(h)
     qos.SetLineColor(ROOT.kRed+1); qos.SetLineWidth(3); qss.SetLineColor(ROOT.kRed+1); qss.SetLineWidth(3); qss.SetLineStyle(2)
@@ -205,10 +253,12 @@ def main():
     lo.cd()
     #rleg=ROOT.TLegend(.58,.74,.94,.94); rleg.SetBorderSize(0); rleg.SetFillStyle(0); rleg.SetTextSize(.075); rleg.AddEntry(qr,"QCD MC","lep"); rleg.AddEntry(dr,"Data - nonQCD MC","lep"); rleg.Draw()
     out=Path(args.output_dir); out.mkdir(parents=True,exist_ok=True); tag="Blind" if args.blind else "Unblind"; tag += "_LogX" if args.logx else ""; tag += "_LogY" if args.logy else ""; base=f"OS_SS_Comparison_{era_name(args.era)}_BJet_QCDMC_DataMinusNonQCDMC_{tag}"
+    if args.bin_edges is not None: base += "_customBins"
     for ext in [x.strip().lstrip('.') for x in args.extensions.split(',') if x.strip()]: c.SaveAs(str(out/f"{base}.{ext}")); print("[SAVED]",out/f"{base}.{ext}")
     if args.ratio_fits != "none":
+        extra_metadata = {"bin_edges": e} if args.bin_edges is not None else {}
         ratio_fits.save(out/f"{base}.json", fit_series, era=args.era, blinded=args.blind,
-                        fit_sample="QCD MC only")
+                        fit_sample="QCD MC only", **extra_metadata)
 
 if __name__=="__main__":
     try: main()
