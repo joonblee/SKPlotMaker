@@ -1018,6 +1018,9 @@ the batch attempts the remaining periods and exits nonzero if any fail.
 Use `--plot-json ...` separately to redraw existing results without fitting.
 The figure legend has a transparent background, and the lower panel uses the
 5--30 GeV nominal fit as its reference in individual and combined plots alike.
+The compact legend sits at the upper right with a small inset from the frame.
+The reference/functional-envelope note is inside the upper panel; there is no
+canvas footer. Existing JSON files can be redrawn to apply these layout changes.
 
 This diagnostic fits SS **Data - Top - Others** with the production six
 functions over 5--30, 5--20 and 5--80 GeV, and overlays all three predictions

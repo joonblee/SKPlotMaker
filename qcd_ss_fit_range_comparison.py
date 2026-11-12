@@ -19,6 +19,8 @@ The lower panel divides every curve/envelope by the fixed 5--30 GeV nominal
 curve. Data ratios use the corresponding bin-averaged reference prediction;
 statistical data errors are divided by the same fixed denominator. Reference
 uncertainty is shown as a band around one, not added in quadrature to ratios.
+The reference/envelope note is inside the upper panel. Its transparent legend
+is compact and aligned near the right frame edge; no canvas footer is drawn.
 
 For combined periods, sum the SS data and each subtraction MC histogram over
 the requested eras first, then fit that summed histogram once per range.
@@ -328,11 +330,13 @@ def plot(args, points, reports, stem, ROOT=None):
         keepalive.append(line)
     if log_y:
         upper.SetGridy()
-    legend = ROOT.TLegend(.40, .735, .955, .905)
+    legend_right = 1.-upper.GetRightMargin()-.015
+    legend = ROOT.TLegend(legend_right-.39, .735, legend_right, .905)
     legend.SetBorderSize(0)
     legend.SetFillStyle(0)
     legend.SetTextFont(42)
     legend.SetTextSize(.028)
+    legend.SetMargin(.18)
     curves = []
     for report, hex_colour in zip(reports, ("#2166ac", "#d95f02", "#1b9e77")):
         colour = ROOT.TColor.GetColor(hex_colour)
@@ -379,6 +383,8 @@ def plot(args, points, reports, stem, ROOT=None):
     text.SetTextFont(42)
     text.SetTextSize(.034)
     text.DrawLatex(.14, .95, f"SS fit-range comparison: {args.era}")
+    text.SetTextSize(.026)
+    text.DrawLatex(.17, .10, "Reference: fixed 5-30 GeV nominal fit. Bands: functional envelope only.")
     upper.RedrawAxis()
 
     lower.cd()
@@ -438,12 +444,6 @@ def plot(args, points, reports, stem, ROOT=None):
     keepalive.extend((unity, ratio_data))
     lower.RedrawAxis()
     canvas.cd()
-    footer = ROOT.TLatex()
-    footer.SetNDC()
-    footer.SetTextFont(42)
-    footer.SetTextSize(.019)
-    footer.DrawLatex(.14, .045, "Reference: fixed 5-30 GeV nominal fit. Bands: functional envelope only.")
-    footer.DrawLatex(.14, .018, "Fit ranges and full signed data/predictions in JSON are unchanged; display cuts only.")
     canvas.Update()
     try:
         for extension in ("pdf", "png"):
