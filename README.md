@@ -1295,3 +1295,62 @@ When modifying this repository, preserve the physics behaviour first and refacto
 
 
 
+
+### Linear DY closure shape for the in-situ workflow
+
+NF production now saves `DYAux/ClosureLinearMetadata` and signed pre-NF
+`ClosureLinearSourceUp/Down` in `NIsoMuon_DYJets_est.root`. Nominal central
+contents, source Sumw2 and NF are unchanged. The adopted modelling trend is
+`R(m)=0.00583*m/GeV+0.9038` from the Run2+3 comparison fit over 11--70 GeV;
+its use up to 80 GeV is an extrapolation. It defines a modelling variation,
+not a fit-statistical confidence band. The protocol is shared with
+higgs_combine/NIsoMuon/dy_closure_shape.py and must match exactly.
+
+Update both repositories, then regenerate **individual-era** inputs:
+
+```bash
+for era in 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix; do
+    python3 dy_bkg_estimation.py --era "$era" --blind
+done
+```
+
+The existing nominal source remains signed. Shape inputs have zero histogram
+errors because source statistics are already propagated separately. Consumers
+check the stored configuration, source hash and weighted-bin contents, so old
+or stale inputs cannot silently omit this uncertainty. The new input-generation
+step does not write production SR observations or change blinding.
+
+Strict DY-only validation (no other background or OS observation inputs):
+
+```bash
+python3 plotter.py --era Run2+3 --variable dimuon_mass --blind \
+    --xmin 11 --xmax 80 --dy-shape-model linear --strict --audit-dy-shape
+```
+
+This saves `plots/DYClosureLinearAudit_Run2+3.json`. To draw the normal background
+plot with the new **DY** prefit uncertainty treatment:
+
+```bash
+python3 plotter.py --era Run2+3 --variable dimuon_mass --blind \
+    --xmin 11 --xmax 80 --uncertainty syst+stat \
+    --dy-shape-model linear --dy-norm-prior 1.5 --strict
+```
+
+The opt-in plot mode uses a common linear shape variation across all eras,
+normalises each era's signed display templates over the full 11--80 GeV range,
+and replaces legacy DY NFStat/NFModel with an independent per-era lnN 1.5.
+Source errors remain once; other processes' uncertainties remain unchanged.
+Display edges must span exactly 11--80; nominal signed plotting contents remain
+unchanged. This is a prefit DY uncertainty view, not an in-situ post-fit plot.
+For fit inputs, higgs_combine integrates signed sources over its own final bins,
+retains its physical-boundary/zero-source treatment and renormalises the Up/Down
+shapes there. Its common nuisance is yield-preserving at intermediate values
+as well. Plot and fit binning therefore need not give identical variation values
+when their handling of nonpositive integrated source bins differs.
+
+Use `full_spectrum_fit.py --dy-shape-model linear` in higgs_combine/NIsoMuon
+with a fresh Condor batch; retain `--norm-prior 1.5`. Do not simultaneously add
+`--dy-shape-uncertainty 0.30`, which is a separate independent-bin study.
+The fit writes a compiled-workspace `dy_shape_audit.json` before B/S+B fits and
+reports the shape parameter and its DY-normalisation correlations afterwards.
+The existing plotter mode (`--dy-shape-model none`, default) remains available.

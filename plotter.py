@@ -9,6 +9,12 @@ the nominal QCD-MC normalisation are retained; DD backgrounds are not refitted.
 Output filenames gain _TopPtReweight. See topptreweight_comparison.py for overlays.
 Comparison overlays show nominal Asimov Poisson errors and reweighted markers without errors.
 
+Opt-in --dy-shape-model linear reads the AN closure trend from DYAux, adds a
+common shape-only prefit band, and uses a DY lnN --dy-norm-prior (default 1.5)
+in place of legacy NFStat/NFModel. Requires dimuon_mass, OS BJet, 11--80 GeV.
+This plot retains signed display/source bins; the fit applies its existing
+physical boundary after integrating each fit bin and normalises again there.
+
 Revision 2 updates:
   - for the dimuon-mass data-driven DY estimate, reads LightJetStat from the
     nominal histogram Sumw2 errors and NFStat/NFModel from DYAux metadata in
@@ -68,6 +74,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+from pathlib import Path
 import math
 import os
 import re
@@ -577,6 +584,8 @@ class Config:
     qcd_normalise: bool = True         # single (Data - non-QCD MC) / QCD MC factor
     qcd_normalisation_diagnostics: bool = False
     dy_method: str = "data-driven"   # mc or data-driven
+    dy_shape_model: str = "none"
+    dy_norm_prior: float = 1.5
     uncertainty: str = "stat-only"   # stat-only or syst+stat
     draw_systematics: bool = False
 
@@ -1955,6 +1964,51 @@ def _generator_theory_uncertainty(
             )
 
 
+def dy_linear_uncertainty(ROOT, cfg, years, by_year, edges, scale, down2, up2, summary):
+    """Common signed-display shape band; final fit-bin physical bounds belong to Combine."""
+    import dy_closure_shape as closure
+    if not (is_mass_variable(cfg) and cfg.jet_mode == 'bjet' and canonical_dilepton_sign(cfg.dilepton_sign) == 'OS'
+            and not use_dy_mc(cfg) and abs(edges[0]-11.) < 1e-7 and abs(edges[-1]-80.) < 1e-7):
+        raise ValueError('--dy-shape-model linear requires OS BJet DD DY with plotting edges spanning exactly 11--80 GeV')
+    ups, downs = [], []
+    for year in years:
+        filename = os.path.join(root_dir_for_year(cfg, year), cfg.dy_data_driven_file)
+        root_file = ROOT.TFile.Open(filename)
+        if not root_file or root_file.IsZombie():
+            raise ValueError('Missing DY file: '+filename)
+        try:
+            source, weighted, meta = closure.read_inputs(root_file)
+            raw = rebin_hist(weighted, edges)
+            raw.SetDirectory(0)
+        finally:
+            root_file.Close()
+        nominal = by_year[year]['DY']
+        apply_scale(raw, scale*period_prediction_scale(cfg, year))
+        # Weighted source is pre-NF; obtain the same fixed NF as nominal.
+        nf, error = read_hist(ROOT, filename, DY_AUX_NF_AMC_PATH)
+        if error or not nf:
+            raise ValueError('Missing DY NF scalar for linear closure')
+        raw.Scale(float(nf.GetBinContent(1)))
+        widths = [nominal.GetBinWidth(i) if cfg.divide_by_bin_width else 1. for i in range(1,nominal.GetNbinsX()+1)]
+        total = sum(nominal.GetBinContent(i)*w for i,w in enumerate(widths,1))
+        raw_total = float(raw.Integral())
+        if total <= 0 or raw_total <= 0:
+            raise ValueError('Linear DY display shape requires positive full-domain signed integral')
+        raw.Scale(total/raw_total)
+        apply_bin_width_normalization(cfg, raw)
+        delta = raw.Clone(_NAMES.unique('DYClosureDelta_'+year)); delta.SetDirectory(0)
+        delta.Add(nominal, -1.)
+        ups.append(delta)
+        opposite = delta.Clone(_NAMES.unique('DYClosureDown_'+year)); opposite.SetDirectory(0); opposite.Scale(-1.)
+        downs.append(opposite)
+        norm_down = nominal.Clone(_NAMES.unique('DYNormDown_'+year)); norm_down.SetDirectory(0); norm_down.Scale(1./cfg.dy_norm_prior-1.)
+        norm_up = nominal.Clone(_NAMES.unique('DYNormUp_'+year)); norm_up.SetDirectory(0); norm_up.Scale(cfg.dy_norm_prior-1.)
+        add_delta_pair_shift(norm_down, norm_up, down2, up2)
+        summary.append(f'DY in-situ prior/{year}: lnN {cfg.dy_norm_prior:g}; NFStat/NFModel replaced; source statistics retained once')
+    add_delta_pair_shift(sum_hists(downs,'DYClosureDown'), sum_hists(ups,'DYClosureUp'), down2, up2)
+    summary.append('DYClosureLinear: common across eras; signed-display integrals preserved; '+str(closure.configuration()))
+
+
 def bkg_syst_uncertainty(
     ROOT,
     cfg: Config,
@@ -2250,6 +2304,8 @@ def bkg_syst_uncertainty(
             summary.append(f"DY_NF_factorisation/DY/{year}: OK (source * aMC NF; LightJetStat retained once)")
 
             # aMC finite-MC statistical uncertainty: independent era by era.
+            if cfg.dy_shape_model == "linear":
+                continue  # DY in-situ prior and closure are added below.
             rel_stat = nf_amc_error / nf_amc
             add_symmetric_hist_shift(nominal, rel_stat, down2, up2)
             summary.append(
@@ -2283,6 +2339,8 @@ def bkg_syst_uncertainty(
             summary.append("DY_NF_metadata/DY: MISSING (" + detail + ")")
         else:
             summary.append("DY_NF_metadata/DY: OK")
+    if cfg.dy_shape_model == 'linear':
+        dy_linear_uncertainty(ROOT, cfg, years, bkg_nom_by_year, edges, scale, down2, up2, summary)
     # Final generator theory: tt/ST only.  No generic tt_xsec or ST_xsec.
     _generator_theory_uncertainty(
         ROOT,
@@ -3221,6 +3279,8 @@ def draw_one_plot(ROOT, cfg: Config, norm: str, edges: Sequence[float], *, compa
         cfg.output_dir,
         f"{plot_era_tag(cfg)}_{spec.key}_{norm}_{data_tag}{jet_tag}{sign_tag}{qcd_tag}{dy_tag}{syst_tag}{rebin_tag}{x_range_tag}",
     )
+    if cfg.dy_shape_model == 'linear':
+        out_base += '_DYlinearShape_lnN'+mass_label(cfg.dy_norm_prior)
     if comparison_total is not None:
         out_base += "_TopPtComparison"
     elif cfg.top_pt_reweight:
@@ -3474,6 +3534,12 @@ No-argument behaviour:
 
     parser.add_argument("--qcd-data-driven-file", default="NIsoMuon_SS_fit.root")
     parser.add_argument("--qcd-mc-file", default="NIsoMuon_QCD_Inclusive.root")
+    parser.add_argument('--audit-dy-shape', action='store_true',
+                        help='Read-only strict audit of linear DYAux and prefit shape, without other backgrounds or OS data')
+    parser.add_argument('--dy-shape-model', choices=('none','linear'), default='none',
+                        help='linear: common DY closure prefit shape + in-situ DY prior; requires updated DYAux and OS BJet mass edges 11--80')
+    parser.add_argument('--dy-norm-prior', type=float, default=1.5,
+                        help='DY lnN kappa in linear-closure plots only (default: 1.5)')
     parser.add_argument("--dy-data-driven-file", default="NIsoMuon_DYJets_est.root")
     parser.add_argument("--dy-mc-file", default="NIsoMuon_DYJets_Inclusive.root")
     parser.add_argument("--tt-file", default="NIsoMuon_tt.root")
@@ -3524,6 +3590,9 @@ def config_from_args(args: argparse.Namespace) -> Config:
             "Use --ratio-ymin/--ratio-ymax or --ratio-min/--ratio-max."
         )
 
+    if not math.isfinite(args.dy_norm_prior) or args.dy_norm_prior <= 1.:
+        raise ValueError('--dy-norm-prior must exceed one')
+
     cfg = Config(
         base_dir=args.base_dir,
         era=args.era,
@@ -3557,6 +3626,7 @@ def config_from_args(args: argparse.Namespace) -> Config:
         qcd_normalise=bool(args.qcd_normalise),
         qcd_normalisation_diagnostics=args.qcd_normalisation_diagnostics,
         dy_method=canonical_background_method(args.dy_method, option_name="dy-method"),
+        dy_shape_model=args.dy_shape_model, dy_norm_prior=args.dy_norm_prior,
         uncertainty=uncertainty,
         draw_systematics=draw_systematics,
         qcd_data_driven_file=args.qcd_data_driven_file,
@@ -3608,6 +3678,43 @@ def normalise_cli_hyphen_typos(argv: Sequence[str]) -> List[str]:
     return out
 
 
+def audit_dy_linear_inputs(cfg):
+    """Strict DY-only audit; no signal-region data or other-process inputs read."""
+    import ROOT
+    import dy_closure_shape as closure
+    edges = make_bin_edges(cfg)
+    years = years_for_era(cfg.era)
+    by_year = {}
+    totals = {}
+    for year in years:
+        filename = os.path.join(root_dir_for_year(cfg,year),cfg.dy_data_driven_file)
+        handle = ROOT.TFile.Open(filename)
+        if not handle or handle.IsZombie():
+            raise ValueError('Missing DY input '+filename)
+        try:
+            source, weighted, meta = closure.read_inputs(handle)
+            scalar = handle.Get(DY_AUX_NF_AMC_PATH)
+            if not scalar:
+                raise ValueError('Missing DY NF scalar')
+            hist = rebin_hist(source,edges);hist.SetDirectory(0)
+            hist.Scale(float(scalar.GetBinContent(1))*period_prediction_scale(cfg,year))
+        finally:
+            handle.Close()
+        totals[year] = float(hist.Integral())
+        apply_bin_width_normalization(cfg,hist)
+        by_year[year] = {'DY':hist}
+    summary = []
+    n = len(edges)-1
+    down2, up2 = [0.]*n, [0.]*n
+    dy_linear_uncertainty(ROOT,cfg,years,by_year,edges,1.,down2,up2,summary)
+    output = Path(cfg.output_dir)
+    output.mkdir(parents=True,exist_ok=True)
+    path = output/('DYClosureLinearAudit_'+cfg.era+'.json')
+    path.write_text(json.dumps(dict(configuration=closure.configuration(),nominal_signed_totals=totals,
+                                   summary=summary,down2=down2,up2=up2),indent=2,allow_nan=False)+'\n')
+    print('[DY CLOSURE AUDIT] PASS: '+str(path))
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     argv = normalise_cli_hyphen_typos(list(sys.argv[1:] if argv is None else argv))
     if not argv:
@@ -3619,7 +3726,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.draw_ratio and args.ratio_max <= args.ratio_min:
         parser.error("ratio-panel ymax must be larger than ymin. Use --ratio-ymin/--ratio-ymax or --ratio-min/--ratio-max.")
     cfg = config_from_args(args)
-    run(cfg)
+    if args.audit_dy_shape:
+        if cfg.dy_shape_model != 'linear':
+            parser.error('--audit-dy-shape requires --dy-shape-model linear')
+        audit_dy_linear_inputs(cfg)
+    else:
+        run(cfg)
     return 0
 
 

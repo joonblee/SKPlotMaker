@@ -42,6 +42,8 @@ and the MG LO sample defines the generator-modelling variation.  The final DY
 prediction is the background-subtracted light-jet data distribution multiplied
 by the aMC@NLO NF.  The nominal NIsoMuon_DYJets_est.root additionally stores
 the primitive pre-NF light-jet source and NF metadata under DYAux/.
+NF outputs also save signed linear-closure source variations and provenance
+for --dy-shape-model linear consumers; nominal contents/errors are unchanged.
 
 Background subtraction keeps signed Data - QCD MC - Top MC - Others MC bin
 contents and propagated errors in both jet regions. Negative residuals are not
@@ -1213,7 +1215,8 @@ def write_data_driven_root_outputs(
 
     NF mode writes the final aMC-NF-scaled prediction in the historical B-jet
     path for compatibility with plotter/qcd_bkg_estimation, plus primitive
-    inputs under DYAux.  No NF-mode DY Up/Down templates are written.
+    inputs and signed closure weights under DYAux. No NF-mode DY RunSyst
+    Up/Down templates are written.
 
     TF mode retains the historical RunSyst template output unchanged.
     """
@@ -1264,6 +1267,8 @@ def write_data_driven_root_outputs(
         _write_nf_scalar(ROOT, aux, DY_AUX_NF_MODEL_HIST, model_rel, 0.0)
         _write_nf_inputs(ROOT, aux, DY_AUX_NF_AMC_INPUTS_HIST, nf_amc)
         _write_nf_inputs(ROOT, aux, DY_AUX_NF_MG_INPUTS_HIST, nf_mg)
+        import dy_closure_shape
+        dy_closure_shape.write_inputs(ROOT, aux, h_source_7500)
         f_out.Close()
 
         print(f"[SAVED] Exported aMC-NF DY prediction to: {out_path_nominal}")
