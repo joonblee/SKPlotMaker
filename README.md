@@ -1354,3 +1354,69 @@ with a fresh Condor batch; retain `--norm-prior 1.5`. Do not simultaneously add
 The fit writes a compiled-workspace `dy_shape_audit.json` before B/S+B fits and
 reports the shape parameter and its DY-normalisation correlations afterwards.
 The existing plotter mode (`--dy-shape-model none`, default) remains available.
+
+
+### Review diagnostics: SS MC, fit-range stability and MC TF central values
+
+`qcd_bkg_estimation.py --mode qcd-mc --mc-sign SS` selects the same-sign
+QCD MC histogram. OS stays the default. SS includes 9--11 GeV, matching the
+SS-data fit; OS keeps its resonance veto. Output filenames include `-SS`.
+For closure with the SS-data objective/regularisation unchanged:
+
+```bash
+python3 qcd_bkg_estimation.py --mode qcd-mc --mc-sign SS --era Run2+3 \
+  --mc-fit-range 5 30 --mc-plot-range 5 80 --fit-objective chi2 \
+  --power-exp-n-soft-width 0
+```
+
+Explicit `--fit-objective log-chi2` is supported too, with its existing
+weighted-likelihood prefit. Omit the zero-width override to retain the usual
+MC soft exponent constraint. These diagnostics never write production SS
+anchors or ROOT templates, so different eras/combined periods can run in
+parallel. In SS MC initial-only mode, missing stored SS anchors fall back
+to the existing generic multistart seeds; explicit SS-derived constraints
+still require an anchor. JSON contains held-out bin MC-stat pulls, maximum absolute local
+pull, held-out chi2/nBin and an 11--80 GeV residual sum (including training
+bins). They use MC Sumw2 alone; no fit covariance or calibrated p-value is
+claimed. They are distinct from fit-range stability tests on SS data.
+
+```bash
+python3 qcd_ss_fit_range_comparison.py --all-periods
+```
+
+This now compares upper edges 20, 30, 40 and 50 GeV. The display grid retains
+one 30--50 GeV bin. Fit-only 20/40 GeV boundaries are rebuilt from native
+histograms and obey the same minimum-width floor, preventing events above a
+fit limit from leaking into the fit. The 5--30 reference and 5--50 fits
+retain their original grid; only ranges needing a new boundary rebuild it.
+Old three-range saved JSON remains
+replottable, without refitting or rewriting it.
+
+Each new run also saves `*_signal_windows.csv` and
+`*_signal_windows_<WINDOW_ERA>.pdf/.png`. The CSV lists absolute nominal SS
+yield, absolute integrated functional envelope, nominal/5--30 nominal,
+envelope/5--30 envelope and relative envelope for all 13 signal masses.
+Plots show the nominal ratio and relative envelope versus signal mass.
+The envelope integrates the pointwise maximum absolute difference, which
+can differ from the maximum of function integrals. This is before OS transfer
+and excludes fit-statistical uncertainty. Default maximum quadrature step:
+0.02 GeV; halve `--window-integration-step` for a convergence check.
+
+Window boundaries use +/-5 sigma from the bundled
+`data/signal_resolution_coefficients.json` snapshot of higgs_combine
+18711487868b6d290e01f49b3a265438c875dbdb, clipped to 11--80 GeV and snapped
+outwards to native source edges. Override `--resolution-map PATH`,
+`--window-masses 12,30,70` or `--window-nsigma 5` explicitly if needed.
+Combined fits integrate the stacked spectrum in **each era's window**;
+these are diagnostic integrals, not the sum of era-local production SR
+yields. Actual joint-fit SR predictions remain era-local before combination.
+
+```bash
+python3 qcd_bkg_estimation.py --mode ss-data --era Run2+3 \
+  --validate-qcd-double-ratio
+```
+
+MC-only validation now adds low/high MC OS/SS central ratios and Sumw2
+errors to the log and `QCDDoubleRatioValidation_Run2.csv` / `Run3.csv`.
+These ratios, the era double ratio, and the fitted common double ratio are
+separate columns. No SS-data production fit is run by this command.

@@ -171,7 +171,7 @@ class SSComparisonTest(unittest.TestCase):
         self.assertEqual(args.era, "full")
         self.assertEqual(args.ss_min_effective_count, 10.)
         self.assertEqual((args.xmax, args.ymin, args.logx), (50., .001, True))
-        self.assertEqual(ss.RANGES, (30., 20., 50.))
+        self.assertEqual(ss.RANGES, (30., 20., 40., 50.))
         self.assertEqual(ss.qcd.SS_NOMINAL_MODEL, "power_exp_logistic")
         self.assertEqual(len(ss.qcd.SS_SHAPE_ALTERNATIVES), 5)
         self.assertEqual(args.ratio_scale, 'linear')
@@ -221,7 +221,7 @@ class SSComparisonTest(unittest.TestCase):
         ss.validate_plot_data(points, reports)
         old = copy.deepcopy(reports)
         old[-1]['range'] = [5., 80.]
-        with self.assertRaisesRegex(ValueError, 'refit older'):
+        with self.assertRaisesRegex(ValueError, 'Need 5--20/30/40/50'):
             ss.validate_plot_data(points, old)
         bad = copy.deepcopy(reports)
         bad[0]["valid"] = False
@@ -256,7 +256,7 @@ class SSComparisonTest(unittest.TestCase):
 class SSRatioInsetTest(unittest.TestCase):
     def test_log_inset_preserves_signed_inputs_and_clips_only_display_band(self):
         ROOT.gROOT.SetBatch(True)
-        reports = [dict(x=[5., 20., 50.], central=[1., 1., 2.],
+        reports = [dict(range=[5., 30.], x=[5., 20., 50.], central=[1., 1., 2.],
                         low=[-10., -5., -1.], high=[1e8, 5., 2000.])]
         points = [dict(x=25., half_width=1., value=-2., error=3.),
                   dict(x=50., half_width=2., value=.5, error=2.)]

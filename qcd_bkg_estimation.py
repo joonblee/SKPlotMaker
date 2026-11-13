@@ -16,6 +16,18 @@ The plot and anchor locations are fixed and cannot be changed by options.
 The script is self-contained for plotting and does not require PlotHelper,
 tdrstyle.C, CMS_lumi.C, or PlotterCore.h.
 
+MC closure diagnostics
+----------------------
+--mode qcd-mc --mc-sign SS fits the same-sign QCD simulation, including
+9--11 GeV as for the SS-data fit. OS remains the default and retains its
+9--11 GeV exclusion. --mc-fit-range 5 30 --mc-plot-range 5 80 writes a
+sign-labelled extrapolation JSON with held-out bin pulls, tail chi2/nBin,
+and a descriptive 11--80 GeV residual sum. These use MC Sumw2 only, not
+fit covariance or a calibrated goodness-of-fit p-value. No production
+SS anchors/templates are changed. With initial-only seeds, SS MC can
+use the existing generic multistart seeds if its period anchor is absent. --validate-qcd-double-ratio also prints
+and exports the low/high MC OS/SS central ratios and statistical errors.
+
 Supported periods
 -----------------
   2016preVFP, 2016postVFP, 2016, 2017, 2018,
@@ -125,6 +137,7 @@ Main optional controls
   --mc-binning {adaptive,legacy}   default: adaptive; MC only
   --mc-min-effective-count VALUE   default: 10; MC only
   --mc-max-bin-width GEV           base adaptive width cap, default: 5; MC only
+  --mc-sign OS|SS                  default: OS; SS retains 9--11 GeV
   --mc-fit-range LOW HIGH          default: 5 80; MC only
   --mc-plot-range LOW HIGH         default: 5 80; MC only
   --power-exp-n-soft-width WIDTH   all MC objectives: default 0.2; 0 disables
@@ -1341,8 +1354,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Adaptive QCD-MC weighted effective-count target before minimum-width merging (default: 10)")
     parser.add_argument("--mc-max-bin-width", type=positive_float, default=5.,
                         help="Base adaptive QCD-MC width cap in GeV; final minimum-width merging may exceed it (default: 5)")
+    parser.add_argument("--mc-sign", choices=("OS", "SS"), default="OS",
+                        help="MC validation sign (default OS); SS tests the actual SS extrapolation procedure")
     parser.add_argument("--mc-fit-range", type=float, nargs=2, metavar=("LOW", "HIGH"),
-                        help="QCD-MC fit interval in GeV (default: 5 80); 9--11 GeV remains excluded")
+                        help="QCD-MC fit interval in GeV (default: 5 80); OS excludes 9--11 GeV")
     parser.add_argument("--mc-plot-range", type=float, nargs=2, metavar=("LOW", "HIGH"),
                         help="QCD-MC display interval in GeV, containing the fit interval (default: 5 80)")
     parser.add_argument(
@@ -2000,7 +2015,8 @@ def make_adaptive_mc_binning(source_hist, mode: ModeConfig,
              + fit_edges + [native[indices[x]] for x in outside if x > mode.fit_max])
     validate_bin_edges(edges, "adaptive MC binning")
     print(f"[MC BINNING] adaptive targetNeff={min_effective_count:g} baseMaxWidth={max_bin_width:g} GeV; "
-          "final width >= max(0.1 GeV, 0.02*bin centre); 9--11 GeV excluded")
+          "final width >= max(0.1 GeV, 0.02*bin centre); "
+          + ("SS: no resonance veto" if mode.region == SS_REGION else "9--11 GeV excluded"))
     print("[MC BINNING] fit edges [GeV] = " + ", ".join(f"{x:g}" for x in fit_edges))
     return edges
 
@@ -2126,7 +2142,7 @@ def prepare_histograms(
 
 
 def is_excluded(mode: ModeConfig, low: float, high: float) -> bool:
-    if mode.key != QCD_MODE.key:
+    if mode.key != QCD_MODE.key or mode.region == SS_REGION:
         return False
     tolerance = 1e-10
     for rlow, rhigh in QCD_FIT_EXCLUDED_RANGES:
@@ -2147,7 +2163,7 @@ def configure_objective_binning(ROOT, prepared: PreparedHistograms, mode: ModeCo
     highs = ROOT.std.vector("double")()
     for value in prepared.edges:
         edges.push_back(float(value))
-    if mode.key == QCD_MODE.key:
+    if mode.key == QCD_MODE.key and mode.region != SS_REGION:
         for low, high in QCD_FIT_EXCLUDED_RANGES:
             lows.push_back(low)
             highs.push_back(high)
@@ -3144,16 +3160,17 @@ def fit_all_models(
     model_by_key = {m.key: m for m in FIT_MODELS}
 
     dynamic_catalog = load_dynamic_anchor_catalog(args)
-    resolved_anchors = {
-        model.key: get_qcd_anchor(
-            mode,
-            args.year,
-            model,
-            dynamic_catalog,
-            args.prefer_full_run_anchor,
-        )
-        for model in FIT_MODELS
-    }
+    def resolve_anchor(model):
+        try:
+            return get_qcd_anchor(mode, args.year, model, dynamic_catalog, args.prefer_full_run_anchor)
+        except KeyError:
+            if mode.key != QCD_MODE.key or mode.region != SS_REGION or not args.initial_values_only:
+                raise
+            # New SS-MC closure can run before a combined production SS anchor
+            # exists. Generic multistart seeds are already used by SS-data fits.
+            print(f"[INITIAL-ONLY] SS MC {args.year}/{model.key}: no stored SS anchor; generic multistart seeds")
+            return None
+    resolved_anchors = {model.key: resolve_anchor(model) for model in FIT_MODELS}
     anchors = {
         key: (resolved.anchor if resolved is not None else None)
         for key, resolved in resolved_anchors.items()
@@ -3401,13 +3418,17 @@ def draw_cms_header(ROOT, pad, period: str, lumi_fb: Optional[float] = None) -> 
 def x_axis_title(ROOT, mode: ModeConfig) -> str:
     # The QCD fitter only handles the dimuon-mass histogram, so no external
     # PlotterCore axis-title lookup is necessary.
-    if mode.key == SS_MODE.key:
+    if mode.region == SS_REGION:
         return "m_{#mu^{#pm}#mu^{#pm}} [GeV]"
     return "m_{#mu^{+}#mu^{-}} [GeV]"
 
 
 def mc_range_modes(args, mode: ModeConfig) -> Tuple[ModeConfig, ModeConfig]:
     """Keep default/SS modes unchanged; validate explicit MC ranges before I/O."""
+    if mode.key == QCD_MODE.key and getattr(args, "mc_sign", "OS") == "SS":
+        mode = replace(mode, region=SS_REGION, legend_label="QCD MC, SS")
+    elif mode.key != QCD_MODE.key and getattr(args, "mc_sign", "OS") != "OS":
+        raise ValueError("--mc-sign requires --mode qcd-mc")
     fit_range = getattr(args, "mc_fit_range", None)
     plot_range = getattr(args, "mc_plot_range", None)
     if fit_range is None and plot_range is None:
@@ -3420,7 +3441,7 @@ def mc_range_modes(args, mode: ModeConfig) -> Tuple[ModeConfig, ModeConfig]:
     if (not all(math.isfinite(x) for x in values)
             or not 5. <= plot_low <= fit_low < fit_high <= plot_high <= 80.):
         raise ValueError("MC ranges must satisfy 5 <= plot LOW <= fit LOW < fit HIGH <= plot HIGH <= 80 GeV")
-    if any(9. < x < 11. for x in values) or (fit_low >= 9. and fit_high <= 11.):
+    if mode.region != SS_REGION and (any(9. < x < 11. for x in values) or (fit_low >= 9. and fit_high <= 11.)):
         raise ValueError("MC range boundaries cannot lie inside the excluded 9--11 GeV interval")
     return replace(mode, fit_min=fit_low, fit_max=fit_high), replace(mode, fit_min=plot_low, fit_max=plot_high)
 
@@ -3429,7 +3450,7 @@ def mc_range_suffix(mode: ModeConfig, plot_mode: ModeConfig) -> str:
     if mode.key != QCD_MODE.key or (mode == QCD_MODE and plot_mode == QCD_MODE):
         return ""
     tag = f"-Fit{mode.fit_min:g}to{mode.fit_max:g}-Plot{plot_mode.fit_min:g}to{plot_mode.fit_max:g}"
-    return tag.replace(".", "p")
+    return ("-SS" if mode.region == SS_REGION else "") + tag.replace(".", "p")
 
 
 def power_exp_n_soft_suffix(args, mode: ModeConfig, objective: str) -> str:
@@ -3447,7 +3468,8 @@ def mc_extrapolation_report(args, mode: ModeConfig, plot_mode: ModeConfig,
         "period": args.year, "objective": args.fit_objective,
         "fit_range": [mode.fit_min, mode.fit_max],
         "plot_range": [plot_mode.fit_min, plot_mode.fit_max],
-        "excluded_range": [9., 11.], "models": {},
+        "sign": "SS" if mode.region == SS_REGION else "OS",
+        "excluded_range": [] if mode.region == SS_REGION else [9., 11.], "models": {},
         "statistics": "Held-out chi2/nBin uses MC Sumw2 only; no fit-parameter uncertainty or calibrated p-value. No tail normalisation or refit.",
     }
     for selected in selected_fits:
@@ -3472,6 +3494,19 @@ def mc_extrapolation_report(args, mode: ModeConfig, plot_mode: ModeConfig,
             bins.append({"low": low, "high": high, "mc": value*width, "mc_error": error*width,
                          "prediction": finite(prediction*width), "fit_over_mc": finite(prediction/value) if value != 0. else None,
                          "mc_stat_pull": finite(pull)})
+        search_bins = []
+        for i in range(1, density.GetNbinsX()+1):
+            low = float(density.GetXaxis().GetBinLowEdge(i))
+            high = float(density.GetXaxis().GetBinUpEdge(i))
+            if low < 11.-1e-9 or high > 80.+1e-9 or is_excluded(mode, low, high):
+                continue
+            value, error = float(density.GetBinContent(i)), float(density.GetBinError(i))
+            prediction = float(selected.average_function.Eval((low+high)/2.))
+            pull = (prediction-value)/error if error > 0. else math.nan
+            search_bins.append(dict(low=low, high=high, mc_stat_pull=finite(pull),
+                                   mc=value*(high-low), prediction=finite(prediction*(high-low))))
+        search_pulls = [b["mc_stat_pull"] for b in search_bins if b["mc_stat_pull"] is not None]
+        local_pulls = [b["mc_stat_pull"] for b in bins if b["mc_stat_pull"] is not None]
         diag = selected.diagnostics
         report["models"][selected.model.key] = {
             "accepted": selected.accepted, "status": diag.status, "covQual": diag.covariance_status,
@@ -3483,6 +3518,12 @@ def mc_extrapolation_report(args, mode: ModeConfig, plot_mode: ModeConfig,
             "soft_penalty_chi2": getattr(diag, "penalty_chi2", 0.),
             "power_exp_n_soft_width": getattr(diag, "power_exp_n_soft_width", 0.),
             "minimised_objective": finite(getattr(diag, "objective_value", math.nan)),
+            "search_range": [11., 80.], "search_bins": search_bins,
+            "search_chi2": sum(p*p for p in search_pulls),
+            "search_n_bins": len(search_pulls),
+            "search_chi2_per_bin": sum(p*p for p in search_pulls)/len(search_pulls) if search_pulls else None,
+            "search_interpretation": "Descriptive MC-Sumw2 residual sum; includes fitted bins; no calibrated p-value or fit covariance",
+            "held_out_max_abs_mc_stat_pull": max(map(abs, local_pulls), default=None),
             "held_out_bins": bins, "held_out_chi2": finite(chi2), "held_out_n_bins": n_bins,
             "held_out_chi2_per_bin": finite(chi2/n_bins) if n_bins else None,
             "held_out_mc_yield": total_mc, "held_out_mc_error": math.sqrt(variance),
@@ -3524,7 +3565,7 @@ def make_fit_shape_bands(ROOT, mode: ModeConfig, plot_mode: ModeConfig, density,
 
     # Keep the excluded resonance interval empty; no filled polygon crosses it.
     segments = [(plot_mode.fit_min, plot_mode.fit_max)]
-    if mode.key == QCD_MODE.key:
+    if mode.key == QCD_MODE.key and mode.region != SS_REGION:
         for veto_low, veto_high in QCD_FIT_EXCLUDED_RANGES:
             segments = [(a, b) for left, right in segments
                         for a, b in ((left, min(right, veto_low)), (max(left, veto_high), right)) if a < b]
@@ -3679,7 +3720,8 @@ def draw_fit_plot(
         y_text -= 0.05
     latex.SetTextColor(ROOT.kBlack)
     if range_suffix:
-        latex.DrawLatex(0.15, 0.49, f"Fit: {mode.fit_min:g}--{mode.fit_max:g} GeV (9--11 excluded)")
+        veto_label = "SS" if mode.region == SS_REGION else "OS, 9--11 excluded"
+        latex.DrawLatex(0.15, 0.49, f"Fit: {mode.fit_min:g}--{mode.fit_max:g} GeV ({veto_label})")
         latex.DrawLatex(0.15, 0.44, "Curves outside fit range: extrapolation")
         for boundary in (mode.fit_min, mode.fit_max):
             if plot_mode.fit_min < boundary < plot_mode.fit_max:
@@ -3964,6 +4006,17 @@ def write_common_qcd_validation(ROOT, common):
             flat.update({key: common["records"][era]["primitive"][key]["value"],
                          key + "_variance": common["records"][era]["primitive"][key]["variance"],
                          key + "_effective_count": row["effective_counts"][key]})
+        for label in ("low", "high"):
+            primitives = common["records"][era]["primitive"]
+            os_y, ss_y = primitives["mc_os_"+label], primitives["mc_ss_"+label]
+            ratio = os_y["value"]/ss_y["value"]
+            error = ratio*math.sqrt(os_y["variance"]/os_y["value"]**2 + ss_y["variance"]/ss_y["value"]**2)
+            flat["mc_ratio_"+label] = ratio
+            flat["mc_ratio_"+label+"_error"] = error
+        flat["common_double_ratio"] = common["double_ratio"]
+        print(f"[MC TF] {era}: R_MC(5--9)={flat['mc_ratio_low']:.6g} +/- {flat['mc_ratio_low_error']:.6g}; "
+              f"R_MC(11--80)={flat['mc_ratio_high']:.6g} +/- {flat['mc_ratio_high_error']:.6g}; "
+              f"D_era={row['double_ratio']:.6g}, D_{group}={common['double_ratio']:.6g}")
         rows.append(flat)
     if any(min(row["effective_counts"].values()) < 10 for row in common["rows"].values()):
         print("[WARNING] Sparse MC: the log-Gaussian compatibility approximation may be inaccurate; this is not a coverage test.")
@@ -4833,7 +4886,7 @@ def run(args: argparse.Namespace) -> int:
     keepalive: List[object] = []
     try:
         prepared = prepare_histograms(
-            ROOT, source, QCD_MODE if mode.key == QCD_MODE.key else mode, args.rebin, args.ss_binning,
+            ROOT, source, replace(QCD_MODE, region=mode.region) if mode.key == QCD_MODE.key else mode, args.rebin, args.ss_binning,
             args.ss_min_effective_count, args.ss_max_bin_width,
             args.mc_binning, args.mc_min_effective_count, args.mc_max_bin_width,
             (mode.fit_min, mode.fit_max, plot_mode.fit_min, plot_mode.fit_max)

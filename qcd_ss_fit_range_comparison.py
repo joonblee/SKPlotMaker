@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Compare SS Data - Top - Others fits in 5--20, 5--30 and 5--50 GeV.
+"""Compare SS Data - Top - Others fits in 5--20, 5--30, 5--40 and 5--50 GeV.
 
 Reuse the production six function families, nominal Power x Exp x Logistic,
 bin-integrated chi-square and fit-validity rules. Signed bins are never clipped.
-All ranges use one common grid: adaptive below 30 GeV with a protected
+The displayed grid is unchanged. Only ranges needing a new upper boundary
+(20/40 GeV) rebuild fit bins from native inputs; the 5--30 nominal and 5--50
+fit retain their original grid. This keeps the upper fit limits exact. Display bins: adaptive below 30 GeV with a protected
 30 GeV boundary, and one fixed 30--50 GeV bin. No 20 GeV edge is forced.
 First complete statistical adaptive binning and the width floor
 max(0.1 GeV, 0.02*final bin centre). Extra forward merges use whole adaptive
@@ -13,14 +15,18 @@ After fixing all edges, merge the last bin ending at 30 GeV backward once
 only if its signed yield is >0 and the preceding bin's signed yield is <=0.
 Never merge across 5 or 30 GeV. This final conditional merge and the fixed
 tail may exceed the adaptive width cap; all signed yields/errors are retained.
-The common-grid edges and all fit diagnostics are exported.
+The display/fit edges and all fit diagnostics are exported. Signal-window
+nominal yields and integrated pointwise envelopes are exported as CSV and
+stability plots through 80 GeV, before OS transfer. Combined-period fits use
+the stacked spectrum with each era window separately; these diagnostic
+integrals are not a sum of era-local production SR yields.
 Refit to apply the new grid; --plot-json keeps saved bin edges.
 
 Bands are pointwise nominal +/- max_alternative |alternative - nominal|,
 without zero-clipping. They are functional envelopes, not confidence intervals
 or the total statistical + systematic uncertainty. Default display: log x,
 5--50 GeV and y >= 0.001 events/GeV, with decimal chi-square/ndf. These are
-viewport settings only: signed bins, all three fit ranges and full 5--50 GeV
+viewport settings only: signed bins, all four fit ranges and full 5--50 GeV
 curves/bands remain unchanged in the fit and JSON.
 The lower panel divides every curve/envelope by the fixed 5--30 GeV nominal
 curve. Data ratios use the corresponding bin-averaged reference prediction;
@@ -61,6 +67,7 @@ results without opening input ROOT files or repeating fits. --help needs no ROOT
 import argparse
 from array import array
 from dataclasses import asdict, replace
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -68,9 +75,11 @@ import subprocess
 import sys
 
 import qcd_bkg_estimation as qcd
+import qcd_fit_window_diagnostics as windows
 
 FIT_MAX = 50.
-RANGES = (30., 20., FIT_MAX)
+RANGES = (30., 20., 40., FIT_MAX)
+RANGE_COLOURS = {30.: "#2166ac", 20.: "#d95f02", 40.: "#762a83", 50.: "#1b9e77"}
 FIXED_HIGH_MASS_EDGES = (30., FIT_MAX)
 FORCED_EDGES = FIXED_HIGH_MASS_EDGES
 ALL_PERIODS = (*qcd.RUN2_ERAS, *qcd.RUN3_ERAS, "Run2", "Run3", "Run2+3")
@@ -94,6 +103,13 @@ def build_parser():
     parser.add_argument("--ss-min-effective-count", type=qcd.positive_float, default=10.)
     parser.add_argument("--ss-max-bin-width", type=qcd.positive_float, default=5.,
                         help="Base adaptive width cap (default: 5); width-floor/final conditional merging and the fixed 30--50 bin can exceed it")
+    parser.add_argument("--resolution-map", type=Path, default=windows.DEFAULT_MAP,
+                        help="Signal resolution coefficients from higgs_combine (bundled snapshot)")
+    parser.add_argument("--window-masses", type=windows.parse_masses,
+                        default=list(windows.DEFAULT_MASSES), help="Comma-separated signal masses for window diagnostics")
+    parser.add_argument("--window-nsigma", type=qcd.positive_float, default=5.)
+    parser.add_argument("--window-integration-step", type=qcd.positive_float, default=.02,
+                        help="Maximum scalar quadrature step for integrated pointwise envelope [GeV]")
     parser.add_argument("--fit-max-attempts", type=qcd.positive_integer, default=30)
     parser.add_argument("--fit-attempt-details", action="store_true")
     parser.add_argument("--linthresh", type=qcd.positive_float, default=.1,
@@ -166,20 +182,49 @@ def finite_json(value):
     return value
 
 
-def fit_ranges(ROOT, prepared, args):
+def fit_histograms(ROOT, source, prepared, upper=40.):
+    """Rebuild fit-only boundaries from native events, never split aggregate yields."""
+    if any(abs(edge-upper) < 1e-9 for edge in prepared.edges):
+        return prepared
+    fit_edges = sorted(set(prepared.edges) | {upper})
+    native = [float(source.GetXaxis().GetBinLowEdge(i)) for i in range(1, source.GetNbinsX()+2)]
+    for edge in (upper,):
+        if not any(abs(x-edge) < 1e-9 for x in native):
+            raise ValueError(f"Fit boundary {edge:g} GeV is not a native edge; cannot split input bins")
+    # Honour the same minimum-width rule on either side of exact fit edges.
+    inner = []
+    protected = sorted({5.,30.,50.,upper})
+    for left,right in zip(protected,protected[1:]):
+        bounded = qcd.bound_adaptive_bin_widths([x for x in fit_edges if left <= x <= right])
+        inner.extend(bounded[:-1])
+    fit_edges = sorted(set(x for x in fit_edges if x < 5. or x > 50.) | set(inner) | {50.})
+    raw = source.Rebin(len(fit_edges)-1, "ss_comparison_fit_counts_raw", array("d", fit_edges))
+    raw.SetDirectory(0)
+    counts = qcd.clone_to_th1d(ROOT, raw, "ss_comparison_fit_counts", fit_edges)
+    density = qcd.clone_to_th1d(ROOT, counts, "ss_comparison_fit_density", fit_edges)
+    for i in range(1, density.GetNbinsX()+1):
+        density.SetBinContent(i, density.GetBinContent(i)/density.GetBinWidth(i))
+        density.SetBinError(i, density.GetBinError(i)/density.GetBinWidth(i))
+    return qcd.PreparedHistograms(counts=counts, density=density, edges=fit_edges)
+
+
+def fit_ranges(ROOT, prepared, args, source=None):
     fit_args = qcd.build_parser().parse_args(["--mode", "ss-data", "--year", args.era])
     fit_args.fit_max_attempts = args.fit_max_attempts
     fit_args.fit_attempt_details = args.fit_attempt_details
     output = []
+    native = ([float(source.GetXaxis().GetBinLowEdge(i)) for i in range(1, source.GetNbinsX()+2)]
+              if source is not None else None)
     # Evaluate each range before the next fit can reuse ROOT function names.
     x = [5. + i * .05 for i in range(round((FIT_MAX-5.)/.05)+1)]
     for upper in RANGES:
+        fit_prepared = fit_histograms(ROOT, source, prepared, upper) if source is not None else prepared
         mode = replace(qcd.SS_MODE, fit_max=upper)
-        data = qcd.build_fit_data(ROOT, prepared, mode, "chi2", fit_args.log_relative_error_floor)
-        selected, _, _ = qcd.fit_all_models(ROOT, prepared.density, data, mode, "chi2", fit_args)
+        data = qcd.build_fit_data(ROOT, fit_prepared, mode, "chi2", fit_args.log_relative_error_floor)
+        selected, _, _ = qcd.fit_all_models(ROOT, fit_prepared.density, data, mode, "chi2", fit_args)
         by_key = {fit.model.key: fit for fit in selected}
         invalid = [key for key in qcd.SS_REQUIRED_ROOT_MODELS if not by_key[key].accepted]
-        report = dict(range=[5., upper], valid=not invalid, invalid_models=invalid,
+        report = dict(fit_edges=fit_prepared.edges, range=[5., upper], valid=not invalid, invalid_models=invalid,
                       models={fit.model.key: dict(accepted=fit.accepted,
                               diagnostics=asdict(fit.diagnostics), metrics=asdict(fit.metrics),
                               parameters=[float(fit.function.GetParameter(i))
@@ -202,6 +247,9 @@ def fit_ranges(ROOT, prepared, args):
                 bins.append(dict(low=left, high=right, central=nominal,
                                  envelope_low=lower, envelope_high=higher))
             report["bin_averages"] = bins
+            if source is not None:
+                report["signal_windows"] = windows.window_report(
+                    [main, *alternatives], qcd.selected_eras(args.era), native, args)
         output.append(report)
     return output
 
@@ -220,10 +268,10 @@ def signed_log(value, threshold):
 
 def validate_plot_data(points, reports):
     """Reject incomplete/failed JSON results rather than drawing partial bands."""
-    if not points or len(reports) != len(RANGES):
-        raise ValueError("Need SS data points and all three fit-range reports")
-    if sorted(r["range"] for r in reports) != sorted([[5., high] for high in RANGES]):
-        raise ValueError("Expected 5--20, 5--30 and 5--50 GeV reports; refit older 5--80 GeV results")
+    actual = sorted(r["range"] for r in reports)
+    allowed = [sorted([[5., high] for high in ranges]) for ranges in (RANGES, (30.,20.,50.))]
+    if not points or actual not in allowed:
+        raise ValueError("Need 5--20/30/40/50 GeV reports (legacy 20/30/50 JSON also supported)")
     for point in points:
         if not all(math.isfinite(point[key]) for key in ("x", "half_width", "value", "error")):
             raise ValueError("Nonfinite SS point in plot input")
@@ -357,7 +405,8 @@ def draw_ratio_inset(ROOT, parent, reports, points, logx):
     frame.GetYaxis().SetNoExponent(False)
     frame.GetYaxis().SetMoreLogLabels(ratio_max < 10.)
     keepalive, curves = [inset, frame], []
-    for report, hex_colour in zip(reports, ("#2166ac", "#d95f02", "#1b9e77")):
+    for report in reports:
+        hex_colour = RANGE_COLOURS[report["range"][1]]
         selected = [i for i, x in enumerate(report["x"]) if 20. <= x <= FIT_MAX]
         if not selected:
             continue
@@ -499,7 +548,8 @@ def plot(args, points, reports, stem, ROOT=None):
     legend.SetTextSize(25)
     legend.SetMargin(.13)
     curves = []
-    for report, hex_colour in zip(reports, ("#2166ac", "#d95f02", "#1b9e77")):
+    for report in reports:
+        hex_colour = RANGE_COLOURS[report["range"][1]]
         colour = ROOT.TColor.GetColor(hex_colour)
         n = len(report["x"])
         band = ROOT.TGraph(2*n)
@@ -700,6 +750,7 @@ def replot_saved(args):
         output = args.output_dir if args.output_dir is not None else path.parent
         output.mkdir(parents=True, exist_ok=True)
         plot(plot_args, payload["points"], payload["fits"], output / path.stem, ROOT=ROOT)
+        windows.write_products(ROOT, plot_args, payload["fits"], output / path.stem)
     return 0
 
 
@@ -755,7 +806,7 @@ def main(argv=None):
     source, _, handles = qcd.build_input_histogram(ROOT, qcd.SS_MODE, directories)
     try:
         prepared = common_histograms(ROOT, source, args)
-        reports = fit_ranges(ROOT, prepared, args)
+        reports = fit_ranges(ROOT, prepared, args, source=source)
         points = [dict(x=float(prepared.density.GetBinCenter(i)),
                        half_width=float(prepared.density.GetBinWidth(i))/2.,
                        value=float(prepared.density.GetBinContent(i)),
@@ -781,6 +832,13 @@ def main(argv=None):
                                     tail_merge_start=30.,
                                     fixed_high_mass_edges=list(FIXED_HIGH_MASS_EDGES),
                                     forced_edges=list(FORCED_EDGES)),
+                       signal_window_diagnostics=dict(
+                           resolution_map=str(args.resolution_map.resolve()),
+                           resolution_sha256=hashlib.sha256(args.resolution_map.read_bytes()).hexdigest(),
+                           nsigma=args.window_nsigma, masses=args.window_masses,
+                           integration_max_step_GeV=args.window_integration_step,
+                           yields="SS before OS transfer; pointwise symmetric functional envelope without physical clipping",
+                           combined_period="stacked spectrum in each era window separately, not summed era-local production yields"),
                        points=points, fits=reports)
         stem.with_suffix(".json").write_text(json.dumps(finite_json(payload), indent=2, allow_nan=False) + "\n")
         print(f"[SAVED] {stem.with_suffix('.json')}")
@@ -790,6 +848,7 @@ def main(argv=None):
             raise RuntimeError("No comparison band drawn: required fits failed validity checks. "
                                "See JSON; retry with more --fit-max-attempts. " + "; ".join(failed))
         plot(args, points, reports, stem, ROOT=ROOT)
+        windows.write_products(ROOT, args, reports, stem)
     finally:
         for handle in handles:
             handle.Close()
