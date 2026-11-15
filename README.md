@@ -1274,6 +1274,22 @@ The stored DYDD histogram errors contain LightJetStat only; NFStat is printed
 separately. The script inspects the OS LightJet control region and DY MC/template
 objects, without reading OS BJet Data observations.
 
+## DY plot axes and output summary
+
+In `dy_bkg_estimation.py`, `--logx` selects logarithmic mass axes in both
+panels of closure (including signal-injected closure) and mass validation plots.
+Use `--tf-logx` independently for the parameter axes of TF extraction plots
+with `--method tf`. The previous TF-only use of `--logx` is replaced by
+`--tf-logx`.
+
+```bash
+python3 dy_bkg_estimation.py --era Run2+3 --blind --logx
+python3 dy_bkg_estimation.py --era Run2+3 --method tf --blind --logx --tf-logx
+```
+
+Created ROOT and PDF paths are listed together at the end of a successful run.
+Per-PDF save messages are suppressed; warnings and errors remain visible.
+
 ## Getting script-specific help
 
 Most Python scripts intentionally print their detailed usage when run with no arguments or with `--help`.

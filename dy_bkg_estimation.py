@@ -62,7 +62,9 @@ Main optional controls
   --xmin/--xmax/--rebin
   --no-variable-binning
   --ratio-min/--ratio-max
-  --logx, --linear-y
+  --logx                     logarithmic mass axes (closure and validation)
+  --tf-logx                  logarithmic TF-extraction parameter axes
+  --linear-y
   --blind                     blind B-jet data for 9 < m < 80 GeV
   --inject-signal
   --signal-mass MASS
@@ -82,6 +84,10 @@ Examples
   for era in Run2 Run3 2016preVFP 2016postVFP 2017 2018 2022 2022EE 2023 2023BPix;
     do python3 dy_bkg_estimation.py --era ${era} --blind;
   done
+
+Created ROOT and PDF paths are collected and printed together at the end of
+successful execution. ROOT's per-PDF informational messages are suppressed;
+warnings and errors remain visible.
 
 Running with no arguments prints this guide and all command-line options, then
 exits without opening ROOT files or writing templates.
@@ -1271,7 +1277,7 @@ def write_data_driven_root_outputs(
         dy_closure_shape.write_inputs(ROOT, aux, h_source_7500)
         f_out.Close()
 
-        print(f"[SAVED] Exported aMC-NF DY prediction to: {out_path_nominal}")
+        args.output_files.append(out_path_nominal)
         print(
             f"[SAVED] DYAux: NF_aMC={nf_amc.value:.8g} +/- {nf_amc.error:.8g}; "
             f"NF_MG={nf_mg.value:.8g} +/- {nf_mg.error:.8g}; "
@@ -1332,6 +1338,7 @@ def write_data_driven_root_outputs(
     f_out_nominal.mkdir(dir_name_cent).cd()
     h_central_7500.Write()
     f_out_nominal.Close()
+    args.output_files.append(out_path_nominal)
 
     out_dir_syst = period_output_dir(args, "RunSyst")
     os.makedirs(out_dir_syst, exist_ok=True)
@@ -1345,11 +1352,35 @@ def write_data_driven_root_outputs(
         f_out_syst.cd(); f_out_syst.mkdir(dir_down).cd(); h_down.Write()
         f_out_syst.cd(); f_out_syst.mkdir(dir_up).cd(); h_up.Write()
     f_out_syst.Close()
-    print(f"[SAVED] Exported legacy TF systematic templates to: {out_path_syst}")
+    args.output_files.append(out_path_syst)
 
 # ==============================================================================
 # Plotting Routines
 # ==============================================================================
+def save_pdf(ROOT, canvas, output_pdf, args):
+    """Save quietly while retaining ROOT warnings/errors and track the output."""
+    previous_level = ROOT.gErrorIgnoreLevel
+    try:
+        ROOT.gErrorIgnoreLevel = max(previous_level, ROOT.kWarning)
+        canvas.SaveAs(output_pdf)
+    finally:
+        ROOT.gErrorIgnoreLevel = previous_level
+    if not os.path.isfile(output_pdf):
+        raise OSError(f"[ERROR] Could not create PDF output: {output_pdf}")
+    args.output_files.append(output_pdf)
+
+
+def print_output_summary(paths):
+    """List this invocation's generated files once, grouped by format."""
+    print("\n[SAVED] Created output files:")
+    for extension, label in ((".root", "ROOT"), (".pdf", "PDF")):
+        matching = sorted({path for path in paths if path.endswith(extension)})
+        if matching:
+            print(f"  {label}:")
+            for path in matching:
+                print(f"    {path}")
+
+
 def draw_cms_text(ROOT, era: str, text_right: str, extra_lines: List[str] = None) -> None:
     latex = ROOT.TLatex()
     latex.SetNDC()
@@ -1386,7 +1417,8 @@ def draw_styled_plot(ROOT, targets: List[Tuple], preds: List[Tuple], ratios: Lis
     lower.SetLeftMargin(0.120); lower.SetRightMargin(0.050)
     lower.SetTopMargin(0.040); lower.SetBottomMargin(0.350)
 
-    if is_tf and args.logx:
+    use_logx = args.tf_logx if is_tf else args.logx
+    if use_logx:
         upper.SetLogx(True); lower.SetLogx(True)
     if args.logy:
         upper.SetLogy(True)
@@ -1510,8 +1542,7 @@ def draw_styled_plot(ROOT, targets: List[Tuple], preds: List[Tuple], ratios: Lis
     lower.SetTickx(); lower.SetTicky(); lower.SetGridy(); lower.RedrawAxis()
 
     output_pdf = os.path.join(PLOT_DIR, f"{out_name}.pdf")
-    canvas.SaveAs(output_pdf)
-    print(f"[SAVED] {output_pdf}")
+    save_pdf(ROOT, canvas, output_pdf, args)
 
 
 # ==============================================================================
@@ -1639,9 +1670,9 @@ def draw_validation_plot(
     lower.SetTopMargin(0.040); lower.SetBottomMargin(0.350)
 
     if args.logy: upper.SetLogy(True)
-    #if is_mass and args.logx:
-    #    upper.SetLogx(True)
-    #    lower.SetLogx(True)
+    if is_mass and args.logx:
+        upper.SetLogx(True)
+        lower.SetLogx(True)
         
     upper.Draw(); lower.Draw()
     upper.cd()
@@ -1704,8 +1735,7 @@ def draw_validation_plot(
     lower.SetTickx(); lower.SetTicky(); lower.SetGridy(); lower.RedrawAxis()
 
     output_pdf = os.path.join(PLOT_DIR, f"{out_name}.pdf")
-    c.SaveAs(output_pdf)
-    print(f"[SAVED] {output_pdf}")
+    save_pdf(ROOT, c, output_pdf, args)
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -1750,7 +1780,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rebin", type=int, default=1, help="Integer rebinning for final mass plot")
     parser.add_argument("--no-variable-binning", dest="variable_binning", action="store_false", help="Disable variable mass binning")
     parser.set_defaults(variable_binning=True)
-    parser.add_argument("--logx", action="store_true", help="Use log x axis for Mass plot")
+    parser.add_argument("--logx", action="store_true", help="Use log x axes for mass closure and validation plots")
+    parser.add_argument("--tf-logx", action="store_true", help="Use log x axes for TF extraction plots only (--method tf)")
     parser.add_argument("--linear-y", dest="logy", action="store_false", help="Use linear y axis")
     parser.set_defaults(logy=True)
     parser.add_argument("--blind", action="store_true", help="Blind Data in B-Jet dimuon mass region (9 < mass < 80)")
@@ -1782,6 +1813,7 @@ def main(argv=None):
         parser.print_help()
         return 0
     args = parser.parse_args(argv)
+    args.output_files = []
 
     if args.signal_scale < 0.0:
         print("[ERROR] --signal-scale must be non-negative.")
@@ -2508,8 +2540,10 @@ def main(argv=None):
             dy_label="DY (MG LO)",
         )
 
+    print_output_summary(args.output_files)
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
