@@ -51,6 +51,12 @@ clipped before rebinning or NF scaling, so positive and negative fluctuations
 can cancel when bins are merged. The saved NF source and central prediction
 retain these signed contents.
 
+Closure mass plots default to 11--80 GeV; --xmin/--xmax override these
+bounds (and the validation mass bounds). With --blind, the data-overlay closure
+ratios are b-jet DY MC / scaled light-jet DY MC and scaled background-subtracted
+light-jet data / scaled light-jet DY MC. B-jet data remain blinded. The separate
+signal-injection comparison retains its MC-only closure ratios.
+
 Required option
 ---------------
   --era PERIOD      one supported era or Run2/Run3/Run2+3
@@ -59,7 +65,8 @@ Main optional controls
 ----------------------
   --method {nf,tf}          default: nf
   --tf-param NAME             used only for --method tf; default: Dilepton_pT
-  --xmin/--xmax/--rebin
+  --xmin/--xmax              closure defaults: 11/80 GeV; validation: 5/150 GeV
+  --rebin
   --no-variable-binning
   --ratio-min/--ratio-max
   --logx                     logarithmic mass axes (closure and validation)
@@ -1405,6 +1412,15 @@ def draw_cms_text(ROOT, era: str, text_right: str, extra_lines: List[str] = None
             latex.DrawLatex(0.16, y_pos, line)
             y_pos -= 0.038
 
+def mass_plot_range(args, *, closure=False):
+    """Resolve mass bounds without changing validation defaults."""
+    defaults = (11.0, 80.0) if closure else (5.0, 150.0)
+    return (
+        defaults[0] if args.xmin is None else args.xmin,
+        defaults[1] if args.xmax is None else args.xmax,
+    )
+
+
 def draw_styled_plot(ROOT, targets: List[Tuple], preds: List[Tuple], ratios: List[Tuple], args, out_name, title_x, ratio_title, is_tf=False, tf_bins=None, extra_info: List[str] = None):
     ROOT.gSystem.mkdir(PLOT_DIR, True)
 
@@ -1426,8 +1442,7 @@ def draw_styled_plot(ROOT, targets: List[Tuple], preds: List[Tuple], ratios: Lis
     upper.Draw(); lower.Draw()
     upper.cd()
 
-    xmin = tf_bins[0] if is_tf else args.xmin
-    xmax = tf_bins[-1] if is_tf else args.xmax
+    xmin, xmax = (tf_bins[0], tf_bins[-1]) if is_tf else mass_plot_range(args, closure=True)
 
     ymax = 0.0
     for t_hist, _, _, _ in targets: ymax = max(ymax, visible_max(t_hist, xmin, xmax))
@@ -1570,7 +1585,7 @@ def draw_validation_plot(
             ROOT, h_data_raw, f"data_rebin_val_{folder}_{out_name}",
             args.variable_binning, args.rebin
         )
-        xmin, xmax = args.xmin, args.xmax
+        xmin, xmax = mass_plot_range(args)
     else:
         h_data_2d = load_histogram_across_eras(
             ROOT, args, os.path.join(".", "data.root"),
@@ -1587,7 +1602,7 @@ def draw_validation_plot(
                 ROOT, h_data_raw, f"data_rebin_val_{folder}_{out_name}",
                 args.variable_binning, args.rebin
             )
-            xmin, xmax = args.xmin, args.xmax
+            xmin, xmax = mass_plot_range(args)
         else:
             h_data_raw = h_data_2d.ProjectionY(f"proj_y_data_{folder}_{out_name}")
             h_data = h_data_raw.Rebin(
@@ -1773,8 +1788,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--dy-mg-file", default=DY_MG_DEFAULT_FILE,
         help="Alternative MG LO DY ROOT filename used for NF modelling uncertainty",
     )
-    parser.add_argument("--xmin", type=float, default=5.0, help="Minimum mass value shown")
-    parser.add_argument("--xmax", type=float, default=150.0, help="Maximum mass value shown")
+    parser.add_argument("--xmin", type=float, default=None, help="Minimum displayed mass (closure: 11 GeV; validation: 5 GeV)")
+    parser.add_argument("--xmax", type=float, default=None, help="Maximum displayed mass (closure: 80 GeV; validation: 150 GeV)")
     parser.add_argument("--ratio-min", type=float, default=0.0, help="Mass Ratio-panel y minimum")
     parser.add_argument("--ratio-max", type=float, default=2.0, help="Mass Ratio-panel y maximum")
     parser.add_argument("--rebin", type=int, default=1, help="Integer rebinning for final mass plot")
@@ -2316,6 +2331,7 @@ def main(argv=None):
             else "light-jet (DY + Z' MC)"
         )
 
+    closure_ratio_title = f"#frac{{b-jet}}{{light-jet #times {factor_word}}}"
     if args.inject_signal:
         closure_targets = [
             (h1_mass_actual_dy, ROOT.kBlack, 20, "b-jet (DY MC)"),
@@ -2352,18 +2368,28 @@ def main(argv=None):
                 data_prediction_label,
             ),
         ]
-        h_closure_ratio_data = clone_hist(
-            ROOT, h1_mass_actual_data, "closure_ratio_data"
-        )
-        h_closure_ratio_data.Divide(h1_mass_pred_data)
         if args.blind:
-            apply_blinding(h_closure_ratio_data, 9.0, 80.0)
-        closure_ratios = [
-            (h_closure_ratio_dy, ROOT.kBlack, 24, "Ratio (DY MC)"),
-            (h_closure_ratio_data, ROOT.kRed + 1, 20, "Ratio (Data - Bkg MC)"),
-        ]
-        if args.blind:
+            # Use only the unblinded light-jet control data in the second ratio.
+            # Both displayed ratios share the scaled light-jet DY MC reference.
+            h_closure_ratio_data = clone_hist(
+                ROOT, h1_mass_pred_data, "closure_ratio_scaled_light_data"
+            )
+            h_closure_ratio_data.Divide(h1_mass_pred_dy)
+            closure_ratios = [
+                (h_closure_ratio_dy, ROOT.kBlack, 24, "b-jet MC / scaled light-jet MC"),
+                (h_closure_ratio_data, ROOT.kRed + 1, 20, "scaled light-jet data / scaled light-jet MC"),
+            ]
+            closure_ratio_title = f"#frac{{Yield}}{{light-jet #times {factor_word} (DY MC)}}"
             extra_info_closure.append("9 < m(#mu#mu) < 80 GeV blinded")
+        else:
+            h_closure_ratio_data = clone_hist(
+                ROOT, h1_mass_actual_data, "closure_ratio_data"
+            )
+            h_closure_ratio_data.Divide(h1_mass_pred_data)
+            closure_ratios = [
+                (h_closure_ratio_dy, ROOT.kBlack, 24, "Ratio (DY MC)"),
+                (h_closure_ratio_data, ROOT.kRed + 1, 20, "Ratio (Data - Bkg MC)"),
+            ]
 
     if args.method == "tf":
         closure_out_name = (
@@ -2386,7 +2412,7 @@ def main(argv=None):
         args,
         closure_out_name,
         title_x="m(#mu#mu) [GeV]",
-        ratio_title=f"#frac{{b-jet}}{{light-jet #times {factor_word}}}",
+        ratio_title=closure_ratio_title,
         is_tf=False,
         extra_info=extra_info_closure,
     )

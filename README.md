@@ -1287,6 +1287,13 @@ python3 dy_bkg_estimation.py --era Run2+3 --blind --logx
 python3 dy_bkg_estimation.py --era Run2+3 --method tf --blind --logx --tf-logx
 ```
 
+Closure mass plots default to 11--80 GeV. Explicit `--xmin`/`--xmax`
+override the displayed bounds; mass validation defaults remain 5--150 GeV.
+With `--blind`, the data-overlay closure ratio panel shows
+b-jet DY MC / scaled light-jet DY MC and scaled background-subtracted light-jet
+data / scaled light-jet DY MC. The B-jet data stay blinded. Unblinded and
+signal-injection closure ratios retain their existing definitions.
+
 Created ROOT and PDF paths are listed together at the end of a successful run.
 Per-PDF save messages are suppressed; warnings and errors remain visible.
 
