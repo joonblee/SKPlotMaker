@@ -2316,7 +2316,7 @@ def main(argv=None):
             else "light-jet (DY + Z' MC)"
         )
 
-    closure_ratio_title = "Ratio to scaled light"
+    closure_ratio_title = "#splitline{Ratio to}{scaled light (MC)}"
     if args.inject_signal:
         closure_targets = [
             (h1_mass_actual_dy, ROOT.kBlack, 20, "b-jet (DY MC)"),
@@ -2432,7 +2432,7 @@ def main(argv=None):
             args,
             signal_closure_name,
             title_x="m(#mu#mu) [GeV]",
-            ratio_title="Ratio to scaled light",
+            ratio_title="#splitline{Ratio to}{scaled light (MC)}",
             is_tf=False,
             extra_info=[
                 f"m(Z') = {signal_mass_display(args.signal_mass)} GeV",
