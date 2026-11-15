@@ -2295,22 +2295,7 @@ def main(argv=None):
     h_closure_ratio_dy = clone_hist(ROOT, h1_mass_actual_dy, "closure_ratio_dy")
     h_closure_ratio_dy.Divide(h1_mass_pred_dy)
 
-    if args.method == "tf":
-        extra_info_closure = [
-            f"Transfer factor function: {tf_param_plot_label}",
-            "Upsilon region discarded (9.-11. GeV)",
-        ]
-    else:
-        extra_info_closure = [
-            f"aMC NF: {nf_amc.value:.5g} #pm {nf_amc.error:.3g} (stat)",
-            f"MG NF: {nf_mg.value:.5g}; |MG/aMC-1|={abs(nf_mg.value/nf_amc.value-1.0):.3g}",
-            f"NF measured in {DY_MC_NF_MASS_WINDOW[0]:g} < m < {DY_MC_NF_MASS_WINDOW[1]:g} GeV",
-            "Upsilon region discarded (9.-11. GeV)",
-        ]
-    if args.inject_signal:
-        extra_info_closure.append(
-            f"Signal: m(Z') = {signal_mass_display(args.signal_mass)} GeV, #alpha_{{qZ'}} = {args.signal_scale:g}"
-        )
+    extra_info_closure = ["b-jet (Data - Bkg MC) blinded"] if args.blind else []
 
     # Keep every TF legend string unchanged.  Numeric factors are inserted only
     # for the constant-NF method.
@@ -2331,7 +2316,7 @@ def main(argv=None):
             else "light-jet (DY + Z' MC)"
         )
 
-    closure_ratio_title = f"#frac{{b-jet}}{{light-jet #times {factor_word}}}"
+    closure_ratio_title = "Ratio to scaled light"
     if args.inject_signal:
         closure_targets = [
             (h1_mass_actual_dy, ROOT.kBlack, 20, "b-jet (DY MC)"),
@@ -2379,8 +2364,6 @@ def main(argv=None):
                 (h_closure_ratio_dy, ROOT.kBlack, 24, "b-jet MC / scaled light-jet MC"),
                 (h_closure_ratio_data, ROOT.kRed + 1, 20, "scaled light-jet data / scaled light-jet MC"),
             ]
-            closure_ratio_title = f"#frac{{Yield}}{{light-jet #times {factor_word} (DY MC)}}"
-            extra_info_closure.append("9 < m(#mu#mu) < 80 GeV blinded")
         else:
             h_closure_ratio_data = clone_hist(
                 ROOT, h1_mass_actual_data, "closure_ratio_data"
@@ -2449,7 +2432,7 @@ def main(argv=None):
             args,
             signal_closure_name,
             title_x="m(#mu#mu) [GeV]",
-            ratio_title=f"#frac{{b-jet}}{{light-jet #times {factor_word}}}",
+            ratio_title="Ratio to scaled light",
             is_tf=False,
             extra_info=[
                 f"m(Z') = {signal_mass_display(args.signal_mass)} GeV",
