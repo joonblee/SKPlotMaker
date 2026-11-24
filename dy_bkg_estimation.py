@@ -681,6 +681,23 @@ def measure_nf(
     )
 
 
+def measure_run_common_nf(ROOT, args, run, reg_b, reg_l, hist_b, hist_l):
+    """Fit one constant to the independent aMC measurements in the Run."""
+    inputs = {}
+    for era in selected_eras(run):
+        path = os.path.join(era_dir(args, era), args.dy_amc_file)
+        b = load_required_histogram(ROOT, path, reg_b, hist_b, f"nf_b_{era}")
+        light = load_required_histogram(ROOT, path, reg_l, hist_l, f"nf_l_{era}")
+        result = measure_nf(b, light, era, DY_MC_NF_MASS_WINDOW)
+        if not math.isfinite(result.error) or result.error <= 0:
+            raise ValueError(f"Invalid aMC NF statistical error for {era}: {result.error}")
+        inputs[era] = result
+    weights = [1 / result.error**2 for result in inputs.values()]
+    total = math.fsum(weights)
+    value = math.fsum(w * result.value for w, result in zip(weights, inputs.values())) / total
+    return value, 1 / math.sqrt(total), inputs
+
+
 def build_nf_prediction_from_source(
     ROOT,
     h_light_source,
@@ -1223,6 +1240,7 @@ def write_data_driven_root_outputs(
     nf_source=None,
     nf_amc=None,
     nf_mg=None,
+    nf_run_inputs=None,
 ) -> None:
     """Write the final DY estimate.
 
@@ -1278,7 +1296,13 @@ def write_data_driven_root_outputs(
         _write_nf_scalar(ROOT, aux, DY_AUX_NF_AMC_HIST, nf_amc.value, nf_amc.error)
         _write_nf_scalar(ROOT, aux, DY_AUX_NF_MG_HIST, nf_mg.value, nf_mg.error)
         _write_nf_scalar(ROOT, aux, DY_AUX_NF_MODEL_HIST, model_rel, 0.0)
-        _write_nf_inputs(ROOT, aux, DY_AUX_NF_AMC_INPUTS_HIST, nf_amc)
+        if nf_run_inputs:
+            for era, measurement in nf_run_inputs.items():
+                _write_nf_inputs(ROOT, aux, f"{DY_AUX_NF_AMC_INPUTS_HIST}_{era}", measurement)
+            aux.cd()
+            ROOT.TNamed("NFRunCommon", args.nf_run).Write()
+        else:
+            _write_nf_inputs(ROOT, aux, DY_AUX_NF_AMC_INPUTS_HIST, nf_amc)
         _write_nf_inputs(ROOT, aux, DY_AUX_NF_MG_INPUTS_HIST, nf_mg)
         import dy_closure_shape
         dy_closure_shape.write_inputs(ROOT, aux, h_source_7500)
@@ -1771,6 +1795,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="DY estimation method: constant normalisation factor (nf, default) or parameter-dependent transfer factor (tf)",
     )
     parser.add_argument(
+        "--nf-scope", choices=("era", "run"), default="era",
+        help="run: fit one aMC NF across the full Run; apply it to the selected era or single-Run group",
+    )
+    parser.add_argument(
         "--tf-param",
         default="Dilepton_pT",
         help="2D input parameter name used only with --method tf; ignored in nf mode",
@@ -1829,6 +1857,13 @@ def main(argv=None):
         return 0
     args = parser.parse_args(argv)
     args.output_files = []
+    args.nf_run = None
+    if args.nf_scope == "run":
+        for run in ("Run2", "Run3"):
+            if set(selected_eras(args.era)).issubset(selected_eras(run)):
+                args.nf_run = run
+        if args.method != "nf" or args.nf_run is None:
+            parser.error("--nf-scope run requires --method nf and eras from a single Run")
 
     if args.signal_scale < 0.0:
         print("[ERROR] --signal-scale must be non-negative.")
@@ -2170,6 +2205,12 @@ def main(argv=None):
         nf_amc = measure_nf(
             h1_b_dy_raw, h1_l_dy_raw, "aMC@NLO", DY_MC_NF_MASS_WINDOW
         )
+        nf_run_inputs = None
+        if args.nf_run:
+            nf_amc.value, nf_amc.error, nf_run_inputs = measure_run_common_nf(
+                ROOT, args, args.nf_run, reg_b, reg_l, hist_1d_b, hist_1d_l,
+            )
+            print(f"[NF] Applying common {args.nf_run} aMC NF to {args.era}")
         nf_mg = measure_nf(
             h1_b_dy_mg_raw, h1_l_dy_mg_raw, "MG LO", DY_MC_NF_MASS_WINDOW
         )
@@ -2226,7 +2267,7 @@ def main(argv=None):
     if args.method == "nf":
         write_data_driven_root_outputs(
             ROOT, args, data_estimate, reg_b,
-            nf_source=h1_l_data_sub_raw, nf_amc=nf_amc, nf_mg=nf_mg,
+            nf_source=h1_l_data_sub_raw, nf_amc=nf_amc, nf_mg=nf_mg, nf_run_inputs=nf_run_inputs,
         )
     else:
         write_data_driven_root_outputs(ROOT, args, data_estimate, reg_b)

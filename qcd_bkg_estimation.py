@@ -4088,18 +4088,21 @@ def diagnostic_transfer_statistics(h_ss, h_os, h_qcd_ss, h_qcd_os, h_dy_os, f_dy
             raise ValueError(f"Non-positive {name} in diagnostic transfer propagation")
         primitive[name] = dict(value=value, variance=variance)
 
-    # DY template Sumw2 contains LightJetStat only. Its common NFStat must be
-    # propagated once on the integrated low-mass DY yield, not once per bin.
+    # DY template Sumw2 contains LightJetStat. An era-specific NFStat is
+    # propagated once on the integrated low-mass DY yield.
     warnings = []
     nf = f_dy.Get("DYAux/NF_aMC")
     complete = bool(nf) and nf.GetNbinsX() == 1
     dy_extra_variance = None
+    dy_nf_common = f_dy.Get("DYAux/NFRunCommon")
     if complete:
         value, error = float(nf.GetBinContent(1)), float(nf.GetBinError(1))
         complete = value > 0 and error >= 0 and math.isfinite(value) and math.isfinite(error)
         if complete:
             dy_low, _ = diagnostic_count_variance(h_dy_os, *QCD_TRANSFER_LOW_WINDOW)
-            dy_extra_variance = (dy_low * error / value) ** 2
+            # The common-DY model uses the fitted NF as a fixed prefit input.
+            # Its statistical error cannot enter as independent era variance.
+            dy_extra_variance = 0.0 if dy_nf_common else (dy_low * error / value) ** 2
             primitive["data_os_low"]["variance"] += dy_extra_variance
     if not complete:
         warnings.append("DYAux/NF_aMC is missing/invalid; NF-stat is unavailable, not zero.")
