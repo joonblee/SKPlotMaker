@@ -4,7 +4,9 @@ from array import array
 import math
 from pathlib import Path
 import sys
+from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import os_ss_comparison as comparison
@@ -13,6 +15,36 @@ try:
     import ROOT
 except ImportError:
     ROOT = None
+
+
+class QCDInputTest(unittest.TestCase):
+    def test_grouped_load_uses_each_eras_filename(self):
+        with TemporaryDirectory() as base_dir:
+            args = Namespace(base_dir=base_dir, trigger="test_trigger", era="full",
+                             mc_only=True, muon_id="POGMedium", jet_id="tight",
+                             hist_name="Dilepton_Mass")
+            for run2_bin, run3_bin in (("1000", "1000toInf"), ("300To470", "300to470")):
+                run2_file = f"Skim_NIsoMuon_QCD_Pt-{run2_bin}_MuEnriched.root"
+                run3_file = f"Skim_NIsoMuon_QCD_Pt-{run3_bin}_MuEnriched.root"
+                expected = []
+                for year in comparison.YEARS:
+                    filename = run2_file if year in comparison.RUN2 else run3_file
+                    path = Path(base_dir) / year / args.trigger / filename
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.touch()
+                    expected.append(str(path))
+                for args.qcd_file in (run2_file, run3_file):
+                    with self.subTest(filename=args.qcd_file), patch.object(comparison, "open_hist") as reader:
+                        comparison.qcd(None, args, "OS")
+                        self.assertEqual([call.args[1] for call in reader.call_args_list], expected)
+
+    def test_run3_low_bin_and_inclusive_filename(self):
+        args = Namespace(base_dir="/inputs", trigger="")
+        for filename in ("Skim_NIsoMuon_QCD_Pt-15to20_MuEnriched.root",
+                         "NIsoMuon_QCD_Inclusive.root", "custom.root"):
+            with self.subTest(filename=filename):
+                self.assertEqual(comparison.input_file(args, "2023", filename),
+                                 f"/inputs/2023/{filename}")
 
 
 class BinningOptionsTest(unittest.TestCase):

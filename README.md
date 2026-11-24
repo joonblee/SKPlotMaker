@@ -977,7 +977,9 @@ python3 os_ss_comparison.py --era full --per-era --mc-only \
     --qcd-file Skim_NIsoMuon_QCD_Pt-1000_MuEnriched.root
 ```
 
-The input is the named sample in each era directory. This produces per-era
+The same generated-pT bin is selected in each era directory. In this example,
+Run 2 uses `Pt-1000` and Run 3 uses `Pt-1000toInf`. The script also resolves
+the `To` and `to` spellings for finite bins. This produces per-era
 OS/SS plots with the usual constant and linear mass fits, and JSON reports
 with the integrated ratios in 5--9 and 11--80 GeV, their high/low double
 ratio and the weighted effective counts. The cross-era JSON and terminal

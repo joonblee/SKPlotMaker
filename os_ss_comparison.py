@@ -29,11 +29,14 @@ are hidden in full. Custom output names include _customBins.
 
 --mc-only reads only the QCD sample selected by --qcd-file and reports
 integrated OS/SS ratios, the high/low double ratio and effective counts.
+For MuEnriched pT bins, either Run-2 or Run-3 spelling selects the same
+pT bin, using the filename convention of each input era.
 With a grouped --era, --per-era draws and fits each era separately and
 reports constant fits across eras for the integrated ratios.
 """
 
 import argparse, json, math, os, sys
+import re
 from array import array
 from bisect import bisect_left
 from pathlib import Path
@@ -78,6 +81,31 @@ def region(sign, args): return f"{sign}_{args.muon_id}_{args.jet_id}_BJet_NIsoDi
 def hpath(reg, args): return f"{reg}/{args.hist_name}___{reg}"
 def edir(args, y): return os.path.join(args.base_dir, y, args.trigger) if args.trigger else os.path.join(args.base_dir, y)
 
+def input_file(args, year, relfile):
+    era_dir = edir(args, year)
+    requested = os.path.join(era_dir, relfile)
+    directory, filename = os.path.split(relfile)
+    match = re.fullmatch(
+        r"Skim_NIsoMuon_QCD_Pt-(\d+)(?:[Tt]o(\d+|Inf))?_MuEnriched\.root",
+        filename,
+    )
+    if not match:
+        return requested
+    low, high = match.groups()
+    if low == "1000" and high in (None, "Inf"):
+        pt_bin = "1000toInf" if year in RUN3 else "1000"
+    elif high and high.isdigit():
+        separator = "to" if year in RUN3 else "To"
+        pt_bin = f"{low}{separator}{high}"
+    else:
+        return requested
+    preferred = os.path.join(
+        era_dir, directory, f"Skim_NIsoMuon_QCD_Pt-{pt_bin}_MuEnriched.root",
+    )
+    if preferred == requested or os.path.isfile(preferred):
+        return preferred
+    return requested if os.path.isfile(requested) else preferred
+
 def open_hist(ROOT, fn, path, name, require_sumw2=False):
     if not os.path.isfile(fn): raise PlotError(f"Missing ROOT file: {fn}")
     f = ROOT.TFile.Open(fn, "READ")
@@ -94,7 +122,7 @@ def open_hist(ROOT, fn, path, name, require_sumw2=False):
 def load(ROOT, args, relfile, sign, prefix):
     reg = region(sign, args); p = hpath(reg, args); hs = []
     for y in years(args.era):
-        hs.append(open_hist(ROOT, os.path.join(edir(args,y),relfile), p,
+        hs.append(open_hist(ROOT, input_file(args, y, relfile), p,
                             f"{prefix}_{sign}_{y}", require_sumw2=args.mc_only))
     out = hs[0].Clone(f"{prefix}_{sign}_{era_name(args.era)}"); out.SetDirectory(0)
     if int(out.GetSumw2N()) == 0: out.Sumw2()
@@ -273,7 +301,8 @@ def fmt(x):
 def main(argv=None):
     p=argparse.ArgumentParser(description="BJet OS/SS: QCD MC overlaid with Data - nonQCD BKG")
     p.add_argument("--era",required=True,choices=list(ERA_GROUPS)); p.add_argument("--base-dir",default=BASE); p.add_argument("--output-dir",default=OUT); p.add_argument("--trigger",default="")
-    p.add_argument("--qcd-file",default="NIsoMuon_QCD_Inclusive.root",help="QCD ROOT filename in each era directory")
+    p.add_argument("--qcd-file",default="NIsoMuon_QCD_Inclusive.root",
+                   help="QCD ROOT filename relative to each era directory. MuEnriched pT-bin names are resolved per era.")
     p.add_argument("--mc-only",action="store_true",help="Read and plot QCD MC only")
     p.add_argument("--per-era",action="store_true",help="With --mc-only, plot group members separately and fit integrated ratios across eras")
     p.add_argument("--muon-id",default="POGMedium"); p.add_argument("--jet-id",default="tight"); p.add_argument("--hist-name",default="Dilepton_Mass")
@@ -308,9 +337,10 @@ def draw_comparison(ROOT, args, e):
     qos,qss=qcd(ROOT,args,"OS"),qcd(ROOT,args,"SS")
     qhigh=equal_high_ratio(qos,qss)
     if args.mc_only:
-        print(f"[input] {args.era}: QCD MC only, {args.qcd_file}")
+        sources = [input_file(args, era, args.qcd_file) for era in years(args.era)]
+        print(f"[input] {args.era}: QCD MC only, {', '.join(sources)}")
         summary = mc_integrals(qos, qss)
-        summary["sources"] = [os.path.join(edir(args, era), args.qcd_file) for era in years(args.era)]
+        summary["sources"] = sources
         summary["high_equal_mean"] = (dict(value=qhigh[0], error=qhigh[1])
                                       if all(map(math.isfinite, qhigh)) else None)
         print(f"[11<m<80] QCD MC equal mean (11-30, 30-80)={fmt(qhigh).replace('#pm','+/-')}")
