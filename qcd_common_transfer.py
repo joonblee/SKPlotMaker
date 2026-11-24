@@ -22,6 +22,9 @@ POSTVFP_LUMI_SOURCE = "https://opendata.cern.ch/record/1059/files/2016lumi.txt"
 
 COMMON_STAT_SCHEMA = "NPS26009_QCDStat_v3"
 COMMON_STAT_TREATMENT = "local_nf_fit_bound_plus_shared_mc_transport"
+SHARED_STAT_SCHEMA = "NPS26009_QCDStat_v4"
+SHARED_STAT_TREATMENT = "shared_low_nf_and_mc_transport_with_ss_fit_bound"
+COMMON_MC_METHODS = ("run-shared", "run-common")
 GROUP_ERAS = {
     "Run2": ("2016preVFP", "2016postVFP", "2017", "2018"),
     "Run3": ("2022", "2022EE", "2023", "2023BPix"),
@@ -190,24 +193,64 @@ def validate_common_transfer(transfer, era=None):
     return common
 
 
+def pool_low_data_ratio(records, group):
+    """Form the ratio of summed background-subtracted 5–9 GeV yields."""
+    if set(records) != set(GROUP_ERAS[group]):
+        raise ValueError(f"Run-shared QCD calibration requires all {group} eras")
+    totals = {}
+    for sign in ("os", "ss"):
+        counts = [records[era][f"data_{sign}_low"] for era in GROUP_ERAS[group]]
+        if any(not math.isfinite(c["value"]) or c["value"] <= 0 or
+               not math.isfinite(c["variance"]) or c["variance"] < 0 for c in counts):
+            raise ValueError(f"Invalid low-mass data yield or variance for {group} {sign}")
+        totals[sign] = {key: math.fsum(c[key] for c in counts) for key in ("value", "variance")}
+    os, ss = totals["os"], totals["ss"]
+    ratio = os["value"] / ss["value"]
+    variance = (os["variance"] + ratio ** 2 * ss["variance"]) / ss["value"] ** 2
+    identity = hashlib.sha256(json.dumps((group, records), sort_keys=True,
+                                        allow_nan=False).encode()).hexdigest()
+    return dict(group=group, records=records, totals=totals, ratio=ratio,
+                variance=variance, id=identity)
+
+
+def validate_common_low_data(transfer, group, era=None):
+    saved = transfer["common_low_data"]
+    rebuilt = pool_low_data_ratio(saved["records"], group)
+    if saved != rebuilt:
+        raise ValueError("Run-shared QCD low-mass calibration disagrees with its inputs")
+    for key, expected in (("low_transfer", rebuilt["ratio"]), ("low_variance", rebuilt["variance"])):
+        if not math.isclose(transfer[key], expected, rel_tol=1e-10, abs_tol=1e-15):
+            raise ValueError(f"Applied QCD {key} disagrees with the Run-shared data calibration")
+    if era is not None and any(
+            not math.isclose(transfer["primitive"][key][part], value, rel_tol=1e-8, abs_tol=1e-12)
+            for key, count in saved["records"][era].items() for part, value in count.items()):
+        raise ValueError(f"{era}: Run-shared and local QCD low-mass data inputs disagree")
+    return saved
+
+
 def qcd_stat_components(transfer, low_gradient, mc_gradient, fit_sigma):
     local_nf = abs(low_gradient) * math.sqrt(transfer["low_variance"])
     mc_sigma = abs(mc_gradient) * math.sqrt(transfer["double_ratio_variance"])
     nf_sigma = math.hypot(local_nf, mc_sigma)
-    common = transfer.get("common_transfer") if transfer.get("method") == "run-common" else None
-    local_bound = local_nf + fit_sigma if common else nf_sigma + fit_sigma
-    total = math.hypot(local_bound, mc_sigma) if common else local_bound
+    common = transfer.get("common_transfer")
+    shared_low = transfer.get("common_low_data")
+    local_bound = fit_sigma if shared_low else local_nf + fit_sigma if common else nf_sigma + fit_sigma
+    total = math.hypot(fit_sigma + local_nf, mc_sigma) if shared_low else (
+        math.hypot(local_bound, mc_sigma) if common else local_bound)
+    identity = common["id"] if common else None
+    if shared_low:
+        identity += ":" + shared_low["id"]
     return dict(sigma_nf_stat=nf_sigma, sigma_nf_low_stat=local_nf,
                 sigma_mc_transfer_stat=mc_sigma, sigma_local_stat_bound=local_bound,
                 sigma_stat_bound=total,
                 common_transfer_group=common["group"] if common else None,
-                common_transfer_id=common["id"] if common else None)
+                common_transfer_id=identity,
+                sigma_run_low_stat=local_nf if shared_low else 0.0)
 
 
 def combine_qcd_stat_components(results):
     """Era-local conservative bounds in quadrature; common MC shifts linearly."""
     groups, signatures = {}, {}
-    local_variance = 0.0
     for era, result in results.items():
         group = transfer_group(era)
         identity = result["common_transfer_id"]
@@ -216,7 +259,9 @@ def combine_qcd_stat_components(results):
         if group in signatures and signatures[group] != identity:
             raise ValueError(f"Mixed/stale common QCD transport in {group}; regenerate all affected era templates")
         signatures[group] = identity
-        local_variance += result["sigma_local_stat_bound"] ** 2
-        if identity:
-            groups[group] = groups.get(group, 0.0) + result["sigma_mc_transfer_stat"]
-    return math.sqrt(local_variance + math.fsum(x * x for x in groups.values()))
+        local, low, mc = groups.get(group, (0.0, 0.0, 0.0))
+        groups[group] = (local + result["sigma_local_stat_bound"] ** 2,
+                         low + result.get("sigma_run_low_stat", 0.0),
+                         mc + (result["sigma_mc_transfer_stat"] if identity else 0.0))
+    return math.sqrt(math.fsum((math.sqrt(local) + low) ** 2 + mc ** 2
+                               for local, low, mc in groups.values()))

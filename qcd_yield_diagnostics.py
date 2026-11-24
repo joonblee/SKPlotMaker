@@ -25,7 +25,7 @@ from pathlib import Path
 
 import plotter as p
 from qcd_bkg_estimation import QCD_TRANSFER_LOW_WINDOW, QCD_TRANSFER_HIGH_WINDOW
-from qcd_common_transfer import transfer_method_label
+from qcd_common_transfer import COMMON_MC_METHODS, transfer_method_label
 
 
 def ratio(numerator, denominator):
@@ -164,16 +164,17 @@ def inspect_era(ROOT, cfg, plot_range):
         _, r_high, mc_high = records[1]
         double_mc = ratio(mc_high, mc_low)
         method = (metadata or {}).get("transfer_statistics", {}).get("method", "mc-double-ratio")
-        applied = ((metadata or {})["transfer_statistics"]["mc_double_ratio"] if method == "run-common" else
+        applied = ((metadata or {})["transfer_statistics"]["mc_double_ratio"] if method in COMMON_MC_METHODS else
                    1.0 if method == "data-low" else double_mc)
-        transported = None if r_low is None or applied is None else r_low * applied
+        applied_low = metadata["transfer_statistics"]["low_transfer"] if method == "run-shared" else r_low
+        transported = None if applied_low is None or applied is None else applied_low * applied
         print(f"\n[transfer/current] method={transfer_method_label(method)}, R_low_data={fmt(r_low)}, R_low_MC={fmt(mc_low)}, "
               f"R_high_data={fmt(r_high)}, R_high_MC={fmt(mc_high)}, "
               f"MC-double-ratio={fmt(double_mc)}, applied-transport={fmt(applied)}, T_high={fmt(transported)}, "
               f"T_high/R_high_data={fmt(ratio(transported, r_high))}")
         if metadata is not None:
             transfer = metadata["transfer_statistics"]
-            if method == "run-common":
+            if method in COMMON_MC_METHODS:
                 common = transfer["common_transfer"]
                 print(f"[transfer/common] group={common['group']}, D={common['double_ratio']:.6g}, "
                       f"chi2/ndf={common['chi2']:.6g}/{common['ndf']}, p={common['pvalue']:.6g}; "

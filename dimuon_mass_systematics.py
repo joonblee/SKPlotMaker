@@ -180,8 +180,8 @@ def qcd_transfer_component(ROOT, cfg, inputs, scale):
                 raise RuntimeError(f"Could not open {filename}")
             basis = p.read_qcd_stat_inputs(f, year, p.hist_path(cfg, p.base_region(cfg)))
             transfer = basis[0]["transfer_statistics"]
-            if transfer.get("method") != "run-common":
-                raise RuntimeError(f"{year}: QCD_MCTransferStat_Run2 requires run-common QCD metadata.")
+            if transfer.get("method") not in ("run-common", "run-shared"):
+                raise RuntimeError(f"{year}: QCD_MCTransferStat_Run2 requires common QCD MC transport metadata.")
             common = transfer["common_transfer"]
             if identity is not None and identity != common["id"]:
                 raise RuntimeError("Mixed Run-2 QCD common-transfer identities.")

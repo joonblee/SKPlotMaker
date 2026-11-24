@@ -85,6 +85,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from qcd_common_transfer import (
     COMMON_STAT_SCHEMA, COMMON_STAT_TREATMENT, combine_qcd_stat_components,
+    COMMON_MC_METHODS, SHARED_STAT_SCHEMA, SHARED_STAT_TREATMENT, validate_common_low_data,
     qcd_stat_components, validate_common_transfer, transfer_method_label,
     POSTVFP_DATA_LUMI_FB, POSTVFP_MC_LUMI_FB, POSTVFP_LUMI_SOURCE,
 )
@@ -102,7 +103,7 @@ QCD_TRANSFER_LOW_WINDOW = (5.0, 9.0)
 def qcd_transfer_factors(transfer, era=None):
     """Audit the producer's selected transport; missing method means the default."""
     method = transfer.get("method", "mc-double-ratio")
-    if method not in ("run-common", "mc-double-ratio", "data-low"):
+    if method not in (*COMMON_MC_METHODS, "mc-double-ratio", "data-low"):
         raise ValueError(f"Unsupported QCD transfer method: {method}")
     primitive = transfer["primitive"]
     def value(name):
@@ -114,7 +115,9 @@ def qcd_transfer_factors(transfer, era=None):
     mc_low = value("mc_os_low") / value("mc_ss_low")
     mc_high = value("mc_os_high") / value("mc_ss_high")
     double_ratio = mc_high / mc_low
-    common = validate_common_transfer(transfer, era) if method == "run-common" else None
+    common = validate_common_transfer(transfer, era) if method in COMMON_MC_METHODS else None
+    if method == "run-shared":
+        data_low = validate_common_low_data(transfer, common["group"], era)["ratio"]
     applied_ratio = (common["double_ratio"] if common else
                      double_ratio if method == "mc-double-ratio" else 1.0)
     for key, expected in (("low_transfer", data_low),
@@ -130,9 +133,11 @@ def qcd_transfer_factors(transfer, era=None):
     return data_low, mc_low, mc_high
 
 def validate_qcd_stat_metadata(metadata, era=None, template_path=None):
-    common_method = metadata.get("transfer_statistics", {}).get("method") == "run-common"
-    schema = COMMON_STAT_SCHEMA if common_method else QCD_STAT_SCHEMA
-    treatment = COMMON_STAT_TREATMENT if common_method else QCD_STAT_TREATMENT
+    method = metadata.get("transfer_statistics", {}).get("method")
+    schema, treatment = {
+        "run-shared": (SHARED_STAT_SCHEMA, SHARED_STAT_TREATMENT),
+        "run-common": (COMMON_STAT_SCHEMA, COMMON_STAT_TREATMENT),
+    }.get(method, (QCD_STAT_SCHEMA, QCD_STAT_TREATMENT))
     if metadata.get("schema") != schema:
         raise ValueError("Missing/obsolete QCD statistical metadata; rerun qcd_bkg_estimation.py in ss-data mode.")
     if metadata.get("treatment") != treatment:
@@ -1525,7 +1530,7 @@ def add_qcd_stat_uncertainty(ROOT, cfg, years, by_year, stat, scale, transfers=N
             data_low, mc_low, mc_high = qcd_transfer_factors(transfer)
             windows, _ = qcd_transfer_windows(inputs)
             method = transfer.get("method", "mc-double-ratio")
-            recipe = (f"R_data*D_common({transfer['common_transfer']['group']})" if method == "run-common" else
+            recipe = (f"R_data*D_common({transfer['common_transfer']['group']})" if method in COMMON_MC_METHODS else
                       "R_data*R_MC_high/R_MC_low" if method == "mc-double-ratio" else "R_data(low)")
             print(f"[qcd-transfer-check] {year}: {windows[0][0]:g}--{windows[0][1]:g} GeV R_data={data_low:.6g}, "
                   f"R_MC={mc_low:.6g}; {windows[1][0]:g}--{windows[1][1]:g} GeV R_MC={mc_high:.6g}, "
@@ -1547,14 +1552,15 @@ def add_qcd_stat_uncertainty(ROOT, cfg, years, by_year, stat, scale, transfers=N
                                                     float(nominal.GetBinContent(ib)) / factor)
                 bin_results[ib - 1][year] = dict(result,
                     sigma_local_stat_bound=abs(factor) * result["sigma_local_stat_bound"],
-                    sigma_mc_transfer_stat=abs(factor) * result["sigma_mc_transfer_stat"])
+                    sigma_mc_transfer_stat=abs(factor) * result["sigma_mc_transfer_stat"],
+                    sigma_run_low_stat=abs(factor) * result["sigma_run_low_stat"])
         except (ValueError, KeyError, TypeError, OverflowError) as exc:
             raise RuntimeError(f"{year}: {filename}: {exc}") from exc
         finally:
             if f:
                 f.Close()
     variances = [combine_qcd_stat_components(results) ** 2 for results in bin_results]
-    print("[stat-check] QCD: era-local NF/SS-fit bound; common MC transport correlated within Run; legacy era statistics independent")
+    print("[stat-check] QCD: shared transfer statistics correlated within Run; SS-fit statistics are era-local")
     return Uncertainty(low=[math.sqrt(a * a + v) for a, v in zip(stat.low, variances)],
                        high=[math.sqrt(a * a + v) for a, v in zip(stat.high, variances)])
 

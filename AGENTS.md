@@ -108,12 +108,14 @@ python3 qcd_bkg_estimation.py --mode ss-data --year <ERA>
 
 The SS fit produces the central template plus normalisation and analytic-function-envelope shape variations.
 
-The default transfer method is `run-common`: keep the SS fit and `R_data(low)`
-era-local, and use one GLS-fitted MC high/low double ratio per Run 2 or Run 3.
+The default transfer method is `run-shared`: keep the SS fit era-local,
+pool low-mass background-subtracted OS and SS yields within each Run, and use
+one GLS-fitted MC high/low double ratio per Run. `run-common` retains era-local
+`R_data(low)` with Run-common MC transport.
 `--validate-qcd-double-ratio` is MC-only and writes compatibility reports without
 changing fits, anchors or ROOT templates. Read `qcd_common_transfer.py` before
-changing the common fit/statistics; its MC component is correlated within Run,
-and v3 consumers must preserve that correlation. The previous per-era method
+changing the common fit/statistics. The common MC component and the pooled
+low-data component in v4 are correlated within each Run. The previous per-era method
 remains available as `--transfer-method era-specific`. The old option
 `--qcd-transfer-method` and value `mc-double-ratio` remain aliases. Per-era ROOT
 metadata retain `mc-double-ratio` for consumer compatibility; do not change

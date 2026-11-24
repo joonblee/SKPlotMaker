@@ -95,7 +95,7 @@ class Function:
         return step/3 * math.fsum((1 if i in (0, n) else 4 if i%2 else 2)*f(low+i*step) for i in range(n+1))
 
 
-def transfer_and_inputs(method="run-common", era="2016postVFP"):
+def transfer_and_inputs(method="run-common", era="2016postVFP", common_low_data=None):
     rec = records()
     def mc_hist(row, sign):
         lo, hi = row[f"mc_{sign}_low"], row[f"mc_{sign}_high"]
@@ -111,11 +111,13 @@ def transfer_and_inputs(method="run-common", era="2016postVFP"):
     ms, mo = histograms[era, "ss"], histograms[era, "os"]
     common = c.fit_common_double_ratio(rec, "Run2", WINDOWS)
     nf = SimpleNamespace(GetNbinsX=lambda: 1, GetBinContent=lambda i: .2, GetBinError=lambda i: .01)
+    local_counts = (common_low_data["records"][era], 1.) if common_low_data else None
     transfer = q.diagnostic_transfer_statistics(hist(100., 40.), hist(250., 90.), ms, mo, hist(20., 10.),
                     SimpleNamespace(Get=lambda name: nf), method=method,
-                    common_transfer=common if method == "run-common" else None)
-    metadata = dict(schema=c.COMMON_STAT_SCHEMA if method == "run-common" else q.QCD_STAT_SCHEMA,
-                    treatment=c.COMMON_STAT_TREATMENT if method == "run-common" else q.QCD_STAT_TREATMENT,
+                    common_transfer=common if method in c.COMMON_MC_METHODS else None,
+                    common_low_data=common_low_data, low_data_counts=local_counts)
+    schema, treatment = q.qcd_stat_format(method)
+    metadata = dict(schema=schema, treatment=treatment,
                     era=era, template_path="OS/mass", basis=q.QCD_STAT_BASIS,
                     fit=FIT, transfer_statistics=transfer)
     rows = q.build_qcd_stat_basis(metadata, Hist(), Function())
@@ -447,13 +449,39 @@ class CommonTransferTests(unittest.TestCase):
         per_era = {era: p.qcd_root_window_statistics(inputs[era], 11., 15.) for era in years}
         self.assertAlmostEqual(result.low[3], c.combine_qcd_stat_components(per_era))
 
+    def test_run_shared_templates_use_same_factor_and_preserve_local_yields(self):
+        group = "Run2"
+        run_inputs = {}
+        for era in c.GROUP_ERAS[group]:
+            transport, metadata, _ = transfer_and_inputs(era=era)
+            run_inputs[era] = {key: transport["primitive"][key].copy()
+                               for key in ("data_os_low", "data_ss_low")}
+        run_inputs["2018"]["data_os_low"]["value"] = 350.0
+        pooled = c.pool_low_data_ratio(run_inputs, group)
+        self.assertEqual(pooled["ratio"], (250. * 3 + 350.) / 400.)
+        results = {}
+        for era in ("2016preVFP", "2018"):
+            t, meta, inputs = transfer_and_inputs("run-shared", era, pooled)
+            self.assertEqual(t["low_transfer"], pooled["ratio"])
+            self.assertEqual(t["high_transfer"], pooled["ratio"] * t["mc_double_ratio"])
+            q.validate_qcd_stat_metadata(meta, era)
+            result = p.qcd_root_window_statistics(inputs, 11., 15.)
+            self.assertGreater(result["sigma_run_low_stat"], 0.)
+            results[era] = c.qcd_stat_components(t, 10., 20., 3.)
+            self.assertEqual(results[era]["sigma_local_stat_bound"], 3.)
+        single = results["2018"]
+        combined = math.hypot(math.sqrt(2) * 3. + 2 * single["sigma_run_low_stat"],
+                              2 * single["sigma_mc_transfer_stat"])
+        self.assertAlmostEqual(c.combine_qcd_stat_components(results), combined)
+
     def test_validation_only_never_fits_or_writes_templates(self):
         args = q.build_parser().parse_args(["--mode", "ss-data", "--year", "Run2+3", "--validate-qcd-double-ratio"])
-        self.assertEqual(args.qcd_transfer_method, "run-common")
+        self.assertEqual(args.qcd_transfer_method, "run-shared")
         def report(root, arg, group): return c.fit_common_double_ratio(records(group), group, WINDOWS)
         with patch.object(q, "import_root", return_value=object()), \
              patch.object(q, "read_common_qcd_transfer", side_effect=report) as reader, \
              patch.object(q, "write_common_qcd_validation") as writer, \
+             patch.object(q, "read_common_qcd_low_data", side_effect=AssertionError("must not read data")), \
              patch.object(q, "declare_fit_functions", side_effect=AssertionError("must not fit")), \
              patch.object(q, "save_ss_fit_anchors", side_effect=AssertionError("must not write anchors")), \
              patch.object(q, "write_ss_background_root", side_effect=AssertionError("must not write templates")):

@@ -53,8 +53,9 @@ Fit modes and objectives
       Bin-integrated statistical chi-square; produces the central SS-based QCD
       template plus Norm and analytic-function-envelope Shape variations,
       and QCDStat/metadata for statistical yield propagation.
-      --transfer-method run-common (default) transports era-local R_data(low)
+      --transfer-method run-shared (default) transports a Run-wide R_data(low)
       to high mass with a common Run2/Run3 MC double ratio fitted in log space.
+      run-common keeps the low-mass data calibration era-local.
       era-specific retains the previous per-era MC transport. data-low uses R_data(low) in
       both regions, with no MC transport statistical uncertainty. QCD_norm
       retains the low-mass data/MC log-symmetric modelling comparison.
@@ -141,7 +142,7 @@ Main optional controls
   --mc-fit-range LOW HIGH          default: 5 80; MC only
   --mc-plot-range LOW HIGH         default: 5 80; MC only
   --power-exp-n-soft-width WIDTH   all MC objectives: default 0.2; 0 disables
-  --transfer-method {run-common,era-specific,data-low}
+  --transfer-method {run-shared,run-common,era-specific,data-low}
       --qcd-transfer-method and mc-double-ratio remain compatibility aliases
   --data-period {F,G,H}           2016postVFP SS-only period diagnostic;
                                  reads Skim_NIsoMuon_SingleMuon_<PERIOD>.root
@@ -231,9 +232,10 @@ and normalisation modelling variations with first-order NF-stat and fit-stat.
 Every individual-era SS production also writes covariance and native-bin yield
 derivative histograms under QCDStat/. The ROOT-free qcd_common_transfer.py module
 contains the common-factor fit and cross-era statistical rules; downstream
-consumers sum saved derivatives over their actual windows. Run-common transport
-uses an era-local low-NF + SS-fit linear bound, plus an independent MC component
-correlated within each Run. Legacy methods retain sigma_NFstat + sigma_fitStat.
+consumers sum saved derivatives over their actual windows. Run-shared transport
+correlates both the pooled data calibration and MC transport within each Run.
+Run-common retains the era-local low-NF plus SS-fit bound and the shared MC term.
+Era-specific methods retain sigma_NFstat + sigma_fitStat.
 The original norm/shape variations remain.
 No separate statistical script is required. Missing DY NF-stat metadata or unreliable central-fit covariance stops output before replacement.
 The default mass windows are 12, 30 and 70 GeV with a +/-1% half-width:
@@ -273,12 +275,15 @@ import shutil
 import sys
 import tempfile
 from array import array
+from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from qcd_common_transfer import (
     COMMON_STAT_SCHEMA, COMMON_STAT_TREATMENT, GROUP_ERAS, MC_KEYS,
+    COMMON_MC_METHODS, SHARED_STAT_SCHEMA, SHARED_STAT_TREATMENT,
+    pool_low_data_ratio, validate_common_low_data,
     fit_common_double_ratio, qcd_stat_components, transfer_group, validate_common_transfer,
     transfer_method_label, POSTVFP_DATA_RUNS, POSTVFP_DATA_LUMI_FB,
     POSTVFP_MC_LUMI_FB, POSTVFP_LUMI_SOURCE,
@@ -287,7 +292,7 @@ from qcd_common_transfer import (
 QCD_STAT_SCHEMA = "NPS26009_QCDStat_v2"
 QCD_STAT_PATH = "QCDStat/metadata"
 QCD_STAT_TREATMENT = "linear_bound_unknown_nf_fit_correlation"
-QCD_TRANSFER_METHODS = ("run-common", "mc-double-ratio", "data-low")
+QCD_TRANSFER_METHODS = (*COMMON_MC_METHODS, "mc-double-ratio", "data-low")
 QCD_STAT_BASIS = (["CentralYield"] + [f"FitGradient_{i}" for i in range(5)]
                   + ["NFGradient_low_transfer", "NFGradient_mc_double_ratio"])
 
@@ -296,7 +301,7 @@ def parse_transfer_method(value):
     """Resolve CLI names without changing stored identifiers or physics rules."""
     method = "mc-double-ratio" if value == "era-specific" else value
     if method not in QCD_TRANSFER_METHODS:
-        raise argparse.ArgumentTypeError("choose run-common, era-specific or data-low")
+        raise argparse.ArgumentTypeError("choose run-shared, run-common, era-specific or data-low")
     return method
 
 # Positive abscissae and weights of 16-point Gauss-Legendre quadrature.
@@ -312,10 +317,17 @@ _GL16 = (
 )
 
 
+def qcd_stat_format(method):
+    if method == "run-shared":
+        return SHARED_STAT_SCHEMA, SHARED_STAT_TREATMENT
+    if method == "run-common":
+        return COMMON_STAT_SCHEMA, COMMON_STAT_TREATMENT
+    return QCD_STAT_SCHEMA, QCD_STAT_TREATMENT
+
+
 def validate_qcd_stat_metadata(metadata, era=None, template_path=None):
-    common_method = metadata.get("transfer_statistics", {}).get("method") == "run-common"
-    schema = COMMON_STAT_SCHEMA if common_method else QCD_STAT_SCHEMA
-    treatment = COMMON_STAT_TREATMENT if common_method else QCD_STAT_TREATMENT
+    method = metadata.get("transfer_statistics", {}).get("method")
+    schema, treatment = qcd_stat_format(method)
     if metadata.get("schema") != schema:
         raise ValueError("Missing/obsolete QCD statistical metadata; rerun qcd_bkg_estimation.py in ss-data mode.")
     if metadata.get("treatment") != treatment:
@@ -355,8 +367,10 @@ def validate_qcd_stat_metadata(metadata, era=None, template_path=None):
     if method == "data-low" and (transfer["mc_double_ratio"] != 1.0
                                   or transfer["double_ratio_variance"] != 0.0):
         raise ValueError("Data-low QCD transfer requires fixed unit transport and zero MC transport variance.")
-    if common_method:
-        validate_common_transfer(transfer, metadata.get("era"))
+    if method in COMMON_MC_METHODS:
+        common = validate_common_transfer(transfer, metadata.get("era"))
+        if method == "run-shared":
+            validate_common_low_data(transfer, common["group"], metadata.get("era"))
     if metadata.get("basis") != QCD_STAT_BASIS:
         raise ValueError("Missing/obsolete QCD derivative basis; regenerate the SS ROOT file.")
     return metadata
@@ -1302,10 +1316,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Full-era luminosity [fb^-1] already included in MC weights; --data-period default: 16.812151722482 from SKFlat Event::GetTriggerLumi(Full).")
     parser.add_argument(
         "--transfer-method", "--qcd-transfer-method", dest="qcd_transfer_method",
-        type=parse_transfer_method, default="run-common",
-        metavar="{run-common,era-specific,data-low}",
-        help=("Individual-era SS-data templates: run-common (default) uses era-local "
-              "R_data(low) times a common Run2/Run3 MC double ratio, fitted in log space. "
+        type=parse_transfer_method, default="run-shared",
+        metavar="{run-shared,run-common,era-specific,data-low}",
+        help=("Individual-era SS-data templates: run-shared (default) pools low-mass data yields "
+              "and uses one MC double ratio per Run. run-common retains era-local low-mass data. "
               "era-specific uses the same era's MC ratio; data-low uses "
               "R_data(low) in both regions, without MC transport statistics. "
               "QCD_norm keeps the low-mass data/MC modelling comparison. "
@@ -4069,43 +4083,122 @@ def write_common_qcd_validation(ROOT, common):
     print(f"[qcd-double-ratio] wrote {output}.json/.csv/.pdf/.png")
 
 
+def data_transfer_histograms(files, f_dy):
+    """Construct the same background-subtracted low-mass inputs in every era."""
+    ss_path, os_path = hist_path(SS_REGION), hist_path(OS_REGION)
+    f_data = files["data"]
+    f_top = files["NIsoMuon_Top"]
+    f_others = files["NIsoMuon_Others"]
+
+    h_data_ss = get_histogram_clone(f_data, ss_path, "hDataSSForNorm")
+    h_top_ss = get_histogram_clone(f_top, ss_path, "hTopSSForNorm")
+    h_others_ss = get_histogram_clone(f_others, ss_path, "hOthersSSForNorm")
+    h_data_os = get_histogram_clone(f_data, os_path, "hDataOSForNorm")
+    h_top_os = get_histogram_clone(f_top, os_path, "hTopOSForNorm")
+    h_others_os = get_histogram_clone(f_others, os_path, "hOthersOSForNorm")
+
+    h_dy_os = get_histogram_clone(f_dy, os_path, "hDYOSForNorm")
+    if any(hist is None for hist in (h_data_ss, h_top_ss, h_others_ss,
+                                      h_data_os, h_top_os, h_others_os, h_dy_os)):
+        raise KeyError("A required data/MC subtraction histogram for QCD transfer is missing.")
+    h_ss = clone_detached(h_data_ss, "hSSForNorm_DataMinusBG")
+    h_os = clone_detached(h_data_os, "hOSForNorm_DataMinusBG")
+    for hist in (h_top_ss, h_others_ss):
+        h_ss.Add(hist, -1.0)
+    for hist in (h_top_os, h_dy_os, h_others_os):
+        h_os.Add(hist, -1.0)
+    return h_data_os, h_ss, h_os, h_dy_os
+
+
+def read_common_qcd_low_data(ROOT, args, group):
+    records = {}
+    for era in GROUP_ERAS[group]:
+        directory = era_dir(args, era)
+        with ExitStack() as stack:
+            files = {}
+            for name in ("data", "NIsoMuon_Top", "NIsoMuon_Others", "NIsoMuon_DYJets_est"):
+                handle = open_root_file(ROOT, directory / f"{name}.root")
+                stack.callback(handle.Close)
+                files[name] = handle
+            f_dy = files["NIsoMuon_DYJets_est"]
+            records[era], extra = subtracted_low_data_counts(files, f_dy)
+            if extra is None:
+                raise ValueError(f"{era}: DYAux/NF_aMC is required for the Run-shared QCD calibration")
+    return pool_low_data_ratio(records, group)
+
+
+def subtracted_low_data_counts(files, f_dy):
+    """Integrate only low-mass bins, even when using the OS data histogram."""
+    counts = {}
+    low, high = QCD_TRANSFER_LOW_WINDOW
+    for sign, region in (("os", OS_REGION), ("ss", SS_REGION)):
+        path = hist_path(region)
+        inputs = [get_required_histogram(files[name], name, path)
+                  for name in ("data", "NIsoMuon_Top", "NIsoMuon_Others")]
+        if sign == "os":
+            h_dy = get_required_histogram(f_dy, "NIsoMuon_DYJets_est", path)
+            inputs.append(h_dy)
+        parts = []
+        for hist in inputs:
+            first, last = diagnostic_bin_range(hist, low, high)
+            axis = hist.GetXaxis()
+            if last < first or not (math.isclose(axis.GetBinLowEdge(first), low, abs_tol=1e-8, rel_tol=0)
+                                    and math.isclose(axis.GetBinUpEdge(last), high, abs_tol=1e-8, rel_tol=0)):
+                raise ValueError("QCD low-mass data window must match native histogram bin edges")
+            parts.append(diagnostic_count_variance(hist, low, high))
+        counts[f"data_{sign}_low"] = dict(value=parts[0][0] - math.fsum(y for y, _ in parts[1:]),
+                                           variance=math.fsum(v for _, v in parts))
+    extra = low_data_dy_nf_variance(h_dy, f_dy)
+    if extra is not None:
+        counts["data_os_low"]["variance"] += extra
+    return counts, extra
+
+
+def low_data_transfer_counts(h_ss, h_os, h_dy_os, f_dy):
+    primitive = {}
+    low, high = QCD_TRANSFER_LOW_WINDOW
+    for sign, hist in (("ss", h_ss), ("os", h_os)):
+        value, variance = diagnostic_count_variance(hist, low, high)
+        primitive[f"data_{sign}_low"] = dict(value=value, variance=variance)
+
+    extra = low_data_dy_nf_variance(h_dy_os, f_dy)
+    if extra is not None:
+        primitive["data_os_low"]["variance"] += extra
+    return primitive, extra
+
+
+def low_data_dy_nf_variance(h_dy_os, f_dy):
+    # DY Sumw2 contains LightJetStat. Add era-specific NFStat once to the
+    # integrated yield; the Run-common DY NF is held fixed in this subtraction.
+    nf = f_dy.Get("DYAux/NF_aMC")
+    if nf and nf.GetNbinsX() == 1:
+        value, error = float(nf.GetBinContent(1)), float(nf.GetBinError(1))
+        if value > 0 and error >= 0 and math.isfinite(value) and math.isfinite(error):
+            if f_dy.Get("DYAux/NFRunCommon"):
+                return 0.0
+            dy_low, _ = diagnostic_count_variance(h_dy_os, *QCD_TRANSFER_LOW_WINDOW)
+            return (dy_low * error / value) ** 2
+    return None
+
+
 def diagnostic_transfer_statistics(h_ss, h_os, h_qcd_ss, h_qcd_os, h_dy_os, f_dy,
-                                   method="mc-double-ratio", common_transfer=None) -> dict:
+                                   method="mc-double-ratio", common_transfer=None, common_low_data=None,
+                                   low_data_counts=None) -> dict:
     """First-order propagation of independent primitive Sumw2 inputs."""
     if method not in QCD_TRANSFER_METHODS:
         raise ValueError(f"Unsupported QCD transfer method: {method}")
-    primitive = {}
-    for name, hist, window in (
-        ("data_ss_low", h_ss, QCD_TRANSFER_LOW_WINDOW),
-        ("data_os_low", h_os, QCD_TRANSFER_LOW_WINDOW),
-        ("mc_ss_low", h_qcd_ss, QCD_TRANSFER_LOW_WINDOW),
-        ("mc_os_low", h_qcd_os, QCD_TRANSFER_LOW_WINDOW),
-        ("mc_ss_high", h_qcd_ss, QCD_TRANSFER_HIGH_WINDOW),
-        ("mc_os_high", h_qcd_os, QCD_TRANSFER_HIGH_WINDOW),
-    ):
-        value, variance = diagnostic_count_variance(hist, *window)
-        if value <= 0:
+    primitive, dy_extra_variance = (low_data_counts if low_data_counts is not None else
+                                    low_data_transfer_counts(h_ss, h_os, h_dy_os, f_dy))
+    primitive = dict(primitive)
+    for sign, hist in (("ss", h_qcd_ss), ("os", h_qcd_os)):
+        for region, window in (("low", QCD_TRANSFER_LOW_WINDOW), ("high", QCD_TRANSFER_HIGH_WINDOW)):
+            value, variance = diagnostic_count_variance(hist, *window)
+            primitive[f"mc_{sign}_{region}"] = dict(value=value, variance=variance)
+    for name, count in primitive.items():
+        if count["value"] <= 0:
             raise ValueError(f"Non-positive {name} in diagnostic transfer propagation")
-        primitive[name] = dict(value=value, variance=variance)
-
-    # DY template Sumw2 contains LightJetStat. An era-specific NFStat is
-    # propagated once on the integrated low-mass DY yield.
-    warnings = []
-    nf = f_dy.Get("DYAux/NF_aMC")
-    complete = bool(nf) and nf.GetNbinsX() == 1
-    dy_extra_variance = None
-    dy_nf_common = f_dy.Get("DYAux/NFRunCommon")
-    if complete:
-        value, error = float(nf.GetBinContent(1)), float(nf.GetBinError(1))
-        complete = value > 0 and error >= 0 and math.isfinite(value) and math.isfinite(error)
-        if complete:
-            dy_low, _ = diagnostic_count_variance(h_dy_os, *QCD_TRANSFER_LOW_WINDOW)
-            # The common-DY model uses the fitted NF as a fixed prefit input.
-            # Its statistical error cannot enter as independent era variance.
-            dy_extra_variance = 0.0 if dy_nf_common else (dy_low * error / value) ** 2
-            primitive["data_os_low"]["variance"] += dy_extra_variance
-    if not complete:
-        warnings.append("DYAux/NF_aMC is missing/invalid; NF-stat is unavailable, not zero.")
+    complete = dy_extra_variance is not None
+    warnings = [] if complete else ["DYAux/NF_aMC is missing/invalid; NF-stat is unavailable, not zero."]
 
     get = lambda name: primitive[name]["value"]
     relative = lambda name: primitive[name]["variance"] / get(name) ** 2
@@ -4116,7 +4209,11 @@ def diagnostic_transfer_statistics(h_ss, h_os, h_qcd_ss, h_qcd_os, h_dy_os, f_dy
         ("mc_os_high", "mc_ss_high", "mc_ss_low", "mc_os_low"))
     # These legacy keys describe the APPLIED transport in downstream statistics.
     # Preserve the measured MC ratio separately when it is not applied.
-    if method == "run-common":
+    if method == "run-shared":
+        if common_low_data is None:
+            raise ValueError("Run-shared QCD transfer needs a full-Run low-mass data calibration")
+        low_transfer, low_variance = common_low_data["ratio"], common_low_data["variance"]
+    if method in COMMON_MC_METHODS:
         if common_transfer is None:
             raise ValueError("Run-common QCD transport needs a validated full-Run MC fit")
         mc_double_ratio, double_variance = common_transfer["double_ratio"], common_transfer["variance"]
@@ -4133,8 +4230,10 @@ def diagnostic_transfer_statistics(h_ss, h_os, h_qcd_ss, h_qcd_os, h_dy_os, f_dy
                 high_variance=mc_double_ratio ** 2 * low_variance + low_transfer ** 2 * double_variance,
                 low_high_covariance=mc_double_ratio * low_variance,
                 dy_nf_extra_variance=dy_extra_variance, complete=complete, warnings=warnings)
-    if common_transfer is not None and method == "run-common":
+    if method in COMMON_MC_METHODS:
         result["common_transfer"] = common_transfer
+    if method == "run-shared":
+        result["common_low_data"] = common_low_data
     return result
 
 
@@ -4338,9 +4437,13 @@ def build_qcd_stat_metadata(ROOT, args, selected, transfer_stats):
         raise RuntimeError("QCD statistical covariance propagation is unavailable: "
                            + "; ".join(fit["warnings"])
                            + ". The central fit was not changed; existing ROOT files were not overwritten.")
-    common_method = transfer_stats["method"] == "run-common"
-    metadata = dict(schema=COMMON_STAT_SCHEMA if common_method else QCD_STAT_SCHEMA,
-                    treatment=COMMON_STAT_TREATMENT if common_method else QCD_STAT_TREATMENT, basis=QCD_STAT_BASIS,
+    method = transfer_stats["method"]
+    schema, treatment = qcd_stat_format(method)
+    statistical_treatment = {
+        "run-shared": "Run-shared low-NF and MC statistics; conservative low-NF/SS-fit covariance bound.",
+        "run-common": "Era-local low-NF + SS-fit bound; independent common MC component added in quadrature.",
+    }
+    metadata = dict(schema=schema, treatment=treatment, basis=QCD_STAT_BASIS,
                     era=args.year, template_path=hist_path(OS_REGION),
                     fit=dict(model=selected.model.key, **fit),
                     transfer_statistics=transfer_stats,
@@ -4350,10 +4453,7 @@ def build_qcd_stat_metadata(ROOT, args, selected, transfer_stats):
                     ss_max_bin_width=args.ss_max_bin_width,
                     assumptions=["First-order fit covariance and primitive Sumw2 propagation.",
                                  "NF-stat and SS fit-stat share SS data; their cross-covariance is unknown.",
-                                 ("Era-local low-NF + SS-fit bound; independent common MC component added in quadrature."
-                                  if common_method else "sigma_nf_stat + sigma_fit_stat bounds their first-order standard deviation."),
-                                 ("Common MC transport is correlated within each Run; era-local bounds are independent."
-                                  if common_method else "Independent eras; modelling nuisances remain separate."),
+                                 statistical_treatment.get(method, "Independent eras; NF-stat + SS-fit bound."),
                                  "Not a coverage test or a simultaneous control-region likelihood."])
     validate_qcd_stat_metadata(metadata, args.year, hist_path(OS_REGION))
     t = transfer_stats["low_transfer"]
@@ -4434,39 +4534,14 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
 
     ss_path = hist_path(SS_REGION)
     os_path = hist_path(OS_REGION)
-    f_data = files["data"]
-    f_top = files["NIsoMuon_Top"]
-    f_others = files["NIsoMuon_Others"]
-
-    h_data_ss = get_histogram_clone(f_data, ss_path, "hDataSSForNorm")
-    h_top_ss = get_histogram_clone(f_top, ss_path, "hTopSSForNorm")
-    h_others_ss = get_histogram_clone(f_others, ss_path, "hOthersSSForNorm")
-    h_data_os = get_histogram_clone(f_data, os_path, "hDataOSForNorm")
-    h_top_os = get_histogram_clone(f_top, os_path, "hTopOSForNorm")
-    h_others_os = get_histogram_clone(f_others, os_path, "hOthersOSForNorm")
-
     f_dy_est = open_root_file(ROOT, directory / "NIsoMuon_DYJets_est.root")
     f_qcd = open_root_file(ROOT, directory / "NIsoMuon_QCD_Inclusive.root")
     try:
-        h_dy_os = get_histogram_clone(f_dy_est, os_path, "hDYOSForNorm")
+        h_data_os, h_ss, h_os, h_dy_os = data_transfer_histograms(files, f_dy_est)
         h_qcd_ss = get_histogram_clone(f_qcd, ss_path, "hQCDSSForTransfer")
         h_qcd_os = get_histogram_clone(f_qcd, os_path, "hQCDOSForTransfer")
-        required = [
-            h_data_ss, h_top_ss, h_others_ss,
-            h_data_os, h_top_os, h_dy_os, h_others_os,
-            h_qcd_ss, h_qcd_os,
-        ]
-        if any(hist is None for hist in required):
-            raise KeyError("A required SS/OS transfer-factor histogram is missing.")
-
-        # Match os_ss_comparison.py: no DY subtraction in SS; use the
-        # data-driven DY estimate in OS.
-        h_ss = clone_detached(h_data_ss, "hSSForNorm_DataMinusBG")
-        h_os = clone_detached(h_data_os, "hOSForNorm_DataMinusBG")
-        for hist in (h_top_ss, h_others_ss):
-            h_ss.Add(hist, -1.0)
-        for hist in (h_top_os, h_dy_os, h_others_os):
-            h_os.Add(hist, -1.0)
+        if not h_qcd_ss or not h_qcd_os:
+            raise KeyError("A required QCD MC transfer-factor histogram is missing.")
 
         low_min, low_max = QCD_TRANSFER_LOW_WINDOW
         high_min, high_max = QCD_TRANSFER_HIGH_WINDOW
@@ -4492,16 +4567,17 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
         mc_low_ratio = mc_os_low / mc_ss_low
         mc_high_ratio = mc_os_high / mc_ss_high
 
-        # Low mass uses the data-measured OS/SS ratio. At high mass, the default
-        # transports that calibration with the QCD-MC double ratio; data-low
-        # applies the same data ratio directly.
-        low_normalisation = dt_low_ratio
         method = args.qcd_transfer_method
-        common_transfer = (args._qcd_common_transfers[transfer_group(args.year)]
-                           if method == "run-common" else None)
-        transport = (common_transfer["double_ratio"] if method == "run-common" else
-                     mc_high_ratio / mc_low_ratio if method == "mc-double-ratio" else 1.0)
-        high_normalisation = dt_low_ratio * transport
+        group = transfer_group(args.year)
+        common_transfer = args._qcd_common_transfers[group] if method in COMMON_MC_METHODS else None
+        common_low_data = args._qcd_common_low_data[group] if method == "run-shared" else None
+        transfer_stats = diagnostic_transfer_statistics(
+            h_ss, h_os, h_qcd_ss, h_qcd_os, h_dy_os, f_dy_est, method=method,
+            common_transfer=common_transfer, common_low_data=common_low_data,
+            low_data_counts=subtracted_low_data_counts(files, f_dy_est) if common_low_data else None,
+        )
+        low_normalisation = transfer_stats["low_transfer"]
+        high_normalisation = transfer_stats["high_transfer"]
         for label, value in (
             ("low-mass QCD OS/SS transfer factor", low_normalisation),
             ("high-mass corrected QCD OS/SS transfer factor", high_normalisation),
@@ -4527,10 +4603,6 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
         high_transfer_down = high_normalisation * high_norm_down
         high_transfer_up = high_normalisation * high_norm_up
 
-        transfer_stats = diagnostic_transfer_statistics(
-            h_ss, h_os, h_qcd_ss, h_qcd_os, h_dy_os, f_dy_est, method=method,
-            common_transfer=common_transfer,
-        )
         stat_metadata = build_qcd_stat_metadata(
             ROOT, args, selected_by_key[SS_NOMINAL_MODEL], transfer_stats
         )
@@ -4547,11 +4619,9 @@ def write_ss_background_root(ROOT, args: argparse.Namespace, directory: Path, fi
             f"[fit.root] QCD MC OS/SS, {high_min:g}<m<{high_max:g} = "
             f"{mc_high_ratio:g}"
         )
-        print(
-            "[fit.root] Low-mass central OS/SS = DT(low) = "
-            f"{low_normalisation:g}"
-        )
-        high_recipe = (f"DT(low) * D_common({common_transfer['group']})" if method == "run-common" else
+        data_recipe = f"DT(low, {group})" if method == "run-shared" else "DT(low)"
+        print(f"[fit.root] Low-mass central OS/SS = {data_recipe} = {low_normalisation:g}")
+        high_recipe = (f"{data_recipe} * D_common({group})" if method in COMMON_MC_METHODS else
                        "DT(low) * MC(high) / MC(low)" if method == "mc-double-ratio" else "DT(low)")
         print(f"[fit.root] QCD transfer method = {transfer_method_label(method)}")
         print(f"[fit.root] High-mass central OS/SS = {high_recipe} = {high_normalisation:g}")
@@ -4784,10 +4854,10 @@ def run(args: argparse.Namespace) -> int:
         raise ValueError("--transfer-method data-low requires an individual-era ss-data template run; combined periods write only anchors.")
     if not math.isfinite(args.qcd_transfer_validation_pmin) or not 0 < args.qcd_transfer_validation_pmin < 1:
         raise ValueError("--qcd-transfer-validation-pmin must be between 0 and 1")
-    if args.qcd_transfer_log_covariance and args.qcd_transfer_method != "run-common":
-        raise ValueError("--qcd-transfer-log-covariance applies only to run-common")
-    if args.validate_qcd_double_ratio and (mode.key != SS_MODE.key or args.qcd_transfer_method != "run-common"):
-        raise ValueError("--validate-qcd-double-ratio requires ss-data mode with run-common")
+    if args.qcd_transfer_log_covariance and args.qcd_transfer_method not in COMMON_MC_METHODS:
+        raise ValueError("--qcd-transfer-log-covariance requires run-shared or run-common")
+    if args.validate_qcd_double_ratio and (mode.key != SS_MODE.key or args.qcd_transfer_method not in COMMON_MC_METHODS):
+        raise ValueError("--validate-qcd-double-ratio requires ss-data mode with run-shared or run-common")
     objective = resolve_objective(args.fit_objective, mode)
     soft_width = resolve_power_exp_n_soft_width(args, mode, objective)
     if (args.diagnostic_cards or args.diagnostic_output) and not args.uncertainty_diagnostics:
@@ -4798,7 +4868,7 @@ def run(args: argparse.Namespace) -> int:
         args._diagnostic_windows = diagnostic_windows(args)
     ROOT = import_root()
     if args.validate_qcd_double_ratio or (diagnostic is None and mode.key == SS_MODE.key and len(input_dirs(args)) == 1
-                                        and args.qcd_transfer_method == "run-common" and not args.inspect_binning):
+                                        and args.qcd_transfer_method in COMMON_MC_METHODS and not args.inspect_binning):
         groups = list(dict.fromkeys(transfer_group(era) for era in selected_eras(args.year)))
         args._qcd_common_transfers = {}
         for group in groups:
@@ -4812,6 +4882,15 @@ def run(args: argparse.Namespace) -> int:
         if failed and not args.allow_incompatible_qcd_transfer:
             raise ValueError(f"Common QCD transport is statistically incompatible in {failed}; ROOT templates were not overwritten. "
                              "Inspect the validation report; --allow-incompatible-qcd-transfer explicitly overrides this check.")
+        if args.qcd_transfer_method == "run-shared":
+            args._qcd_common_low_data = {}
+            for group in groups:
+                low = read_common_qcd_low_data(ROOT, args, group)
+                args._qcd_common_low_data[group] = low
+                d = args._qcd_common_transfers[group]["double_ratio"]
+                print(f"[qcd-run-shared] {group}: R_data(low)={low['ratio']:.8g} "
+                      f"+/- {math.sqrt(low['variance']):.6g}; D_common={d:.8g}; "
+                      f"T_high={low['ratio'] * d:.8g}")
     declare_fit_functions(ROOT)
     configure_minimizer(ROOT)
 
