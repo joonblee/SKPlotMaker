@@ -996,11 +996,15 @@ python3 os_ss_comparison.py --era full --scan-qcd-samples
 The terminal table reports the four weighted OS and SS yields in 5--9 and
 11--80 GeV with their stored Sumw2 statistical errors, the two OS/SS ratios,
 and their double ratio. Era totals and Run-level sample totals are formed by
-summing yields and variances before dividing. The Run-level sample rows show
-how many eras supplied that pT bin. For complete Runs, the scan also fits the
-era double ratios in log space and compares the two Run-common values using
-independent MC statistics. This mode reads individual MC files and prints
-to the terminal.
+summing the available yields and variances before dividing. If an OS or SS
+histogram is absent, its cells are marked `missing` and any available cells
+from the same file are still counted. The scan compares the totals with the
+merged inclusive QCD file when it is present. The Run-level sample rows show
+how many eras supplied that pT bin. For complete Runs, the scan fits the era
+double ratios in log space and compares the two Run-common values using
+independent MC statistics. When all eight eras are available, the comparison
+is repeated with the pT bins that have files in every era. This MC diagnostic
+prints to the terminal.
 
 For custom OS/SS mass bins, pass space-separated edges in GeV:
 

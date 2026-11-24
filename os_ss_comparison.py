@@ -37,6 +37,8 @@ reports constant fits across eras for the integrated ratios.
 --scan-qcd-samples prints weighted OS/SS yields and MC statistical errors
 in 5--9 and 11--80 GeV for every QCD MuEnriched pT-bin file. It also prints
 era totals, Run-level sample totals and the Run-common MC double-ratio fits.
+Missing sign histograms are reported and omitted sign by sign. For both Runs,
+the scan repeats the comparison using only pT bins with files in all eras.
 This is a console-only MC diagnostic.
 """
 
@@ -113,12 +115,16 @@ def input_file(args, year, relfile):
         return preferred
     return requested if os.path.isfile(requested) else preferred
 
-def open_hist(ROOT, fn, path, name, require_sumw2=False):
+def open_hist(ROOT, fn, path, name, require_sumw2=False, allow_missing=False):
     if not os.path.isfile(fn): raise PlotError(f"Missing ROOT file: {fn}")
     f = ROOT.TFile.Open(fn, "READ")
     if not f or f.IsZombie(): raise PlotError(f"Could not open ROOT file: {fn}")
     h = f.Get(path)
-    if not h: f.Close(); raise PlotError(f"Missing histogram: {fn}:{path}")
+    if not h:
+        f.Close()
+        if allow_missing:
+            return None
+        raise PlotError(f"Missing histogram: {fn}:{path}")
     if require_sumw2 and h.GetSumw2N() == 0:
         f.Close()
         raise PlotError(f"Missing stored Sumw2: {fn}:{path}")
@@ -211,6 +217,8 @@ def mc_yields(hos, hss):
     primitive = {}
     for label, (low, high) in QCD_WINDOWS.items():
         for sign, hist in (("os", hos), ("ss", hss)):
+            if hist is None:
+                continue
             axis = hist.GetXaxis()
             for edge in (low, high):
                 bin_index = axis.FindFixBin(edge + 1e-9)
@@ -270,23 +278,30 @@ def qcd_sample_files(args, era):
         if pt_bin in samples:
             raise PlotError(f"Duplicate QCD pT bin: {samples[pt_bin]} and {path}")
         samples[pt_bin] = path
-    if not samples:
-        raise PlotError(f"No {QCD_SAMPLE_GLOB} files found in {directory}")
     return dict(sorted(samples.items()))
 
 
 def sum_mc_yields(rows):
     rows = tuple(rows)
-    return {key: {field: math.fsum(row[key][field] for row in rows)
-                  for field in ("value", "variance")} for key in MC_KEYS}
+    totals = {}
+    for key in MC_KEYS:
+        available = [row[key] for row in rows if key in row]
+        if available:
+            totals[key] = {field: math.fsum(row[field] for row in available)
+                           for field in ("value", "variance")}
+    return totals
 
 
 def print_mc_sample(label, counts):
     yields = [f"{counts[key]['value']:.7g} +/- {math.sqrt(counts[key]['variance']):.4g}"
+              if key in counts else "missing"
               for key in MC_KEYS]
     ratios = []
     for window in QCD_WINDOWS:
-        os_count, ss_count = (counts[f"mc_{sign}_{window}"] for sign in ("os", "ss"))
+        os_count, ss_count = (counts.get(f"mc_{sign}_{window}") for sign in ("os", "ss"))
+        if os_count is None or ss_count is None:
+            ratios.append("n/a")
+            continue
         n, d = os_count["value"], ss_count["value"]
         if d > 0:
             ratio = n / d
@@ -298,32 +313,68 @@ def print_mc_sample(label, counts):
     try:
         double_ratio, log_variance = mc_double_ratio(counts)
         ratios.append(f"{double_ratio:.5g} +/- {double_ratio * math.sqrt(log_variance):.3g}")
-    except ValueError:
+    except (KeyError, ValueError):
         ratios.append("n/a")
     sparse = any(row["variance"] <= 0 or row["value"] <= 0
                  or row["value"] ** 2 < 10 * row["variance"] for row in counts.values())
     print(" | ".join([label, *yields, *ratios]) + (" | sparse" if sparse else ""))
 
 
+def scan_sample_yields(ROOT, args, path, era):
+    histograms = [open_hist(ROOT, str(path), hpath(region(sign, args), args),
+                            f"scan_{sign}_{era}", require_sumw2=True, allow_missing=True)
+                  for sign in ("OS", "SS")]
+    return mc_yields(*histograms)
+
+
+def compare_scan_to_inclusive(ROOT, args, era, total):
+    path = Path(edir(args, era)) / "NIsoMuon_QCD_Inclusive.root"
+    if not path.is_file():
+        return
+    try:
+        inclusive = scan_sample_yields(ROOT, args, path, era)
+    except PlotError as exc:
+        print(f"[QCD scan] {era} inclusive cross-check unavailable: {exc}")
+        return
+    differences = [key for key in MC_KEYS if key not in total or key not in inclusive
+                   or any(not math.isclose(total[key][field], inclusive[key][field],
+                                           rel_tol=1e-6, abs_tol=1e-8)
+                          for field in ("value", "variance"))]
+    if differences:
+        print(f"[QCD scan] {era} inclusive cross-check differs in: {', '.join(differences)}")
+        print_mc_sample(f"{era} INCLUSIVE reference", inclusive)
+    else:
+        print(f"[QCD scan] {era} sample totals match inclusive (weighted yields and Sumw2).")
+
+
 def scan_qcd_samples(ROOT, args):
     files = {era: qcd_sample_files(args, era) for era in years(args.era)}
+    if not any(files.values()):
+        raise PlotError(f"No {QCD_SAMPLE_GLOB} files found for {args.era} under {args.base_dir}")
     records, by_era = {}, {}
     print("[QCD scan] Weighted MC yields +/- sqrt(Sumw2); sparse means at least one cell has N_eff < 10 or an invalid effective count.")
     print("[QCD scan] Low: 5--9 GeV; high: 11--80 GeV; pT bins in GeV.")
+    print("[QCD scan] Totals use available histograms only. Missing signs are never reported as measured zeros.")
     print("Era/Run and sample | N_low_OS | N_low_SS | N_high_OS | N_high_SS | R_low | R_high | D")
     for era, samples in files.items():
+        if not samples:
+            print(f"[QCD scan] {era}: no sample files in {edir(args, era)}")
+            continue
         by_era[era] = {}
+        missing = 0
         for pt_bin, path in samples.items():
-            histograms = [open_hist(ROOT, str(path), hpath(region(sign, args), args),
-                                    f"scan_{sign}_{era}", require_sumw2=True) for sign in ("OS", "SS")]
-            counts = mc_yields(*histograms)
+            counts = scan_sample_yields(ROOT, args, path, era)
+            missing += (len(MC_KEYS) - len(counts)) // len(QCD_WINDOWS)
             by_era[era][pt_bin] = counts
             print_mc_sample(f"{era} {path.name}", counts)
         total = sum_mc_yields(by_era[era].values())
         records[era] = {"primitive": total}
-        print_mc_sample(f"{era} TOTAL", total)
+        label = f"{era} TOTAL"
+        if missing:
+            label += f" ({missing} missing sign histograms)"
+        print_mc_sample(label, total)
+        compare_scan_to_inclusive(ROOT, args, era, total)
 
-    fits = {}
     for run, eras in (("Run2", RUN2), ("Run3", RUN3)):
         if not all(era in records for era in eras):
             continue
@@ -332,23 +383,48 @@ def scan_qcd_samples(ROOT, args):
             selected = [by_era[era][low, high] for era in eras if (low, high) in by_era[era]]
             print_mc_sample(f"{run} pT {low:g}--{high:g} ({len(selected)}/{len(eras)} eras)",
                             sum_mc_yields(selected))
-        group_records = {era: records[era] for era in eras}
         print_mc_sample(f"{run} TOTAL (pooled yields)", sum_mc_yields(
-            row["primitive"] for row in group_records.values()))
+            records[era]["primitive"] for era in eras))
+    print_scan_fits(records)
+
+    if all(era in by_era for era in YEARS):
+        common_bins = sorted(set.intersection(*(set(by_era[era]) for era in YEARS)))
+        if not common_bins:
+            print("[QCD scan] No pT bins have sample files in all eight eras.")
+            return
+        print("[QCD scan] Shared pT bins in all eight eras: "
+              + ", ".join(f"{low:g}--{high:g}" for low, high in common_bins))
+        shared = {era: {"primitive": sum_mc_yields(by_era[era][pt_bin] for pt_bin in common_bins)}
+                  for era in YEARS}
+        for run, eras in (("Run2", RUN2), ("Run3", RUN3)):
+            print_mc_sample(f"{run} SHARED pT bins (pooled yields)", sum_mc_yields(
+                shared[era]["primitive"] for era in eras))
+        print_scan_fits(shared, label=" [shared pT bins]")
+
+
+def print_scan_fits(records, label=""):
+    fits = {}
+    for run, eras in (("Run2", RUN2), ("Run3", RUN3)):
+        if not all(era in records for era in eras):
+            continue
+        group_records = {era: records[era] for era in eras}
+        if any(set(row["primitive"]) != set(MC_KEYS) for row in group_records.values()):
+            print(f"[QCD scan] {run}{label} common D unavailable: an era has no input for a yield cell")
+            continue
         try:
             fit = fit_common_double_ratio(group_records, run, QCD_WINDOWS)
         except ValueError as exc:
-            print(f"[QCD scan] {run} common D unavailable: {exc}")
+            print(f"[QCD scan] {run}{label} common D unavailable: {exc}")
             continue
         fits[run] = fit
-        print(f"[QCD scan] {run} common D = {fit['double_ratio']:.6g} "
+        print(f"[QCD scan] {run}{label} common D = {fit['double_ratio']:.6g} "
               f"-{fit['error_low']:.3g}/+{fit['error_high']:.3g}; "
               f"chi2/ndf = {fit['chi2']:.3g}/{fit['ndf']}, p = {fit['pvalue']:.3g}")
     if len(fits) == 2:
         delta = fits["Run3"]["log_mean"] - fits["Run2"]["log_mean"]
         variance = math.fsum(fit["log_variance"] for fit in fits.values())
         chi2 = delta**2 / variance
-        print(f"[QCD scan] Run3 vs Run2 common D: D3/D2 = {math.exp(delta):.5g}; "
+        print(f"[QCD scan] Run3 vs Run2{label} common D: D3/D2 = {math.exp(delta):.5g}; "
               f"|z| = {math.sqrt(chi2):.3g}, p = {chi2_survival(chi2, 1):.3g} "
               "(independent MC statistics, Gaussian approximation in log D)")
 
