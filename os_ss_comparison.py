@@ -40,6 +40,9 @@ era totals, Run-level sample totals and the Run-common MC double-ratio fits.
 Missing sign histograms are reported and omitted sign by sign. For both Runs,
 the scan repeats the comparison using only pT bins with files in all eras.
 This is a console-only MC diagnostic.
+
+--scan-dy-samples prints the same weighted yields, integrated OS/SS ratios
+and high/low double ratio separately for the four DY MC files in each era.
 """
 
 import argparse, json, math, os, sys
@@ -70,6 +73,12 @@ QCD_SAMPLE_NAME = re.compile(
     r"Skim_NIsoMuon_QCD_Pt-(\d+)(?:[Tt]o(\d+|Inf))?_MuEnriched\.root"
 )
 QCD_WINDOWS = {"low": QCD_TRANSFER_LOW_WINDOW, "high": QCD_TRANSFER_HIGH_WINDOW}
+DY_SAMPLE_FILES = (
+    "Skim_NIsoMuon_DYJets.root",
+    "Skim_NIsoMuon_DYJets10to50.root",
+    "Skim_NIsoMuon_DYJets_MG.root",
+    "Skim_NIsoMuon_DYJets10to50_MG.root",
+)
 
 class PlotError(RuntimeError): pass
 
@@ -327,6 +336,19 @@ def scan_sample_yields(ROOT, args, path, era):
     return mc_yields(*histograms)
 
 
+def scan_dy_samples(ROOT, args):
+    print("[DY scan] Weighted MC yields +/- sqrt(Sumw2) in 5--9 and 11--80 GeV.")
+    print("Era and sample | N_low_OS | N_low_SS | N_high_OS | N_high_SS | R_low | R_high | D")
+    for era in years(args.era):
+        for filename in DY_SAMPLE_FILES:
+            path = Path(edir(args, era)) / filename
+            label = f"{era} {filename}"
+            if not path.is_file():
+                print(f"{label} | missing file: {path}")
+                continue
+            print_mc_sample(label, scan_sample_yields(ROOT, args, path, era))
+
+
 def compare_scan_to_inclusive(ROOT, args, era, total):
     path = Path(edir(args, era)) / "NIsoMuon_QCD_Inclusive.root"
     if not path.is_file():
@@ -494,6 +516,8 @@ def main(argv=None):
                    help="QCD ROOT filename relative to each era directory. MuEnriched pT-bin names are resolved per era.")
     sample_options.add_argument("--scan-qcd-samples", action="store_true",
                                 help="Print weighted low/high OS and SS yields for all QCD MuEnriched samples in the selected eras")
+    sample_options.add_argument("--scan-dy-samples", action="store_true",
+                                help="Print weighted OS/SS yields and transfer factors for each of the four DY MC files per era")
     p.add_argument("--mc-only",action="store_true",help="Read and plot QCD MC only")
     p.add_argument("--per-era",action="store_true",help="With --mc-only, plot group members separately and fit integrated ratios across eras")
     p.add_argument("--muon-id",default="POGMedium"); p.add_argument("--jet-id",default="tight"); p.add_argument("--hist-name",default="Dilepton_Mass")
@@ -504,10 +528,11 @@ def main(argv=None):
     p.add_argument("--logx",action="store_true"); p.add_argument("--logy",action="store_true"); p.set_defaults(logy=True); p.add_argument("--ymin",type=float); p.add_argument("--ymax",type=float); p.add_argument("--ratio-min",type=float,default=0.); p.add_argument("--ratio-max",type=float,default=5.); p.add_argument("--no-bin-width",dest="divide_by_width",action="store_false"); p.set_defaults(divide_by_width=True)
     b=p.add_mutually_exclusive_group(); b.add_argument("--blind",dest="blind",action="store_true",help="Blind data in 11<m<80 GeV (default)"); b.add_argument("--unblind",dest="blind",action="store_false",help="Show data in 11<m<80 GeV"); p.set_defaults(blind=True)
     p.add_argument("--extensions",default="pdf,png"); ratio_fits.add_arguments(p, default_range=(11.,80.)); args=p.parse_args(argv)
-    if args.scan_qcd_samples:
+    if args.scan_qcd_samples or args.scan_dy_samples:
         if not args.blind:
             p.error("--unblind applies to data overlays only")
-        scan_qcd_samples(root_module(), args)
+        scan = scan_dy_samples if args.scan_dy_samples else scan_qcd_samples
+        scan(root_module(), args)
         return
     if args.per_era and (not args.mc_only or len(years(args.era)) < 2):
         p.error("--per-era requires --mc-only and a grouped --era")

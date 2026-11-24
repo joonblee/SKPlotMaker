@@ -1006,6 +1006,16 @@ independent MC statistics. When all eight eras are available, the comparison
 is repeated with the pT bins that have files in every era. This MC diagnostic
 prints to the terminal.
 
+For per-era OS/SS transfer factors from the individual DY aMC@NLO and MG LO
+files (`DYJets` and `DYJets10to50` for each generator), run:
+
+```bash
+python3 os_ss_comparison.py --era full --scan-dy-samples
+```
+
+This MC-only command prints the same weighted yields and ratios for each file
+separately. Missing files and histograms are marked in the terminal output.
+
 For custom OS/SS mass bins, pass space-separated edges in GeV:
 
 ```bash
