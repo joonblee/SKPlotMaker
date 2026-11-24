@@ -1006,16 +1006,6 @@ independent MC statistics. When all eight eras are available, the comparison
 is repeated with the pT bins that have files in every era. This MC diagnostic
 prints to the terminal.
 
-For per-era OS/SS transfer factors from the individual DY aMC@NLO and MG LO
-files (`DYJets` and `DYJets10to50` for each generator), run:
-
-```bash
-python3 os_ss_comparison.py --era full --scan-dy-samples
-```
-
-This MC-only command prints the same weighted yields and ratios for each file
-separately. Missing files and histograms are marked in the terminal output.
-
 For custom OS/SS mass bins, pass space-separated edges in GeV:
 
 ```bash
@@ -1286,6 +1276,19 @@ Agreement assesses fit-range stability; it does not by itself establish
 high-mass closure or replace a check of the high-mass SS observations/errors.
 
 ## DY LightJet source and NF diagnostics
+
+Scan the four individual DY MC samples (aMC@NLO and MG LO, each with
+`DYJets10to50` and `DYJets`) in all eight eras:
+
+```bash
+python3 dy_lightjet_diagnostics.py --scan-dy-samples
+```
+
+Each row gives the weighted OS b-jet and OS light-jet yields in 11--80 GeV,
+their ratio and its propagated MC statistical error. The merged aMC@NLO
+sample provides a reference row in each era. Missing inputs and nonpositive
+light-jet yields are reported in the table. Use `--era` to select eras or
+`--base-dir` to point to another set of MC files.
 
 Read existing merged histogram ROOT files to compare the DY source and NF:
 

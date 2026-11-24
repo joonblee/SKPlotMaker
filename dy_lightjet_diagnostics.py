@@ -5,6 +5,8 @@ Read merged LightJet/BJet histograms and saved DYAux metadata for each era.
 Compare aMC@NLO and MG LO NF measurements and alternative MG predictions.
 With multiple eras, print pooled and log-fit common NF diagnostics; these
 assume a common ratio and independent MC statistical errors across eras.
+Use --scan-dy-samples to print the OS b-jet/light-jet factor in each DY MC
+sample and era, alongside the merged aMC@NLO reference. The scan reads MC only.
 No event trees, source replay, production reweighting or template changes.
 
 Default luminosities reproduce the previous comparison's denominators. Override
@@ -16,6 +18,13 @@ import math
 from pathlib import Path
 
 LUMI = {'2016preVFP': 19.52, '2016postVFP': 16.81, '2017': 41.48, '2018': 59.83}
+ERAS = (*LUMI, '2022', '2022EE', '2023', '2023BPix')
+DY_SAMPLES = (
+    ('aMC low mass', 'Skim_NIsoMuon_DYJets10to50.root'),
+    ('aMC high mass', 'Skim_NIsoMuon_DYJets.root'),
+    ('MG low mass', 'Skim_NIsoMuon_DYJets10to50_MG.root'),
+    ('MG high mass', 'Skim_NIsoMuon_DYJets_MG.root'),
+)
 REG_B = 'OS_POGMedium_tight_BJet_NIsoDimuon'
 REG_L = 'OS_POGMedium_tight_LightJet_NIsoDimuon'
 
@@ -38,6 +47,42 @@ def integral(h, low, high):
     if not math.isfinite(value) or not math.isfinite(error):
         raise ValueError(f'Non-finite yield/error in {h.GetName()}')
     return value, error
+
+
+def scan_dy_samples(ROOT, args, eras):
+    low, high = args.mass_range
+    samples = (*DY_SAMPLES, ('aMC inclusive', args.dy_amc_file))
+    print(f'[DY scan] OS b-jet/light-jet in {low:g} < m(mumu) < {high:g} GeV.')
+    print('[errors] MC statistical errors from Sumw2, assuming independent categories')
+    print('Era | Sample | OS b-jet yield | OS light-jet yield | DY transfer factor')
+    for era in eras:
+        for label, filename in samples:
+            path = Path(args.base_dir) / era / filename
+            prefix = f'{era} | {label}'
+            handle = ROOT.TFile.Open(str(path), 'READ')
+            if not handle:
+                print(f'{prefix} | n/a | n/a | n/a (cannot open {path})')
+                continue
+            try:
+                if handle.IsZombie():
+                    raise ValueError(f'cannot open {path}')
+                histograms = [histogram(handle, f'{region}/Dilepton_Mass___{region}')
+                              for region in (REG_B, REG_L)]
+                for hist in histograms:
+                    if not hist.GetSumw2N():
+                        raise ValueError(f'missing Sumw2 in {path}:{hist.GetName()}')
+                (b, eb), (l, el) = (integral(h, low, high) for h in histograms)
+            except ValueError as exc:
+                print(f'{prefix} | n/a | n/a | n/a ({exc})')
+                continue
+            finally:
+                handle.Close()
+            factor = 'n/a (nonpositive light-jet yield)'
+            if l > 0:
+                ratio = b/l
+                error = math.hypot(eb/l, ratio*el/l)
+                factor = f'{ratio:.8g} +/- {error:.8g}'
+            print(f'{prefix} | {b:.8g} +/- {eb:.8g} | {l:.8g} +/- {el:.8g} | {factor}')
 
 
 def audit(ROOT, args, era, luminosity):
@@ -207,8 +252,11 @@ def common_nf_summary(results):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base-dir', default='/data6/Users/joonblee/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon')
-    parser.add_argument('--era', nargs='+', choices=list(LUMI), default=['2016preVFP', '2016postVFP'])
+    parser.add_argument('--era', nargs='+', choices=ERAS,
+                        help='Select eras (default: all eight for the scan, 2016preVFP and 2016postVFP for the audit)')
     parser.add_argument('--mass-range', nargs=2, type=float, default=[11., 80.])
+    parser.add_argument('--scan-dy-samples', action='store_true',
+                        help='Print the OS b-jet/light-jet factor and MC statistical error per DY sample and era')
     parser.add_argument('--dy-amc-file', default='NIsoMuon_DYJets_Inclusive.root')
     parser.add_argument('--dy-mg-file', default='NIsoMuon_DYJets_MG_Inclusive.root')
     parser.add_argument('--lumi', nargs='*', default=[], metavar='ERA=FB_INV')
@@ -217,6 +265,14 @@ def main():
         parser.error('Require finite LOW < HIGH')
     if args.mass_range[0] < 11 and args.mass_range[1] > 9:
         parser.error('Choose a window outside the excluded 9--11 GeV output interval')
+    if args.scan_dy_samples:
+        import ROOT
+        ROOT.gROOT.SetBatch(True)
+        scan_dy_samples(ROOT, args, dict.fromkeys(args.era or ERAS))
+        return
+    eras = dict.fromkeys(args.era or ('2016preVFP', '2016postVFP'))
+    if any(era not in LUMI for era in eras):
+        parser.error('Run 3 eras are available with --scan-dy-samples')
     luminosities = dict(LUMI)
     for item in args.lumi:
         era, value = item.split('=', 1)
@@ -226,7 +282,7 @@ def main():
         luminosities[era] = value
     import ROOT
     ROOT.gROOT.SetBatch(True)
-    results = {era: audit(ROOT, args, era, luminosities[era]) for era in dict.fromkeys(args.era)}
+    results = {era: audit(ROOT, args, era, luminosities[era]) for era in eras}
     pre, post = results.get('2016preVFP'), results.get('2016postVFP')
     if pre and post:
         print('\n[post/pre ratios; central values only]')
