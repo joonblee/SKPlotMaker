@@ -33,6 +33,11 @@ For MuEnriched pT bins, either Run-2 or Run-3 spelling selects the same
 pT bin, using the filename convention of each input era.
 With a grouped --era, --per-era draws and fits each era separately and
 reports constant fits across eras for the integrated ratios.
+
+--scan-qcd-samples prints weighted OS/SS yields and MC statistical errors
+in 5--9 and 11--80 GeV for every QCD MuEnriched pT-bin file. It also prints
+era totals, Run-level sample totals and the Run-common MC double-ratio fits.
+This is a console-only MC diagnostic.
 """
 
 import argparse, json, math, os, sys
@@ -43,7 +48,7 @@ from pathlib import Path
 
 import ratio_fits
 from qcd_bkg_estimation import QCD_TRANSFER_LOW_WINDOW, QCD_TRANSFER_HIGH_WINDOW
-from qcd_common_transfer import mc_double_ratio
+from qcd_common_transfer import MC_KEYS, chi2_survival, fit_common_double_ratio, mc_double_ratio
 
 RUN2 = ("2016preVFP", "2016postVFP", "2017", "2018")
 RUN3 = ("2022", "2022EE", "2023", "2023BPix")
@@ -58,6 +63,11 @@ MASS_BINS = [0.,5.,5.5,6.,6.5,7.,7.5,8.,8.5,9.,9.5,10.,11.,11.5,12.,12.5,13.,13.
 #MASS_BINS = [0.,.5,1.,1.5,2.,2.1,2.2,2.3,2.4,2.5,2.6,2.7,2.8,2.9,3.,3.1,3.2,3.3,3.4,3.5,3.7,4.,4.5,5.,9.,10.,11.,80.,100.]
 NONQCD_OS = ("NIsoMuon_Top.root", "NIsoMuon_DYJets_est.root", "NIsoMuon_Others.root")
 NONQCD_SS = ("NIsoMuon_Top.root", "NIsoMuon_Others.root")
+QCD_SAMPLE_GLOB = "Skim_NIsoMuon_QCD_Pt-*_MuEnriched.root"
+QCD_SAMPLE_NAME = re.compile(
+    r"Skim_NIsoMuon_QCD_Pt-(\d+)(?:[Tt]o(\d+|Inf))?_MuEnriched\.root"
+)
+QCD_WINDOWS = {"low": QCD_TRANSFER_LOW_WINDOW, "high": QCD_TRANSFER_HIGH_WINDOW}
 
 class PlotError(RuntimeError): pass
 
@@ -85,10 +95,7 @@ def input_file(args, year, relfile):
     era_dir = edir(args, year)
     requested = os.path.join(era_dir, relfile)
     directory, filename = os.path.split(relfile)
-    match = re.fullmatch(
-        r"Skim_NIsoMuon_QCD_Pt-(\d+)(?:[Tt]o(\d+|Inf))?_MuEnriched\.root",
-        filename,
-    )
+    match = QCD_SAMPLE_NAME.fullmatch(filename)
     if not match:
         return requested
     low, high = match.groups()
@@ -200,12 +207,9 @@ def equal_high_ratio(hos, hss):
         return float("nan"), float("nan")
     return (r1 + r2) / 2., math.hypot(e1, e2) / 2.
 
-def mc_integrals(hos, hss):
-    windows = {"low": QCD_TRANSFER_LOW_WINDOW, "high": QCD_TRANSFER_HIGH_WINDOW}
+def mc_yields(hos, hss):
     primitive = {}
-    results = {}
-    for label, (low, high) in windows.items():
-        counts = {}
+    for label, (low, high) in QCD_WINDOWS.items():
         for sign, hist in (("os", hos), ("ss", hss)):
             axis = hist.GetXaxis()
             for edge in (low, high):
@@ -216,9 +220,20 @@ def mc_integrals(hos, hss):
             variance = error**2
             if not all(map(math.isfinite, (value, variance))):
                 raise PlotError(f"{hist.GetName()}: non-finite yield or variance in {low:g}--{high:g} GeV")
-            counts[sign] = dict(value=value, variance=variance,
-                                effective_count=value**2 / variance if variance > 0 else None)
-            primitive[f"mc_{sign}_{label}"] = counts[sign]
+            primitive[f"mc_{sign}_{label}"] = dict(value=value, variance=variance)
+    return primitive
+
+
+def mc_integrals(hos, hss):
+    primitive = mc_yields(hos, hss)
+    results = {}
+    for label, (low, high) in QCD_WINDOWS.items():
+        counts = {}
+        for sign in ("os", "ss"):
+            count = primitive[f"mc_{sign}_{label}"]
+            variance = count["variance"]
+            count["effective_count"] = count["value"] ** 2 / variance if variance > 0 else None
+            counts[sign] = count
         value, error = ratio_val(hos, hss, low, high)
         measurement = dict(value=value, error=error) if math.isfinite(value) and math.isfinite(error) else None
         results[label] = dict(window=[low, high], counts=counts, ratio=measurement)
@@ -239,6 +254,103 @@ def mc_integrals(hos, hss):
     if any((count["effective_count"] or 0.) < 10 for count in primitive.values()):
         print("[MC TF] Sparse weighted MC in at least one window; interpret ratio errors and fits with care.")
     return results
+
+
+def qcd_sample_files(args, era):
+    directory = Path(edir(args, era))
+    samples = {}
+    for path in sorted(directory.glob(QCD_SAMPLE_GLOB)):
+        match = QCD_SAMPLE_NAME.fullmatch(path.name)
+        if not match:
+            raise PlotError(f"Unrecognised QCD pT-bin filename: {path}")
+        low, high = match.groups()
+        if high is None and low != "1000":
+            raise PlotError(f"Unrecognised open-ended QCD pT bin: {path}")
+        pt_bin = (int(low), math.inf if high in (None, "Inf") else int(high))
+        if pt_bin in samples:
+            raise PlotError(f"Duplicate QCD pT bin: {samples[pt_bin]} and {path}")
+        samples[pt_bin] = path
+    if not samples:
+        raise PlotError(f"No {QCD_SAMPLE_GLOB} files found in {directory}")
+    return dict(sorted(samples.items()))
+
+
+def sum_mc_yields(rows):
+    rows = tuple(rows)
+    return {key: {field: math.fsum(row[key][field] for row in rows)
+                  for field in ("value", "variance")} for key in MC_KEYS}
+
+
+def print_mc_sample(label, counts):
+    yields = [f"{counts[key]['value']:.7g} +/- {math.sqrt(counts[key]['variance']):.4g}"
+              for key in MC_KEYS]
+    ratios = []
+    for window in QCD_WINDOWS:
+        os_count, ss_count = (counts[f"mc_{sign}_{window}"] for sign in ("os", "ss"))
+        n, d = os_count["value"], ss_count["value"]
+        if d > 0:
+            ratio = n / d
+            error = math.hypot(math.sqrt(os_count["variance"]) / d,
+                               abs(ratio) * math.sqrt(ss_count["variance"]) / d)
+            ratios.append(f"{ratio:.5g} +/- {error:.3g}")
+        else:
+            ratios.append("n/a")
+    try:
+        double_ratio, log_variance = mc_double_ratio(counts)
+        ratios.append(f"{double_ratio:.5g} +/- {double_ratio * math.sqrt(log_variance):.3g}")
+    except ValueError:
+        ratios.append("n/a")
+    sparse = any(row["variance"] <= 0 or row["value"] <= 0
+                 or row["value"] ** 2 < 10 * row["variance"] for row in counts.values())
+    print(" | ".join([label, *yields, *ratios]) + (" | sparse" if sparse else ""))
+
+
+def scan_qcd_samples(ROOT, args):
+    files = {era: qcd_sample_files(args, era) for era in years(args.era)}
+    records, by_era = {}, {}
+    print("[QCD scan] Weighted MC yields +/- sqrt(Sumw2); sparse means at least one cell has N_eff < 10 or an invalid effective count.")
+    print("[QCD scan] Low: 5--9 GeV; high: 11--80 GeV; pT bins in GeV.")
+    print("Era/Run and sample | N_low_OS | N_low_SS | N_high_OS | N_high_SS | R_low | R_high | D")
+    for era, samples in files.items():
+        by_era[era] = {}
+        for pt_bin, path in samples.items():
+            histograms = [open_hist(ROOT, str(path), hpath(region(sign, args), args),
+                                    f"scan_{sign}_{era}", require_sumw2=True) for sign in ("OS", "SS")]
+            counts = mc_yields(*histograms)
+            by_era[era][pt_bin] = counts
+            print_mc_sample(f"{era} {path.name}", counts)
+        total = sum_mc_yields(by_era[era].values())
+        records[era] = {"primitive": total}
+        print_mc_sample(f"{era} TOTAL", total)
+
+    fits = {}
+    for run, eras in (("Run2", RUN2), ("Run3", RUN3)):
+        if not all(era in records for era in eras):
+            continue
+        bins = sorted(set().union(*(by_era[era] for era in eras)))
+        for low, high in bins:
+            selected = [by_era[era][low, high] for era in eras if (low, high) in by_era[era]]
+            print_mc_sample(f"{run} pT {low:g}--{high:g} ({len(selected)}/{len(eras)} eras)",
+                            sum_mc_yields(selected))
+        group_records = {era: records[era] for era in eras}
+        print_mc_sample(f"{run} TOTAL (pooled yields)", sum_mc_yields(
+            row["primitive"] for row in group_records.values()))
+        try:
+            fit = fit_common_double_ratio(group_records, run, QCD_WINDOWS)
+        except ValueError as exc:
+            print(f"[QCD scan] {run} common D unavailable: {exc}")
+            continue
+        fits[run] = fit
+        print(f"[QCD scan] {run} common D = {fit['double_ratio']:.6g} "
+              f"-{fit['error_low']:.3g}/+{fit['error_high']:.3g}; "
+              f"chi2/ndf = {fit['chi2']:.3g}/{fit['ndf']}, p = {fit['pvalue']:.3g}")
+    if len(fits) == 2:
+        delta = fits["Run3"]["log_mean"] - fits["Run2"]["log_mean"]
+        variance = math.fsum(fit["log_variance"] for fit in fits.values())
+        chi2 = delta**2 / variance
+        print(f"[QCD scan] Run3 vs Run2 common D: D3/D2 = {math.exp(delta):.5g}; "
+              f"|z| = {math.sqrt(chi2):.3g}, p = {chi2_survival(chi2, 1):.3g} "
+              "(independent MC statistics, Gaussian approximation in log D)")
 
 
 def write_era_summary(args, measurements):
@@ -301,8 +413,11 @@ def fmt(x):
 def main(argv=None):
     p=argparse.ArgumentParser(description="BJet OS/SS: QCD MC overlaid with Data - nonQCD BKG")
     p.add_argument("--era",required=True,choices=list(ERA_GROUPS)); p.add_argument("--base-dir",default=BASE); p.add_argument("--output-dir",default=OUT); p.add_argument("--trigger",default="")
-    p.add_argument("--qcd-file",default="NIsoMuon_QCD_Inclusive.root",
+    sample_options = p.add_mutually_exclusive_group()
+    sample_options.add_argument("--qcd-file",default="NIsoMuon_QCD_Inclusive.root",
                    help="QCD ROOT filename relative to each era directory. MuEnriched pT-bin names are resolved per era.")
+    sample_options.add_argument("--scan-qcd-samples", action="store_true",
+                                help="Print weighted low/high OS and SS yields for all QCD MuEnriched samples in the selected eras")
     p.add_argument("--mc-only",action="store_true",help="Read and plot QCD MC only")
     p.add_argument("--per-era",action="store_true",help="With --mc-only, plot group members separately and fit integrated ratios across eras")
     p.add_argument("--muon-id",default="POGMedium"); p.add_argument("--jet-id",default="tight"); p.add_argument("--hist-name",default="Dilepton_Mass")
@@ -313,6 +428,11 @@ def main(argv=None):
     p.add_argument("--logx",action="store_true"); p.add_argument("--logy",action="store_true"); p.set_defaults(logy=True); p.add_argument("--ymin",type=float); p.add_argument("--ymax",type=float); p.add_argument("--ratio-min",type=float,default=0.); p.add_argument("--ratio-max",type=float,default=5.); p.add_argument("--no-bin-width",dest="divide_by_width",action="store_false"); p.set_defaults(divide_by_width=True)
     b=p.add_mutually_exclusive_group(); b.add_argument("--blind",dest="blind",action="store_true",help="Blind data in 11<m<80 GeV (default)"); b.add_argument("--unblind",dest="blind",action="store_false",help="Show data in 11<m<80 GeV"); p.set_defaults(blind=True)
     p.add_argument("--extensions",default="pdf,png"); ratio_fits.add_arguments(p, default_range=(11.,80.)); args=p.parse_args(argv)
+    if args.scan_qcd_samples:
+        if not args.blind:
+            p.error("--unblind applies to data overlays only")
+        scan_qcd_samples(root_module(), args)
+        return
     if args.per_era and (not args.mc_only or len(years(args.era)) < 2):
         p.error("--per-era requires --mc-only and a grouped --era")
     if args.mc_only and not args.blind:

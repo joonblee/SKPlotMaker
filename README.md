@@ -987,6 +987,21 @@ summary give the constant fits to the integrated ratios and double ratio.
 Use `--era Run2` or `--era Run3` to test constancy within a run. All errors
 are MC statistical only. The command reads only QCD MC.
 
+To scan every individual QCD MuEnriched sample present in each selected era:
+
+```bash
+python3 os_ss_comparison.py --era full --scan-qcd-samples
+```
+
+The terminal table reports the four weighted OS and SS yields in 5--9 and
+11--80 GeV with their stored Sumw2 statistical errors, the two OS/SS ratios,
+and their double ratio. Era totals and Run-level sample totals are formed by
+summing yields and variances before dividing. The Run-level sample rows show
+how many eras supplied that pT bin. For complete Runs, the scan also fits the
+era double ratios in log space and compares the two Run-common values using
+independent MC statistics. This mode reads individual MC files and prints
+to the terminal.
+
 For custom OS/SS mass bins, pass space-separated edges in GeV:
 
 ```bash
