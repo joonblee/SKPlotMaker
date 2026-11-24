@@ -1795,8 +1795,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="DY estimation method: constant normalisation factor (nf, default) or parameter-dependent transfer factor (tf)",
     )
     parser.add_argument(
-        "--nf-scope", choices=("era", "run"), default="era",
-        help="run: fit one aMC NF across the full Run; apply it to the selected era or single-Run group",
+        "--nf-scope", choices=("era", "run"),
+        help=("run (default for NF selections within one Run): fit one aMC NF across the full Run; "
+              "era: fit the selected era or group, the default for Run2+3"),
     )
     parser.add_argument(
         "--tf-param",
@@ -1858,6 +1859,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     args.output_files = []
     args.nf_run = None
+    if args.nf_scope is None and args.method == "nf" and args.era != "Run2+3":
+        args.nf_scope = "run"
     if args.nf_scope == "run":
         for run in ("Run2", "Run3"):
             if set(selected_eras(args.era)).issubset(selected_eras(run)):

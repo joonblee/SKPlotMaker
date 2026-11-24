@@ -170,7 +170,7 @@ No fit inputs or production ROOT files are modified by either plotter.
 
 ### 2. Build the DY data-driven estimate
 
-The current production mode is the constant normalisation-factor method (`--method nf`, which is also the default).
+The default production method (`--method nf`) uses one aMC normalisation factor fitted across the full Run for each era or single-Run selection. Use `--nf-scope era` to fit the selected era or group directly. The combined `--era Run2+3` diagnostic fits the combined sample by default.
 
 For each period:
 
