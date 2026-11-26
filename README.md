@@ -20,6 +20,44 @@ The main design is:
 
 The analysis logic is deliberately explicit.  Physics choices such as fit ranges, control regions, nuisance-template names, and the nominal data-driven methods should not be changed merely for code simplification.
 
+## DY jet-veto map and signal cutflow summaries
+
+Run `collect_jetveto_cutflow.py` from SKPlotMaker after loading PyROOT.
+Point `--base` to the analyser's `NIsoMuon` output directory containing
+`JetVetoMapStudy/<era>/` and `Cutflow/<era>/`. Use merged per-sample files
+from completed jobs.
+
+```bash
+# Run 2 from SKFlatAnalyzer
+python3 collect_jetveto_cutflow.py --era Run2 \
+  --base "/data6/Users/$USER/SKOutput/${SKFlatOutputV:-Run2UL_v3_Run3_v13}/NIsoMuon" \
+  --signal-list "$SKFlat_WD/SampleLists/Run2signal.txt" --out run2_summary
+
+# Run 3 from SKNanoAnalyzer
+python3 collect_jetveto_cutflow.py --era Run3 \
+  --base "$SKNANO_OUTPUT/NIsoMuon" \
+  --signal-list "$SKNANO_HOME/SampleLists/Run3signal.txt" --out run3_summary
+```
+
+Use `--study dy` for DY only, which needs no signal list, or
+`--study cutflow` for signal only. For a custom DY retry output, add
+`--dy-file 2017:DYJets10to50=/path/to/retry/NIsoMuon_DYJets10to50.root`.
+The path override is repeatable.
+
+- `dy_veto_summary.csv` reports map-on and map-off yields in 11–80 GeV,
+  yields per integrated luminosity, and the SR/CR ratio for the sum of the
+  two nominal DY MC slices. Each full Run row sums the era yields before
+  taking ratios.
+- `dy_veto_mass_bins.csv` reports map-on and map-off yields and ratios per
+  1 GeV mass bin. A blank ratio indicates a nonpositive denominator.
+- `signal_reco_cutflow.csv` sums generator pT slices per era and mass before
+  taking cutflow fractions. The corrected expected yield is reported at
+  the final step.
+- `signal_fiducial_cutflow.csv` adds the Run 3 truth cutflow conditional on
+  the CMS GEN filter and the reco cutflow conditional on particle-level
+  fiducial selection. Each uses its own input bin as denominator.
+- `inputs.csv` records the exact ROOT file paths read by the script.
+
 ## Current input layout
 
 Most scripts use
