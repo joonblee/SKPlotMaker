@@ -3,10 +3,12 @@
 
 import argparse
 import csv
+from array import array
+from itertools import groupby
 from math import fsum
 from pathlib import Path
 
-MASS_EDGES = (11, 15, 20, 25, 30, 35, 40, 50, 60, 80)
+MASS_EDGES = (11, 20, 30, 50, 80)
 REGIONS = (("BJet", "b-jet region"), ("LightJet", "Light-jet region"))
 
 
@@ -19,7 +21,7 @@ def read_rows(path, era):
 
 
 def rebin_ratios(rows, region):
-    points = []
+    ratios = []
     region_rows = [row for row in rows if row["region"] == region]
     for low, high in zip(MASS_EDGES, MASS_EDGES[1:]):
         bins = [
@@ -28,9 +30,8 @@ def rebin_ratios(rows, region):
         ]
         on = fsum(float(row["on"]) for row in bins)
         off = fsum(float(row["off"]) for row in bins)
-        if off > 0:
-            points.append(((low + high) / 2, on / off))
-    return points
+        ratios.append(on / off if off > 0 else None)
+    return ratios
 
 
 def main():
@@ -47,8 +48,8 @@ def main():
     ROOT.gROOT.SetBatch(True)
     ROOT.gStyle.SetOptStat(0)
     sources = (
-        ("2018", read_rows(args.csv_2018, "2018"), ROOT.kBlue + 1, 20),
-        ("2022EE", read_rows(args.csv_2022ee, "2022EE"), ROOT.kRed + 1, 24),
+        ("2018", read_rows(args.csv_2018, "2018"), ROOT.kBlue + 1, 1),
+        ("2022EE", read_rows(args.csv_2022ee, "2022EE"), ROOT.kRed + 1, 2),
     )
     canvas = ROOT.TCanvas("jetveto", "DY jet veto map", 1050, 440)
     canvas.Divide(2, 1)
@@ -57,21 +58,31 @@ def main():
     for panel, (region, title) in enumerate(REGIONS, start=1):
         pad = canvas.cd(panel)
         pad.SetLeftMargin(0.15)
-        graphs = []
+        histograms = []
         values = [1.0]
 
-        for era, rows, colour, marker in sources:
-            points = rebin_ratios(rows, region)
-            if not points:
+        for era, rows, colour, line_style in sources:
+            ratios = rebin_ratios(rows, region)
+            segments = []
+            # Leave a gap wherever the map-off yield is nonpositive.
+            for valid, group in groupby(enumerate(ratios), key=lambda item: item[1] is not None):
+                if not valid:
+                    continue
+                bins = list(group)
+                first, last = bins[0][0], bins[-1][0]
+                edges = array("d", MASS_EDGES[first:last + 2])
+                hist = ROOT.TH1D(f"ratio_{era}_{region}_{first}", "", len(bins), edges)
+                hist.SetDirectory(0)
+                hist.SetLineColor(colour)
+                hist.SetLineStyle(line_style)
+                hist.SetLineWidth(2)
+                for bin_number, (_, ratio) in enumerate(bins, start=1):
+                    hist.SetBinContent(bin_number, ratio)
+                    values.append(ratio)
+                segments.append(hist)
+            if not segments:
                 raise ValueError(f"No positive map-off yields for {era} in {region}")
-            graph = ROOT.TGraph()
-            for centre, ratio in points:
-                graph.SetPoint(graph.GetN(), centre, ratio)
-                values.append(ratio)
-            graph.SetMarkerStyle(marker)
-            graph.SetMarkerSize(0.8)
-            graph.SetMarkerColor(colour)
-            graphs.append((era, graph))
+            histograms.append((era, segments))
 
         low, high = min(values), max(values)
         margin = max(0.01, 0.1 * (high - low))
@@ -84,11 +95,13 @@ def main():
 
         legend = ROOT.TLegend(0.66, 0.17, 0.88, 0.32)
         legend.SetBorderSize(0)
-        for era, graph in graphs:
-            graph.Draw("P SAME")
-            legend.AddEntry(graph, era, "p")
+        for era, segments in histograms:
+            for hist in segments:
+                hist.Draw("HIST SAME")
+            legend.AddEntry(segments[0], era, "l")
+            objects.extend(segments)
         legend.Draw()
-        objects.extend([frame, line, legend, *(graph for _, graph in graphs)])
+        objects.extend([frame, line, legend])
 
     canvas.SaveAs(str(args.output))
 
