@@ -53,10 +53,22 @@ The path override is repeatable.
 - `signal_reco_cutflow.csv` sums generator pT slices per era and mass before
   taking cutflow fractions. The corrected expected yield is reported at
   the final step.
-- `signal_fiducial_cutflow.csv` adds the Run 3 truth cutflow conditional on
-  the CMS GEN filter and the reco cutflow conditional on particle-level
-  fiducial selection. Each uses its own input bin as denominator.
+- `signal_fiducial_cutflow.csv` adds the truth cutflow conditional on the
+  CMS GEN filter and the reco cutflow conditional on particle-level fiducial
+  selection when the input histograms are available, including in Run 2.
+  Each uses its own input bin as denominator.
 - `inputs.csv` records the exact ROOT file paths read by the script.
+
+Plot the cumulative fractions with Matplotlib after collecting the CSVs.
+For example, to plot three mass points in every era in the Run 3 summary:
+
+```bash
+python3 plot_signal_cutflow.py run3_summary --mass 12 40 70
+```
+
+PDFs are written to `run3_summary/plots/`, one per era and available
+cutflow type. Use `--era 2022EE` to select one era or omit `--mass` to
+plot all available mass points.
 
 ## Current input layout
 
