@@ -4,6 +4,7 @@
 Select Run2 or Run3 (or one era) with --era. Read native, merged SKFlatAnalyzer
 or SKNanoAnalyzer outputs. Only the two DY MC slices and Zprime signal MC are
 opened. Signal slices are read from the analyser's submitted signal list.
+Use --mass to collect every slice of only the requested mass points.
 """
 
 import argparse
@@ -135,7 +136,7 @@ def collect_dy(root, base, era_names, overrides):
     return summary, shapes, sources
 
 
-def collect_cutflow(root, base, era_names, signal_list):
+def collect_cutflow(root, base, era_names, signal_list, masses=None):
     samples = {}
     for line in signal_list.read_text().splitlines():
         sample = line.split("#", 1)[0].strip()
@@ -147,6 +148,12 @@ def collect_cutflow(root, base, era_names, signal_list):
         samples[sample] = int(match[1])
     if not samples:
         raise ValueError(f"Empty signal list: {signal_list}")
+    if masses is not None:
+        requested = set(masses)
+        missing = requested.difference(samples.values())
+        if missing:
+            raise ValueError(f"Signal masses not listed in {signal_list}: {sorted(missing)} GeV")
+        samples = {sample: mass for sample, mass in samples.items() if mass in requested}
 
     sums = defaultdict(lambda: [0.] * (len(STAGES) + 1))
     truth_sums = defaultdict(lambda: [0.] * len(TRUTH_STAGES))
@@ -227,12 +234,16 @@ def main():
                         help="Run or individual era (default: Run2)")
     parser.add_argument("--signal-list", type=Path,
                         help="Analyser SampleLists/Run2signal.txt or Run3signal.txt for cutflow")
+    parser.add_argument("--mass", type=int, nargs="+",
+                        help="Collect all slices of these signal masses in GeV (default: all masses)")
     parser.add_argument("--dy-file", action="append", default=[], metavar="ERA:SAMPLE=FILE",
                         help="Override one merged DY ROOT file (repeatable)")
     args = parser.parse_args()
     era_names = ERAS.get(args.era, (args.era,))
     if args.study in ("all", "cutflow") and args.signal_list is None:
         parser.error("--signal-list is required for signal cutflow")
+    if args.study == "dy" and args.mass is not None:
+        parser.error("--mass applies only to signal cutflow")
     overrides = {}
     for override in args.dy_file:
         label, sep, path = override.partition("=")
@@ -255,7 +266,9 @@ def main():
         ])
         sources.extend(inputs)
     if args.study in ("all", "cutflow"):
-        rows, fiducial_rows, inputs = collect_cutflow(ROOT, args.base, era_names, args.signal_list)
+        rows, fiducial_rows, inputs = collect_cutflow(
+            ROOT, args.base, era_names, args.signal_list, masses=args.mass,
+        )
         files.append(("signal_reco_cutflow.csv", list(rows[0]), rows))
         if fiducial_rows:
             files.append(("signal_fiducial_cutflow.csv", list(fiducial_rows[0]), fiducial_rows))

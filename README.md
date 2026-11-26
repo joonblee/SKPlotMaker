@@ -59,10 +59,15 @@ The path override is repeatable.
   Each uses its own input bin as denominator.
 - `inputs.csv` records the exact ROOT file paths read by the script.
 
-Plot the cumulative fractions with Matplotlib after collecting the CSVs.
-For example, to plot three mass points in every era in the Run 3 summary:
+To collect and plot selected mass points, pass `--mass` to the collector.
+Every listed signal slice of each selected mass must have a merged ROOT file
+in each selected era. The PDF plotter uses Matplotlib.
 
 ```bash
+python3 collect_jetveto_cutflow.py --study cutflow --era Run3 \
+  --base "$SKNANO_OUTPUT/NIsoMuon" \
+  --signal-list "$SKNANO_HOME/SampleLists/Run3signal.txt" \
+  --mass 12 40 70 --out run3_summary &&
 python3 plot_signal_cutflow.py run3_summary --mass 12 40 70
 ```
 
