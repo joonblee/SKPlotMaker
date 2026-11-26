@@ -152,6 +152,7 @@ def collect_cutflow(root, base, era_names, signal_list):
     truth_sums = defaultdict(lambda: [0.] * len(TRUTH_STAGES))
     fiducial_sums = defaultdict(lambda: [0.] * len(STAGES))
     sources = []
+    has_truth_by_mass = {}
     for era in era_names:
         for sample, mass in samples.items():
             path = file_path(base, "Cutflow", era, sample)
@@ -165,8 +166,12 @@ def collect_cutflow(root, base, era_names, signal_list):
                         raise ValueError(f"Unexpected nominal-yield binning in {path}")
                     sums[era, mass][-1] += nominal.GetBinContent(len(STAGES))
 
-                if era in ERAS["Run3"]:
-                    truth = hist(handle, "Cutflow/Truth")
+                truth = hist(handle, "Cutflow/Truth", optional=era in ERAS["Run2"])
+                has_truth = bool(truth)
+                if has_truth != has_truth_by_mass.setdefault((era, mass), has_truth):
+                    raise ValueError(f"Mixed reco-only and fiducial cutflow inputs in {era}, "
+                                     f"m(Zprime)={mass} GeV: {path}")
+                if truth:
                     add_cutflow(truth, truth_sums[era, mass], TRUTH_STAGES, path)
                     # The analyser only books this histogram when a fiducial event exists.
                     fiducial = hist(handle, "Cutflow/RecoFiducial", optional=True)
