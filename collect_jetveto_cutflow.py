@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Summarise NIsoMuon DY jet-veto studies and signal cutflows using PyROOT.
+"""Summarise NIsoMuon DY jet-veto studies and MC cutflows using PyROOT.
 
 Select Run2 or Run3 (or one era) with --era. Read native, merged SKFlatAnalyzer
-or SKNanoAnalyzer outputs. Only the two DY MC slices and Zprime signal MC are
-opened. Signal slices are read from the analyser's submitted signal list.
+or SKNanoAnalyzer outputs. Background cutflows use nominal DY, QCD and ttbar.
 Use --mass to collect every slice of only the requested mass points.
 """
 
 import argparse
 import csv
+import json
 import os
 import re
 import sys
@@ -34,6 +34,8 @@ ERAS = {
     "Run3": ("2022", "2022EE", "2023", "2023BPix"),
 }
 DY = ("DYJets", "DYJets10to50")
+TTBAR = ("TTLL_powheg", "TTLJ_powheg", "TTJJ_powheg")
+TTLL_EXTENSION = "TTLL_powheg_ext1"
 REGIONS = ("BJet", "LightJet")
 STAGES = (
     "Input", "Trigger and event quality", "Two separated tight AK4 jets",
@@ -194,18 +196,76 @@ def collect_cutflow(root, base, era_names, signal_list, masses=None):
     return reco_rows, fiducial_rows, sources
 
 
-def add_cutflow(obj, totals, stages, path):
+def collect_background_cutflow(root, base, era_names, sample_list, sample_data):
+    samples = [line.split("#", 1)[0].strip() for line in sample_list.read_text().splitlines()]
+    groups = {
+        "DY": DY,
+        "QCD": tuple(sample for sample in samples
+                     if re.fullmatch(r"QCD_Pt-\d+(?:[Tt]o(?:\d+|Inf))?_MuEnriched", sample)),
+        "ttbar": TTBAR,
+    }
+    if not groups["QCD"] or set(DY + TTBAR).difference(samples):
+        raise ValueError(f"Expected nominal DY, QCD and ttbar samples in {sample_list}")
+    if len(set(groups["QCD"])) != len(groups["QCD"]):
+        raise ValueError(f"Repeated QCD sample in {sample_list}")
+    include_extension = TTLL_EXTENSION in samples
+    if include_extension and sample_data is None:
+        raise ValueError("--sample-data is required to collect the Run 3 ttbar extension")
+
+    sums = defaultdict(lambda: [0.] * (len(STAGES) + 1))
+    sources = []
+    for era in era_names:
+        ttbar_scales = {}
+        if include_extension:
+            metadata = sample_data / era / "Sample" / "CommonSampleInfo.json"
+            info = json.loads(metadata.read_text())
+            if TTLL_EXTENSION in info:
+                nominal, extension = info["TTLL_powheg"], info[TTLL_EXTENSION]
+                if (nominal["xsec"], nominal.get("filterEff", 1.)) != (
+                    extension["xsec"], extension.get("filterEff", 1.)
+                ):
+                    raise ValueError(f"Inconsistent ttbar extension cross sections in {metadata}")
+                total = nominal["sumsign"] + extension["sumsign"]
+                if total <= 0:
+                    raise ValueError(f"Nonpositive ttbar extension normalisation in {metadata}")
+                ttbar_scales = {
+                    "TTLL_powheg": nominal["sumsign"] / total,
+                    TTLL_EXTENSION: extension["sumsign"] / total,
+                }
+        for process, members in groups.items():
+            if process == "ttbar" and ttbar_scales:
+                members += (TTLL_EXTENSION,)
+            for sample in members:
+                path = file_path(base, "Cutflow", era, sample)
+                sources.append(("BackgroundCutflow", era, sample, path))
+                totals = sums[era, process]
+                scale = ttbar_scales.get(sample, 1.)
+                with open_root(root, path) as handle:
+                    reco = hist(handle, "Cutflow/Reco")
+                    add_cutflow(reco, totals, STAGES, path, scale=scale)
+                    nominal_yield = hist(handle, "Cutflow/RecoNominalYield", optional=True)
+                    if nominal_yield:
+                        if nominal_yield.GetNbinsX() != len(STAGES):
+                            raise ValueError(f"Unexpected nominal-yield binning in {path}")
+                        totals[-1] += scale * nominal_yield.GetBinContent(len(STAGES))
+                    elif reco.GetBinContent(len(STAGES)) or reco.GetBinError(len(STAGES)):
+                        raise ValueError(f"Missing Cutflow/RecoNominalYield in {path}")
+
+    return cutflow_rows(sums, STAGES, corrected=True, sample_column="process"), sources
+
+
+def add_cutflow(obj, totals, stages, path, *, scale=1.):
     if obj.GetNbinsX() != len(stages):
         raise ValueError(f"Unexpected cutflow binning for {obj.GetName()} in {path}")
     for step in range(len(stages)):
-        totals[step] += obj.GetBinContent(step + 1)
+        totals[step] += scale * obj.GetBinContent(step + 1)
 
 
-def cutflow_rows(sums, stages, *, corrected=False, level=None):
+def cutflow_rows(sums, stages, *, corrected=False, level=None, sample_column="mass_GeV"):
     rows = []
-    for (era, mass), values in sorted(sums.items()):
+    for (era, sample), values in sorted(sums.items()):
         for step, name in enumerate(stages):
-            row = {"era": era, "mass_GeV": mass, "step": step, "selection": name,
+            row = {"era": era, sample_column: sample, "step": step, "selection": name,
                    "sum_weight_pb": values[step],
                    "step_fraction": ratio(values[step], values[max(0, step - 1)])}
             if corrected:
@@ -229,11 +289,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", required=True, type=Path, help="Directory containing Cutflow and JetVetoMapStudy")
     parser.add_argument("--out", default=Path("run2_summary"), type=Path)
-    parser.add_argument("--study", choices=("all", "dy", "cutflow"), default="all")
+    parser.add_argument("--study", choices=("all", "dy", "cutflow", "background-cutflow"), default="all")
     parser.add_argument("--era", choices=(*ERAS, *LUMI), default="Run2",
                         help="Run or individual era (default: Run2)")
     parser.add_argument("--signal-list", type=Path,
                         help="Analyser SampleLists/Run2signal.txt or Run3signal.txt for cutflow")
+    parser.add_argument("--background-list", type=Path,
+                        help="Analyser SampleLists/Run2mc.txt or Run3mc.txt for background-cutflow")
+    parser.add_argument("--sample-data", type=Path,
+                        help="Directory containing era sample metadata (SKNANO_DATA for Run 3)")
     parser.add_argument("--mass", type=int, nargs="+",
                         help="Collect all slices of these signal masses in GeV (default: all masses)")
     parser.add_argument("--dy-file", action="append", default=[], metavar="ERA:SAMPLE=FILE",
@@ -242,7 +306,9 @@ def main():
     era_names = ERAS.get(args.era, (args.era,))
     if args.study in ("all", "cutflow") and args.signal_list is None:
         parser.error("--signal-list is required for signal cutflow")
-    if args.study == "dy" and args.mass is not None:
+    if args.study == "background-cutflow" and args.background_list is None:
+        parser.error("--background-list is required for background cutflow")
+    if args.study not in ("all", "cutflow") and args.mass is not None:
         parser.error("--mass applies only to signal cutflow")
     overrides = {}
     for override in args.dy_file:
@@ -272,6 +338,13 @@ def main():
         files.append(("signal_reco_cutflow.csv", list(rows[0]), rows))
         if fiducial_rows:
             files.append(("signal_fiducial_cutflow.csv", list(fiducial_rows[0]), fiducial_rows))
+        sources.extend(inputs)
+
+    if args.study == "background-cutflow":
+        rows, inputs = collect_background_cutflow(
+            ROOT, args.base, era_names, args.background_list, args.sample_data,
+        )
+        files.append(("background_reco_cutflow.csv", list(rows[0]), rows))
         sources.extend(inputs)
 
     args.out.mkdir(parents=True, exist_ok=True)

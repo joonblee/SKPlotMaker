@@ -75,6 +75,31 @@ PDFs are written to `run3_summary/plots/`, one per era and available
 cutflow type. Use `--era 2022EE` to select one era or omit `--mass` to
 plot all available mass points.
 
+For nominal background MC, run the collector with the same sample list and
+analyser environment used for submission:
+
+```bash
+python3 collect_jetveto_cutflow.py --study background-cutflow --era Run2 \
+  --base "/data6/Users/$USER/SKOutput/Run2UL_v3_Run3_v13/NIsoMuon" \
+  --background-list "$SKFlat_WD/SampleLists/Run2mc.txt" --out run2_background_cutflow &&
+python3 plot_signal_cutflow.py run2_background_cutflow --background
+
+python3 collect_jetveto_cutflow.py --study background-cutflow --era Run3 \
+  --base "$SKNANO_OUTPUT/NIsoMuon" \
+  --background-list "$SKNANO_HOME/SampleLists/Run3mc.txt" \
+  --sample-data "$SKNANO_DATA" --out run3_background_cutflow &&
+python3 plot_signal_cutflow.py run3_background_cutflow --background
+```
+
+`background_reco_cutflow.csv` contains sums of generator-normalised weights,
+step and cumulative fractions, and the corrected expected event yield at the
+final step for each era and process. The PDFs under `plots/` show cumulative
+fractions. DY uses the two aMC@NLO mass slices and QCD uses the muon-enriched
+pT slices. For eras with a registered Run 3 dileptonic ttbar extension, the
+collector combines nominal and extension histograms in proportion to their
+signed generator event counts, keeping the single dileptonic cross section.
+These are MC cutflows for the nominal OS b-jet selection.
+
 ## Current input layout
 
 Most scripts use
